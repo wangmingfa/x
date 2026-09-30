@@ -24,25 +24,14 @@ impl SystemManager for NoopSystem {
             os: crate::system::OsFamily::Other,
             os_name: "unknown".into(),
             os_version: "0".into(),
-            kernel_version: None,
             arch: std::env::consts::ARCH.into(),
             hostname: "localhost".into(),
-            cpu_brand: None,
-            cpu_count: 0,
-            physical_cores: None,
-            total_memory_bytes: 0,
-            available_memory_bytes: 0,
-            uptime_seconds: 0,
-            boot_time: None,
-            current_user: None,
+            ..SystemInfo::default()
         })
     }
 
     fn cpu_usage(&self) -> Result<CpuUsage> {
-        Ok(CpuUsage {
-            total_percent: 0.0,
-            per_core_percent: Vec::new(),
-        })
+        Ok(CpuUsage::default())
     }
 
     fn memory_usage(&self) -> Result<MemoryUsage> {

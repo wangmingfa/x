@@ -1,5 +1,6 @@
 //! macOS system information: `sysctl` + `sysinfo`.
 
+use crate::common::{cpu_sysinfo, identity};
 use crate::sys;
 use std::os::raw::{c_int, c_void};
 use x_core::error::Result;
@@ -21,6 +22,7 @@ impl SystemManager for MacosSystem {
         let info = sysinfo::System::new_all();
         let cpu = info.cpus();
         let boot_time = sysinfo::System::boot_time();
+        let (performance_cores, efficiency_cores) = perf_level_split();
 
         Ok(SystemInfo {
             os: OsFamily::MacOs,
@@ -32,29 +34,30 @@ impl SystemManager for MacosSystem {
             cpu_brand: cpu.first().map(|c| c.brand().to_string()),
             cpu_count: cpu.len(),
             physical_cores: sysctl_int("hw.physicalcpu").filter(|c| *c > 0),
+            performance_cores,
+            efficiency_cores,
             total_memory_bytes: info.total_memory(),
             available_memory_bytes: info.available_memory(),
             uptime_seconds: sysinfo::System::uptime(),
             boot_time: (boot_time > 0).then_some(boot_time),
             current_user: sys::current_user_name(),
+            timezone: identity::timezone_name(),
+            utc_offset_seconds: identity::utc_offset_seconds(),
+            locale: locale(),
+            current_shell: identity::login_shell(),
+            terminal: identity::terminal_name(),
         })
     }
 
     fn cpu_usage(&self) -> Result<CpuUsage> {
-        // sysinfo needs two samples separated by an interval to report CPU
-        // usage; one refresh is only good enough for the first dashboard frame.
-        let mut system = sysinfo::System::new();
-        system.refresh_cpu_usage();
-        std::thread::sleep(std::time::Duration::from_millis(200));
-        system.refresh_cpu_usage();
-        Ok(CpuUsage {
-            total_percent: system.global_cpu_usage().clamp(0.0, 100.0),
-            per_core_percent: system
-                .cpus()
-                .iter()
-                .map(|c| c.cpu_usage().clamp(0.0, 100.0))
-                .collect(),
-        })
+        let mut usage = cpu_sysinfo::sample(std::time::Duration::from_millis(200));
+        // Intel Macs publish a ceiling; Apple silicon does not, and the
+        // performance levels only carry names.
+        usage.max_frequency_mhz =
+            sysctl_int("hw.cpufrequency_max").map(|hertz| hertz as f32 / 1_000_000.0);
+        // The SMC sensor that holds the die temperature needs root, and macOS
+        // has no scaling governor to name.
+        Ok(usage)
     }
 
     fn memory_usage(&self) -> Result<MemoryUsage> {
@@ -77,6 +80,36 @@ impl SystemManager for MacosSystem {
 /// macOS version from `kern.osproductversion`, e.g. `15.6`.
 fn product_version() -> String {
     sysctl_string("kern.osproductversion").unwrap_or_else(|| "unknown".into())
+}
+
+/// Performance and efficiency physical cores.
+///
+/// Apple silicon publishes one `hw.perflevel<N>` block per cluster and level 0
+/// is always the performance cluster; an Intel Mac reports a single level, and
+/// then there is no split to make.
+fn perf_level_split() -> (Option<usize>, Option<usize>) {
+    let levels = sysctl_int("hw.nperflevels").unwrap_or(0);
+    if levels < 2 {
+        return (None, None);
+    }
+    let performance = sysctl_int("hw.perflevel0.physicalcpu");
+    let efficiency = (1..levels)
+        .filter_map(|level| sysctl_int(&format!("hw.perflevel{level}.physicalcpu")))
+        .sum();
+    (
+        performance.filter(|cores| *cores > 0),
+        (efficiency > 0).then_some(efficiency),
+    )
+}
+
+/// Locale of the running process.
+///
+/// A terminal session always carries `LANG`; a job started by launchd does not,
+/// and then `kern.locale` is what the system was configured with. The `"C"`
+/// default is not worth reporting as a locale.
+fn locale() -> Option<String> {
+    identity::locale_name()
+        .or_else(|| sysctl_string("kern.locale").filter(|value| value != "C" && !value.is_empty()))
 }
 
 /// Read an integer `sysctl`.
@@ -201,6 +234,28 @@ mod tests {
             .per_core_percent
             .iter()
             .all(|v| (0.0..=100.0).contains(v)));
+        assert!(usage.load_average.is_some(), "getloadavg always works");
+        assert!(usage.governor.is_none(), "macOS has no scaling governor");
+        if let Some(frequency) = usage.frequency_mhz {
+            assert!(frequency > 0.0, "a reported clock must be positive");
+        }
+    }
+
+    #[test]
+    fn the_core_split_is_whole_or_absent() {
+        let info = MacosSystem::new().info().expect("info");
+        match (info.performance_cores, info.efficiency_cores) {
+            (Some(performance), Some(efficiency)) => {
+                assert!(performance >= 1 && efficiency >= 1);
+                assert!(
+                    performance + efficiency <= info.cpu_count,
+                    "p{performance} e{efficiency} of {}",
+                    info.cpu_count
+                );
+            }
+            (None, None) => {}
+            half => panic!("half a performance split: {half:?}"),
+        }
     }
 
     #[test]

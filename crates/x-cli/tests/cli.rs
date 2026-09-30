@@ -11,7 +11,7 @@ use clap::Parser;
 use x_core::error::{ErrorKind, PermissionRequirement};
 use x_core::testing::StubFailure;
 use x_core::testing::{stub_process, stub_service, stub_socket, Stubs};
-use x_core::{CpuUsage, MemoryUsage, SystemInfo};
+use x_core::{CpuUsage, LoadAverage, MemoryUsage, SystemInfo};
 
 use x_cli::format::{Confirmer, OutputFormat, Renderer};
 use x_cli::{execute, Cli};
@@ -65,11 +65,29 @@ fn populated() -> Stubs {
                 total_memory_bytes: 16 * 1024 * 1024 * 1024,
                 available_memory_bytes: 12 * 1024 * 1024 * 1024,
                 current_user: Some("tester".into()),
+                boot_time: Some(1_735_689_600),
+                timezone: Some("Asia/Shanghai".into()),
+                utc_offset_seconds: Some(8 * 3_600),
+                locale: Some("zh_CN.UTF-8".into()),
+                current_shell: Some("zsh".into()),
+                terminal: Some("iTerm.app".into()),
+                performance_cores: Some(6),
+                efficiency_cores: Some(2),
                 ..Default::default()
             },
             CpuUsage {
                 total_percent: 12.5,
-                per_core_percent: vec![25.0],
+                per_core_percent: vec![25.0, 4.0],
+                load_average: Some(LoadAverage {
+                    one: 1.2,
+                    five: 0.9,
+                    fifteen: 0.5,
+                }),
+                frequency_mhz: Some(2400.0),
+                max_frequency_mhz: Some(3200.0),
+                per_core_frequency_mhz: vec![2400.0, 1200.0],
+                temperature_celsius: Some(54.5),
+                governor: Some("schedutil".into()),
             },
             MemoryUsage {
                 total_bytes: 16 * 1024 * 1024 * 1024,
@@ -321,6 +339,118 @@ fn system_commands_render_the_stub_facts() {
 
     let cpu = x(&stubs, &["--json", "sys", "cpu"], false);
     assert!(cpu.stdout.contains("12.5"));
+}
+
+#[test]
+fn sys_info_renders_the_completion_fields() {
+    let stubs = populated();
+
+    let table = x(&stubs, &["sys", "info"], false);
+    // The boot timestamp is rendered in the reported offset, not as a raw epoch.
+    assert!(
+        table.stdout.contains("2025-01-01 08:00:00 +08:00"),
+        "{}",
+        table.stdout
+    );
+    for field in ["timezone", "locale", "user", "shell", "terminal"] {
+        assert!(table.stdout.contains(field), "{field} missing");
+    }
+    assert!(table.stdout.contains("zh_CN.UTF-8"));
+    assert!(table.stdout.contains("iTerm.app"));
+
+    let json = x(&stubs, &["--json", "sys", "info"], false);
+    assert_eq!(json.code, 0);
+    let value: serde_json::Value = serde_json::from_str(&json.stdout).expect("json");
+    assert_eq!(value["timezone"], "Asia/Shanghai");
+    assert_eq!(value["boot_time"].as_u64(), Some(1_735_689_600));
+    assert_eq!(value["utc_offset_seconds"].as_i64(), Some(28_800));
+    assert_eq!(value["current_shell"], "zsh");
+}
+
+#[test]
+fn sys_info_omits_facts_the_platform_does_not_expose() {
+    let stubs = Stubs::new();
+    let out = x(&stubs, &["sys", "info"], false);
+    assert_eq!(out.code, 0);
+    // A stub with no boot time must not print a fabricated timestamp row.
+    assert!(!out.stdout.contains("last reboot"), "{}", out.stdout);
+    assert!(!out.stdout.contains("timezone"), "{}", out.stdout);
+    assert!(!out.stdout.contains("performance cores"), "{}", out.stdout);
+}
+
+#[test]
+fn sys_cpu_renders_the_detail_the_platform_reports() {
+    let stubs = populated();
+
+    let table = x(&stubs, &["sys", "cpu"], false);
+    assert_eq!(table.code, 0);
+    assert!(
+        table.stdout.contains("load 1.20 0.90 0.50"),
+        "{}",
+        table.stdout
+    );
+    assert!(
+        table.stdout.contains("clock 2400 MHz of 3200 MHz"),
+        "{}",
+        table.stdout
+    );
+    assert!(
+        table.stdout.contains("temp 54.5 C") && table.stdout.contains("governor schedutil"),
+        "{}",
+        table.stdout
+    );
+    // Per core clocks get their own column, one row per core.
+    assert!(table.stdout.contains("mhz"), "{}", table.stdout);
+    assert!(table.stdout.contains("2400"));
+    assert!(table.stdout.contains("1200"));
+
+    let json = x(&stubs, &["--json", "sys", "cpu"], false);
+    let value: serde_json::Value = serde_json::from_str(&json.stdout).expect("json");
+    assert_eq!(value["load_average"]["one"].as_f64(), Some(1.2));
+    assert_eq!(value["max_frequency_mhz"].as_f64(), Some(3200.0));
+    assert_eq!(value["governor"], "schedutil");
+    assert_eq!(value["per_core_frequency_mhz"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn sys_cpu_stays_silent_about_what_the_platform_cannot_see() {
+    let stubs = Stubs::new();
+
+    let table = x(&stubs, &["sys", "cpu"], false);
+    assert_eq!(table.code, 0);
+    for detail in ["load ", "clock ", "temp ", "governor", "mhz"] {
+        assert!(
+            !table.stdout.contains(detail),
+            "{detail} in {}",
+            table.stdout
+        );
+    }
+
+    // An absent maximum must not be invented, and `temperature_celsius` for a
+    // platform without a readable sensor stays out of the JSON.
+    let json = x(&stubs, &["--json", "sys", "cpu"], false);
+    let value: serde_json::Value = serde_json::from_str(&json.stdout).expect("json");
+    assert!(value.get("max_frequency_mhz").is_none(), "{value}");
+    assert!(value.get("temperature_celsius").is_none(), "{value}");
+    assert!(value.get("load_average").is_none(), "{value}");
+}
+
+#[test]
+fn sys_info_renders_the_core_split() {
+    let stubs = populated();
+
+    let table = x(&stubs, &["sys", "info"], false);
+    assert!(
+        table.stdout.contains("performance cores"),
+        "{}",
+        table.stdout
+    );
+    assert!(table.stdout.contains("efficiency cores"));
+
+    let json = x(&stubs, &["--json", "sys", "info"], false);
+    let value: serde_json::Value = serde_json::from_str(&json.stdout).expect("json");
+    assert_eq!(value["performance_cores"].as_u64(), Some(6));
+    assert_eq!(value["efficiency_cores"].as_u64(), Some(2));
 }
 
 #[test]

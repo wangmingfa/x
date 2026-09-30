@@ -42,8 +42,8 @@ cargo build -p x-app
 
 | 命令 | 说明 |
 | --- | --- |
-| `x sys info` | 操作系统、内核、架构、主机名、CPU 型号、核数、内存、运行时长 |
-| `x sys cpu` | 聚合与每核 CPU 利用率 |
+| `x sys info` | 操作系统、内核、架构、主机名、CPU 型号、核数（含 P/E 核心划分）、内存、运行时长、上次重启、时区、locale、用户 / shell / 终端 |
+| `x sys cpu` | 聚合与每核 CPU 利用率，负载均值、当前/最大频率（平台提供时）、温度（Linux）、governor（Linux） |
 | `x sys mem` | 内存利用率 |
 
 ### 网络（`x net`）
@@ -136,8 +136,8 @@ GitHub Actions CI 在 Ubuntu / macOS / Windows 三平台上跑格式、clippy
 
 基础能力（system / process / port / network / disk / service）已实现，剩余补全项：
 
-- [ ] 系统信息：上次重启时间、时区、locale、用户名 / shell / 终端
-- [ ] CPU：Load Average、当前/最大频率、governor / 电源模式（Linux）、P/E 核心（支持的平台）、温度（能获取时）
+- [x] 系统信息：上次重启时间、时区、locale、用户名 / shell / 终端
+- [x] CPU：Load Average、当前/最大频率、governor / 电源模式（Linux）、P/E 核心（支持的平台）、温度（能获取时）
 - [ ] 内存：Swap / Pagefile、内存压力（memory pressure）
 - [ ] 进程：CWD、线程数、打开的文件、进程级网络连接、环境变量、进程状态；`ps tree` 支持展开/折叠
 - [ ] 端口：远程地址展示；按进程反查端口（`x port find <name>`）；`x port watch` 持续监视、只在变化时输出

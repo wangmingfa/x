@@ -5,7 +5,7 @@ use x_core::error::Result;
 use x_core::SystemContext;
 
 use crate::{
-    format::{OutputFormat, Renderer, Table},
+    format::{Cell, OutputFormat, Renderer, Table},
     row,
 };
 
@@ -58,6 +58,12 @@ pub fn info(context: &SystemContext, renderer: &mut Renderer) -> Result<i32> {
     if let Some(physical) = info.physical_cores {
         table.push(row!["physical cores", physical.to_string()]);
     }
+    if let Some(performance) = info.performance_cores {
+        table.push(row!["performance cores", performance.to_string()]);
+    }
+    if let Some(efficiency) = info.efficiency_cores {
+        table.push(row!["efficiency cores", efficiency.to_string()]);
+    }
     table.push(row![
         "memory",
         format!(
@@ -67,6 +73,30 @@ pub fn info(context: &SystemContext, renderer: &mut Renderer) -> Result<i32> {
         ),
     ]);
     table.push(row!["uptime", x_core::format_duration(info.uptime_seconds)]);
+    if let (Some(boot_time), Some(offset)) = (info.boot_time, info.utc_offset_seconds) {
+        table.push(row![
+            "last reboot",
+            x_core::format_timestamp(boot_time, offset)
+        ]);
+    } else if let Some(boot_time) = info.boot_time {
+        // Without the offset the timestamp would look local but be UTC.
+        table.push(row!["last reboot (utc)", boot_time.to_string()]);
+    }
+    if let Some(timezone) = &info.timezone {
+        table.push(row!["timezone", timezone.clone()]);
+    }
+    if let Some(locale) = &info.locale {
+        table.push(row!["locale", locale.clone()]);
+    }
+    if let Some(user) = &info.current_user {
+        table.push(row!["user", user.clone()]);
+    }
+    if let Some(shell) = &info.current_shell {
+        table.push(row!["shell", shell.clone()]);
+    }
+    if let Some(terminal) = &info.terminal {
+        table.push(row!["terminal", terminal.clone()]);
+    }
     renderer.table(&table)?;
     Ok(0)
 }
@@ -84,9 +114,39 @@ pub fn cpu(context: &SystemContext, renderer: &mut Renderer) -> Result<i32> {
         usage.total_percent,
         bar(usage.total_percent, 30)
     ))?;
-    let mut table = Table::new(["core", "usage"]);
+    if let Some(load) = &usage.load_average {
+        renderer.line(format!("load {load}"))?;
+    }
+    if let Some(clock) = usage.frequency_mhz {
+        match usage.max_frequency_mhz {
+            Some(max) => renderer.line(format!("clock {clock:.0} MHz of {max:.0} MHz"))?,
+            None => renderer.line(format!("clock {clock:.0} MHz"))?,
+        }
+    }
+    if let Some(temperature) = usage.temperature_celsius {
+        renderer.line(format!("temp {temperature:.1} C"))?;
+    }
+    if let Some(governor) = &usage.governor {
+        renderer.line(format!("governor {governor}"))?;
+    }
+
+    // The clock column only appears on platforms that publish one per core.
+    let clocks = usage.per_core_frequency_mhz.len() == usage.per_core_percent.len()
+        && !usage.per_core_frequency_mhz.is_empty();
+    let mut table = if clocks {
+        Table::new(["core", "usage", "mhz"])
+    } else {
+        Table::new(["core", "usage"])
+    };
     for (index, value) in usage.per_core_percent.iter().enumerate() {
-        table.push(row![index, bar(*value, 20)]);
+        let mut row = row![index, bar(*value, 20)];
+        if clocks {
+            row.push(Cell::from(format!(
+                "{:.0}",
+                usage.per_core_frequency_mhz[index]
+            )));
+        }
+        table.push(row);
     }
     renderer.table(&table)?;
     Ok(0)

@@ -5,7 +5,9 @@
 //! speaks to every kernel we support, so there is no reason to duplicate them
 //! per OS.
 
+pub mod cpu_sysinfo;
 pub mod disk_sysinfo;
+pub mod identity;
 pub mod process_sysinfo;
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]

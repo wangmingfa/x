@@ -65,8 +65,8 @@ pub use service::{
     ServiceState,
 };
 pub use system::{
-    format_bytes, format_duration, percent, CpuUsage, MemoryUsage, OsFamily, SystemInfo,
-    SystemManager,
+    format_bytes, format_duration, format_timestamp, percent, CpuUsage, LoadAverage, MemoryUsage,
+    OsFamily, SystemInfo, SystemManager,
 };
 
 /// Version of the `x-core` contract, useful for plugin compatibility checks.
