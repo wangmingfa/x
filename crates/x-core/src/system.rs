@@ -159,6 +159,29 @@ impl std::fmt::Display for LoadAverage {
     }
 }
 
+/// Kernel-reported memory pressure, in rising severity.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PressureLevel {
+    /// The kernel reclaims memory without disturbing workloads.
+    #[default]
+    Normal,
+    /// Paging and compression are costing noticeable time.
+    Warning,
+    /// The system is thrashing; allocations stall.
+    Critical,
+}
+
+impl std::fmt::Display for PressureLevel {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name = match self {
+            PressureLevel::Normal => "normal",
+            PressureLevel::Warning => "warning",
+            PressureLevel::Critical => "critical",
+        };
+        formatter.write_str(name)
+    }
+}
+
 /// Live memory utilization. Zeroed values mean "not measured".
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct MemoryUsage {
@@ -170,6 +193,21 @@ pub struct MemoryUsage {
     pub available_bytes: u64,
     /// Usage percentage.
     pub percent: f32,
+    /// Swap (macOS/Linux) or page file (Windows) capacity. Zero means the
+    /// platform has none configured or does not expose it.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub swap_total_bytes: u64,
+    /// Swap or page file space currently in use.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub swap_used_bytes: u64,
+    /// Kernel memory-pressure level. `None` when the platform does not
+    /// publish one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pressure: Option<PressureLevel>,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 /// System capability.
@@ -190,6 +228,9 @@ pub trait SystemManager: Send + Sync {
             used_bytes: total.saturating_sub(available),
             available_bytes: available,
             percent: percent(total.saturating_sub(available), total),
+            swap_total_bytes: 0,
+            swap_used_bytes: 0,
+            pressure: None,
         })
     }
 

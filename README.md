@@ -138,7 +138,7 @@ GitHub Actions CI 在 Ubuntu / macOS / Windows 三平台上跑格式、clippy
 
 - [x] 系统信息：上次重启时间、时区、locale、用户名 / shell / 终端
 - [x] CPU：Load Average、当前/最大频率、governor / 电源模式（Linux）、P/E 核心（支持的平台）、温度（能获取时）
-- [ ] 内存：Swap / Pagefile、内存压力（memory pressure）
+- [x] 内存：Swap / Pagefile、内存压力（memory pressure）
 - [ ] 进程：CWD、线程数、打开的文件、进程级网络连接、环境变量、进程状态；`ps tree` 支持展开/折叠
 - [ ] 端口：远程地址展示；按进程反查端口（`x port find <name>`）；`x port watch` 持续监视、只在变化时输出
 - [ ] 网络：网卡链路速度、网关；`x net connections`（统一 netstat / ss / lsof -i，支持按进程/端口过滤）；DNS 解析 / 反查 / 刷缓存；ping / trace / resolve

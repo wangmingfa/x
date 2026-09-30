@@ -40,6 +40,9 @@ impl SystemManager for NoopSystem {
             used_bytes: 0,
             available_bytes: 0,
             percent: 0.0,
+            swap_total_bytes: 0,
+            swap_used_bytes: 0,
+            pressure: None,
         })
     }
 }

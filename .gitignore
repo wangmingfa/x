@@ -1,4 +1,69 @@
+# ===== 构建产物 =====
+# 不带前置斜杠的模式在任意层级都生效，所以这一条已经覆盖了嵌套 crate 的 target。
 target/
 **/*.rs.bk
+
+# 链接器/编译器留下的二进制，只可能出现在仓库里当中间产物
+*.exe
+*.dll
+*.so
+*.dylib
+*.o
+*.obj
+*.rlib
+
+# ===== 调试与崩溃现场 =====
+# 不写裸 core：Rust 项目里 src/core/ 这种模块目录很常见，误伤代价太高
 *.pdb
+*.dSYM/
+*.su
+*.idb
+*.core
+*.stackdump
+
+# ===== 测试与覆盖率 =====
+# cargo mutants / cargo-llvm-cov / tarpaulin 都会往这里堆
+/coverage
+*.profraw
+*.profdata
+default.profdata
+*.gcno
+*.gcda
+lcov.info
+tarpaulin-report.html
+
+# ===== 本地配置与凭据 =====
+# 这类文件一旦提交就等于泄露；需要共享模板时明确放行 .env.example
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# ===== 运行期产生的数据 =====
+# x 的审计日志（路线图 B9）和临时调试输出都属于本地状态
+*.log
+logs/
+
+# ===== 编辑器 / IDE =====
+# 注意：已用 git add -f 提交过的文件不受这里影响
+.idea/
+.vscode/
+*.iml
+*.swp
+*.swo
+*~
+.atomcode/
+
+# ===== 操作系统垃圾文件 =====
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+.AppleDouble
+.LSOverride
+Thumbs.db
+ehthumbs.db
+@eaDir/
+Desktop.ini

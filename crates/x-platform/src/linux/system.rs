@@ -6,7 +6,9 @@ use crate::sys;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use x_core::error::Result;
-use x_core::system::{CpuUsage, MemoryUsage, OsFamily, SystemInfo, SystemManager};
+use x_core::system::{
+    CpuUsage, MemoryUsage, OsFamily, PressureLevel, SystemInfo, SystemManager,
+};
 
 /// Reads Linux system facts.
 #[derive(Debug, Default)]
@@ -76,7 +78,8 @@ impl SystemManager for LinuxSystem {
     }
 
     fn memory_usage(&self) -> Result<MemoryUsage> {
-        // `/proc/meminfo` is authoritative; sysinfo already parses it.
+        // `/proc/meminfo` is authoritative; sysinfo already parses it, including
+        // the swap totals that `/proc/swaps` only shows for active devices.
         let info = sysinfo::System::new_all();
         let total = info.total_memory();
         let available = info.available_memory();
@@ -85,8 +88,44 @@ impl SystemManager for LinuxSystem {
             used_bytes: total.saturating_sub(available),
             available_bytes: available,
             percent: percent(total.saturating_sub(available), total),
+            swap_total_bytes: info.total_swap(),
+            swap_used_bytes: info.used_swap(),
+            pressure: memory_pressure(),
         })
     }
+}
+
+/// Kernel memory pressure from `/proc/pressure/memory` (PSI).
+///
+/// The file reports stall percentages for `some` (at least one task stalled)
+/// and `full` (all non-idle tasks stalled) over 10s/60s/300s windows. Kernels
+/// or configs without PSI (`CONFIG_PSI=n`, or the file hidden by a container)
+/// yield `None` — a `/proc/pressure` reader must tolerate an empty read.
+fn memory_pressure() -> Option<PressureLevel> {
+    let raw = std::fs::read_to_string("/proc/pressure/memory").ok()?;
+    memory_pressure_from(&raw)
+}
+
+/// Pure core of [`memory_pressure`], injectable for tests.
+fn memory_pressure_from(raw: &str) -> Option<PressureLevel> {
+    // `full` is the harder signal: tasks are stalling on memory right now.
+    let full = raw.lines().find_map(|line| {
+        let (name, rest) = line.split_once(' ')?;
+        (name == "full").then(|| parse_psi_avg10(rest))
+    })?;
+    Some(match full {
+        value if value >= 25.0 => PressureLevel::Critical,
+        value if value >= 5.0 => PressureLevel::Warning,
+        _ => PressureLevel::Normal,
+    })
+}
+
+/// The `avg10=` value of a PSI line, e.g. `avg10=1.23 avg60=0.00 avg300=0.00 total=456`.
+fn parse_psi_avg10(line: &str) -> f32 {
+    line.split_whitespace()
+        .find_map(|field| field.strip_prefix("avg10="))
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0.0)
 }
 
 fn percent(part: u64, whole: u64) -> f32 {
@@ -502,6 +541,25 @@ pub fn manager() -> std::sync::Arc<dyn SystemManager> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pressure_reads_the_full_line() {
+        let raw = "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\n\
+                   full avg10=3.14 avg60=0.00 avg300=0.00 total=0\n";
+        assert_eq!(memory_pressure_from(raw), Some(PressureLevel::Warning));
+        assert_eq!(
+            memory_pressure_from("some avg10=0.00 avg60=0.00 avg300=0.00 total=0"),
+            Some(PressureLevel::Normal)
+        );
+        assert_eq!(memory_pressure_from(""), None);
+    }
+
+    #[test]
+    fn psi_avg10_parses_or_defaults_to_zero() {
+        assert_eq!(parse_psi_avg10("avg10=12.5 avg60=0.00"), 12.5);
+        assert_eq!(parse_psi_avg10("avg60=0.00"), 0.0);
+        assert_eq!(parse_psi_avg10("avg10=garbage"), 0.0);
+    }
 
     /// A cluster with no governor, so tests set only what they assert on.
     fn cluster(max_khz: u64, cpus: &[u32]) -> CpufreqCluster {

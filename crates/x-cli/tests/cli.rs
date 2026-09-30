@@ -94,6 +94,9 @@ fn populated() -> Stubs {
                 used_bytes: 4 * 1024 * 1024 * 1024,
                 available_bytes: 12 * 1024 * 1024 * 1024,
                 percent: 25.0,
+                swap_total_bytes: 0,
+                swap_used_bytes: 0,
+                pressure: None,
             },
         )
 }

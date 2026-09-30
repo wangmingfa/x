@@ -304,6 +304,16 @@ fn system(frame: &mut Frame, app: &mut App, area: Rect) {
             usage.percent,
             format_bytes(usage.available_bytes)
         )));
+        if usage.swap_total_bytes > 0 {
+            facts.push(Line::raw(format!(
+                "swap  {} of {}",
+                format_bytes(usage.swap_used_bytes),
+                format_bytes(usage.swap_total_bytes)
+            )));
+        }
+        if let Some(pressure) = usage.pressure {
+            facts.push(Line::raw(format!("press {pressure}")));
+        }
     }
     frame.render_widget(
         Paragraph::new(facts).block(Block::default().borders(Borders::ALL).title(" system ")),

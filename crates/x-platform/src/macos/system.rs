@@ -4,7 +4,9 @@ use crate::common::{cpu_sysinfo, identity};
 use crate::sys;
 use std::os::raw::{c_int, c_void};
 use x_core::error::Result;
-use x_core::system::{CpuUsage, MemoryUsage, OsFamily, SystemInfo, SystemManager};
+use x_core::system::{
+    CpuUsage, MemoryUsage, OsFamily, PressureLevel, SystemInfo, SystemManager,
+};
 
 /// Reads macOS system facts.
 #[derive(Debug, Default)]
@@ -64,11 +66,15 @@ impl SystemManager for MacosSystem {
         let info = sysinfo::System::new_all();
         let total = info.total_memory();
         let available = info.available_memory();
+        let (swap_total, swap_used) = swap_usage();
         Ok(MemoryUsage {
             total_bytes: total,
             used_bytes: total.saturating_sub(available),
             available_bytes: available,
             percent: x_core::percent(total.saturating_sub(available), total),
+            swap_total_bytes: swap_total,
+            swap_used_bytes: swap_used,
+            pressure: memory_pressure(),
         })
     }
 
@@ -170,6 +176,64 @@ pub fn sysctl_string(name: &str) -> Option<String> {
     None
 }
 
+/// Swap capacity and use, read from the `vm.swapusage` sysctl.
+///
+/// The sysctl is an opaque 32-byte `struct swapusage`, not a string — the
+/// `sysctl(8)` CLI formats it into the familiar `total = …M` line itself. The
+/// layout is three little-endian `u64` byte counts (total, used, free)
+/// followed by flags we do not need.
+fn swap_usage() -> (u64, u64) {
+    let Some(name) = std::ffi::CString::new("vm.swapusage").ok() else {
+        return (0, 0);
+    };
+    let mut buffer = [0u8; 32];
+    let mut size = buffer.len();
+    // SAFETY: `name` is NUL terminated and `buffer`/`size` describe our own
+    // storage, which the kernel fills in.
+    let rc = unsafe {
+        libc::sysctlbyname(
+            name.as_ptr(),
+            buffer.as_mut_ptr() as *mut c_void,
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if rc == 0 && size >= 24 {
+        swap_usage_from(&buffer)
+    } else {
+        (0, 0)
+    }
+}
+
+/// Pure core of [`swap_usage`]: the first three little-endian `u64`s.
+fn swap_usage_from(raw: &[u8]) -> (u64, u64) {
+    let read = |index: usize| {
+        raw.get(index * 8..index * 8 + 8)
+            .map(|chunk| u64::from_le_bytes(chunk.try_into().unwrap_or([0; 8])))
+            .unwrap_or(0)
+    };
+    (read(0), read(1))
+}
+
+/// Memory pressure from `kern.memorystatus_vm_pressure_level`.
+///
+/// The kernel reports 1..=4 (normal, warning, critical, and a fourth level
+/// that behaves like critical for our purposes); missing means the sysctl is
+/// not present on this kernel, which we surface as `None` rather than a guess.
+fn memory_pressure() -> Option<PressureLevel> {
+    memory_pressure_from(sysctl_int("kern.memorystatus_vm_pressure_level"))
+}
+
+/// Pure core of [`memory_pressure`], injectable for tests.
+fn memory_pressure_from(level: Option<usize>) -> Option<PressureLevel> {
+    match level? {
+        1 => Some(PressureLevel::Normal),
+        2 => Some(PressureLevel::Warning),
+        _ => Some(PressureLevel::Critical),
+    }
+}
+
 /// Trait object helper.
 pub fn manager() -> std::sync::Arc<dyn SystemManager> {
     std::sync::Arc::new(MacosSystem::new())
@@ -183,6 +247,35 @@ pub fn as_manager() -> std::sync::Arc<dyn SystemManager> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn swap_usage_parses_the_binary_sysctl() {
+        // `struct swapusage`: total, used, free as u64 byte counts plus flags.
+        let mut raw = vec![0u8; 32];
+        raw[0..8].copy_from_slice(&(3072u64 * 1024 * 1024).to_le_bytes());
+        raw[8..16].copy_from_slice(&((12.5 * 1024.0 * 1024.0) as u64).to_le_bytes());
+        let (total, used) = swap_usage_from(&raw);
+        assert_eq!(total, 3072 * 1024 * 1024);
+        assert_eq!(used, (12.5 * 1024.0 * 1024.0) as u64);
+        assert_eq!(swap_usage_from(&[]), (0, 0));
+    }
+
+    #[test]
+    fn pressure_levels_map_from_the_kernel_scale() {
+        assert_eq!(
+            memory_pressure_from(Some(1)),
+            Some(PressureLevel::Normal)
+        );
+        assert_eq!(
+            memory_pressure_from(Some(2)),
+            Some(PressureLevel::Warning)
+        );
+        assert_eq!(
+            memory_pressure_from(Some(4)),
+            Some(PressureLevel::Critical)
+        );
+        assert_eq!(memory_pressure_from(None), None);
+    }
 
     #[test]
     fn product_version_looks_like_a_version() {

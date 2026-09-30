@@ -13,7 +13,9 @@ use windows_sys::Win32::System::SystemInformation::{
     SYSTEM_LOGICAL_PROCESSOR_INFORMATION,
 };
 use x_core::error::Result;
-use x_core::system::{CpuUsage, MemoryUsage, OsFamily, SystemInfo, SystemManager};
+use x_core::system::{
+    CpuUsage, MemoryUsage, OsFamily, PressureLevel, SystemInfo, SystemManager,
+};
 
 /// Reads Windows system facts.
 #[derive(Debug, Default)]
@@ -88,7 +90,32 @@ impl SystemManager for WindowsSystem {
             used_bytes: total.saturating_sub(available),
             available_bytes: available,
             percent: percent(total.saturating_sub(available), total),
+            // sysinfo reads the committed page file here, the Windows shape of swap.
+            swap_total_bytes: info.total_swap(),
+            swap_used_bytes: info.used_swap(),
+            pressure: memory_pressure(total.saturating_sub(available), total),
         })
+    }
+}
+
+/// Memory pressure from the physical load percentage.
+///
+/// Windows has no single kernel knob that spells "pressure" as a level (the
+/// memory manager decides internally), so the load percentage stands in — the
+/// same signal Task Manager colors its graph with. `0/0` (unknown) stays off
+/// the scale and returns `None`.
+fn memory_pressure(used: u64, total: u64) -> Option<PressureLevel> {
+    Some(pressure_from_load(percent(used, total)))
+}
+
+/// Pure core of [`memory_pressure`], injectable for tests.
+fn pressure_from_load(load: f32) -> PressureLevel {
+    if load >= 95.0 {
+        PressureLevel::Critical
+    } else if load >= 90.0 {
+        PressureLevel::Warning
+    } else {
+        PressureLevel::Normal
     }
 }
 
@@ -298,6 +325,14 @@ pub fn manager() -> std::sync::Arc<dyn SystemManager> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn load_percentages_map_to_pressure_levels() {
+        assert_eq!(pressure_from_load(89.9), PressureLevel::Normal);
+        assert_eq!(pressure_from_load(90.0), PressureLevel::Warning);
+        assert_eq!(pressure_from_load(94.9), PressureLevel::Warning);
+        assert_eq!(pressure_from_load(95.0), PressureLevel::Critical);
+    }
 
     #[test]
     fn records_are_walked_by_their_own_size_field() {

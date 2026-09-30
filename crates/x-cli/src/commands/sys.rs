@@ -167,6 +167,19 @@ pub fn mem(context: &SystemContext, renderer: &mut Renderer) -> Result<i32> {
         "available",
         x_core::format_bytes(usage.available_bytes)
     ]);
+    if usage.swap_total_bytes > 0 {
+        table.push(row![
+            "swap",
+            format!(
+                "{} used of {}",
+                x_core::format_bytes(usage.swap_used_bytes),
+                x_core::format_bytes(usage.swap_total_bytes)
+            ),
+        ]);
+    }
+    if let Some(pressure) = usage.pressure {
+        table.push(row!["pressure", pressure.to_string()]);
+    }
     renderer.table(&table)?;
     Ok(0)
 }
