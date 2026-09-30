@@ -7,7 +7,56 @@
 use crate::common::process_sysinfo::SysinfoProcess;
 use std::collections::HashMap;
 use x_core::error::Result;
-use x_core::process::{ProcessInfo, ProcessListOptions, ProcessManager};
+use x_core::process::{ProcessConnection, ProcessInfo, ProcessListOptions, ProcessManager};
+
+/// Open files of `pid`: the vnode symlinks in `/proc/<pid>/fd`.
+///
+/// Descriptors owned by other users are simply not readable, which is the
+/// same permission boundary the port adapter draws for sockets.
+fn open_files(pid: u32) -> Vec<String> {
+    let dir = std::path::Path::new("/proc").join(pid.to_string()).join("fd");
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut paths: Vec<String> = entries
+        .flatten()
+        .filter_map(|entry| std::fs::read_link(entry.path()).ok())
+        .map(|target| target.to_string_lossy().into_owned())
+        .filter(|target| !target.starts_with("socket:") && !target.starts_with("pipe:"))
+        .take(256)
+        .collect();
+    paths.sort();
+    paths
+}
+
+/// TCP/UDP connections of `pid`, joined from `/proc/net` against `/proc/<pid>/fd`.
+fn connections(pid: u32) -> Vec<ProcessConnection> {
+    fn format_endpoint(address: std::net::IpAddr, port: u16) -> String {
+        format!("{address}:{port}")
+    }
+
+    let port = super::port::LinuxPort::new();
+    let mut rows = Vec::new();
+    for socket in port.list_raw().unwrap_or_default() {
+        if socket.pid != Some(pid as i32) {
+            continue;
+        }
+        rows.push(ProcessConnection {
+            protocol: match socket.protocol {
+                x_core::port::Protocol::Tcp => "tcp".into(),
+                x_core::port::Protocol::Udp => "udp".into(),
+                // `/proc/net` only yields TCP and UDP; unix/other never reach here.
+                _ => continue,
+            },
+            local: format_endpoint(socket.local_address, socket.local_port),
+            remote: match (socket.remote_address, socket.remote_port) {
+                (Some(address), Some(port)) => format_endpoint(address, port),
+                _ => String::new(),
+            },
+        });
+    }
+    rows
+}
 
 /// Reads Linux processes.
 #[derive(Debug, Default)]
@@ -70,6 +119,8 @@ impl ProcessManager for LinuxProcess {
         if row.parent_pid.is_none() {
             row.parent_pid = parents().get(&pid).copied();
         }
+        row.open_files = Some(open_files(pid));
+        row.connections = Some(connections(pid));
         Ok(row)
     }
 

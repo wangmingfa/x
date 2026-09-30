@@ -163,6 +163,10 @@ pub fn stub_process(pid: u32, parent: Option<u32>, name: &str) -> ProcessInfo {
         threads: Some(1),
         start_time: None,
         state: ProcessState::Running,
+        cwd: None,
+        open_files: None,
+        connections: None,
+        environment: None,
     }
 }
 

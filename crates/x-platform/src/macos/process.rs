@@ -5,7 +5,66 @@
 //! executable path via `proc_pidpath` and the owner user via `sysctl`.
 
 use crate::common::process_sysinfo::SysinfoProcess;
-use x_core::process::ProcessManager;
+use x_core::process::{ProcessConnection, ProcessManager};
+
+/// Open files of `pid`, paths only, capped for output sanity.
+///
+/// Only vnode descriptors carry a path; sockets and pipes show up as
+/// connections or are skipped. Unreadable descriptors (other user's files)
+/// are simply absent, the same permission boundary `lsof` draws.
+fn open_files(pid: u32) -> Vec<String> {
+    let pid = pid as i32;
+    crate::macos::libproc::list_fds(pid)
+        .into_iter()
+        .filter(|fd| fd.proc_fdtype == crate::macos::libproc::PROX_FDTYPE_VNODE)
+        .filter_map(|fd| crate::macos::libproc::fd_path(pid, fd.proc_fd))
+        .take(256)
+        .collect()
+}
+
+/// TCP/UDP connections of `pid`, from the per-descriptor socket info.
+fn connections(pid: u32) -> Vec<ProcessConnection> {
+    use crate::macos::libproc::{self, SOCKINFO_IN, SOCKINFO_TCP};
+
+    fn address(raw: [u8; 16], port: u16) -> String {
+        use std::net::{Ipv4Addr, Ipv6Addr};
+        if raw[..12].iter().all(|b| *b == 0) {
+            format!(
+                "{}:{port}",
+                Ipv4Addr::new(raw[12], raw[13], raw[14], raw[15])
+            )
+        } else {
+            format!("{}:{port}", Ipv6Addr::from(raw))
+        }
+    }
+
+    let pid = pid as i32;
+    let mut rows = Vec::new();
+    for fd in libproc::list_fds(pid) {
+        if fd.proc_fdtype != libproc::PROX_FDTYPE_SOCKET {
+            continue;
+        }
+        let Some(details) = libproc::socket_info(pid, fd.proc_fd) else {
+            continue;
+        };
+        let protocol = match details.kind {
+            SOCKINFO_TCP => "tcp",
+            SOCKINFO_IN => "udp",
+            _ => continue,
+        };
+        // The remote port is already byte swapped; a zero peer means listener.
+        rows.push(ProcessConnection {
+            protocol: protocol.into(),
+            local: address(details.local_address, details.local_port),
+            remote: if details.remote_port == 0 {
+                String::new()
+            } else {
+                address(details.remote_address, details.remote_port)
+            },
+        });
+    }
+    rows
+}
 
 /// macOS process manager.
 #[derive(Debug, Default)]
@@ -35,7 +94,10 @@ impl ProcessManager for MacosProcess {
     }
 
     fn get(&self, pid: u32) -> x_core::error::Result<x_core::process::ProcessInfo> {
-        self.inner.get(pid)
+        let mut info = self.inner.get(pid)?;
+        info.open_files = Some(open_files(pid));
+        info.connections = Some(connections(pid));
+        Ok(info)
     }
 }
 

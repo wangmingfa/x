@@ -35,6 +35,9 @@ pub const PROC_PIDTASKALLINFO: c_int = 2;
 /// here while `PROC_PIDLISTFDS` is `1` in the `proc_pidinfo` namespace.
 pub const PROC_PIDFDSOCKETINFO: c_int = 3;
 
+/// `proc_pidfdinfo` flavor: descriptor path via `vnode_fdinfowithpath`.
+pub const PROC_PIDFDVNODEPATHINFO: c_int = 2;
+
 /// `socket_info.soi_kind` discriminants.
 pub const SOCKINFO_GENERIC: c_int = 0;
 pub const SOCKINFO_IN: c_int = 1;
@@ -83,6 +86,15 @@ pub const OFF_INI_FADDR: usize = OFF_PROTO + 32;
 pub const OFF_INI_LADDR: usize = OFF_PROTO + 48;
 /// `offsetof(struct tcp_sockinfo, tcpsi_state)`.
 pub const OFF_TCP_STATE: usize = OFF_PROTO + 80;
+
+/// `sizeof(struct vnode_fdinfowithpath)` on the installed SDK.
+pub const VNODE_PATH_FDINFO_SIZE: usize = 1200;
+/// `offsetof(struct vnode_fdinfowithpath, pvip.vip_path)`.
+///
+/// `pvip` starts at 24 (after `proc_fileinfo`), `vip_path` at 152 inside it.
+pub const OFF_FD_PATH: usize = 24 + 152;
+/// `PATH_MAX`, the size of `vip_path`.
+pub const FD_PATH_MAX: usize = 1024;
 
 /// One entry of a process descriptor table.
 #[repr(C)]
@@ -155,6 +167,34 @@ pub fn list_pids() -> Vec<i32> {
     pids.sort_unstable();
     pids.dedup();
     pids
+}
+
+/// Path of one descriptor, or `None` when it is not a vnode or is unreadable.
+///
+/// Uses `PROC_PIDFDVNODEPATHINFO`, the flavor that carries
+/// `vnode_fdinfowithpath` — the plain vnode flavor leaves the path out and
+/// would force a second, larger read.
+pub fn fd_path(pid: i32, fd: i32) -> Option<String> {
+    let mut buffer = [0u8; VNODE_PATH_FDINFO_SIZE];
+    // SAFETY: the buffer matches `sizeof(struct vnode_fdinfowithpath)`.
+    let written = unsafe {
+        proc_pidfdinfo(
+            pid,
+            fd,
+            PROC_PIDFDVNODEPATHINFO,
+            buffer.as_mut_ptr() as *mut c_void,
+            VNODE_PATH_FDINFO_SIZE as c_int,
+        )
+    };
+    if (written as usize) < VNODE_PATH_FDINFO_SIZE {
+        return None;
+    }
+    let path = &buffer[OFF_FD_PATH..OFF_FD_PATH + FD_PATH_MAX];
+    let end = path.iter().position(|b| *b == 0).unwrap_or(0);
+    if end == 0 {
+        return None;
+    }
+    String::from_utf8(path[..end].to_vec()).ok()
 }
 
 /// Every descriptor owned by `pid`.

@@ -30,7 +30,15 @@ pub enum PsCommand {
     List(PsListArgs),
 
     /// Show the process tree instead of a flat list.
-    Tree(PsListArgs),
+    Tree {
+        /// Listing filters.
+        #[command(flatten)]
+        args: PsListArgs,
+
+        /// Collapse processes that have children into a single row.
+        #[arg(long, short = 'c')]
+        collapsed: bool,
+    },
 
     /// Detail for one pid.
     Show {
@@ -134,7 +142,7 @@ pub fn dispatch(
     };
     match command {
         PsCommand::List(args) => list(context, renderer, &args.options()),
-        PsCommand::Tree(args) => tree(context, renderer, &args.options()),
+        PsCommand::Tree { args, collapsed } => tree(context, renderer, &args.options(), *collapsed),
         PsCommand::Show { pid } => show(context, renderer, *pid),
         PsCommand::Kill { pid, signal, yes } => kill(
             context,
@@ -180,6 +188,7 @@ pub fn tree(
     context: &SystemContext,
     renderer: &mut Renderer,
     options: &ProcessListOptions,
+    collapsed: bool,
 ) -> Result<i32> {
     let tree = context.process.tree(options)?;
     if renderer.format() == OutputFormat::Json {
@@ -189,7 +198,11 @@ pub fn tree(
 
     let mut table = Table::new(["pid", "ppid", "cpu%", "mem", "name"]);
     for node in &tree.roots {
-        walk(node, 0, &mut table);
+        if collapsed {
+            walk_collapsed(node, 0, &mut table);
+        } else {
+            walk(node, 0, &mut table);
+        }
     }
     renderer.table(&table)?;
     Ok(0)
@@ -210,6 +223,31 @@ fn walk(node: &ProcessNode, depth: usize, table: &mut Table) {
     for child in &node.children {
         walk(child, depth + 1, table);
     }
+}
+
+/// Collapsed tree: a node with children becomes one row that names the
+/// hidden subtree size, so a deep daemon chain fits on one screen.
+fn walk_collapsed(node: &ProcessNode, depth: usize, table: &mut Table) {
+    let indent = "  ".repeat(depth);
+    let name = if node.children.is_empty() {
+        node.process.name.clone()
+    } else {
+        format!(
+            "{} (+{} hidden)",
+            node.process.name,
+            node.depth_total() - 1
+        )
+    };
+    table.push(row![
+        node.process.pid.to_string(),
+        node.process
+            .parent_pid
+            .map(|p| p.to_string())
+            .unwrap_or_default(),
+        format!("{indent}{}", cpu(&node.process)),
+        memory(&node.process),
+        name,
+    ]);
 }
 
 /// Detail for a single process.
@@ -242,6 +280,39 @@ pub fn show(context: &SystemContext, renderer: &mut Renderer, pid: u32) -> Resul
     }
     if let Some(mem) = process.memory_bytes {
         table.push(row!["memory", x_core::format_bytes(mem)]);
+    }
+    if let Some(cwd) = &process.cwd {
+        table.push(row!["cwd", cwd.clone()]);
+    }
+    if let Some(connections) = &process.connections {
+        if !connections.is_empty() {
+            let mut table = Table::new(["proto", "local", "remote"]);
+            for connection in connections {
+                table.push(row![
+                    connection.protocol.clone(),
+                    connection.local.clone(),
+                    connection.remote.clone(),
+                ]);
+            }
+            renderer.line("connections")?;
+            renderer.table(&table)?;
+        }
+    }
+    if let Some(files) = &process.open_files {
+        if !files.is_empty() {
+            renderer.line(format!("open files ({})", files.len()))?;
+            for file in files {
+                renderer.line(format!("  {file}"))?;
+            }
+        }
+    }
+    if let Some(environment) = &process.environment {
+        if !environment.is_empty() {
+            renderer.line("environment")?;
+            for (key, value) in environment {
+                renderer.line(format!("  {key}={value}"))?;
+            }
+        }
     }
     renderer.table(&table)?;
     Ok(0)

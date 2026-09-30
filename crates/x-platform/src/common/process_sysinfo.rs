@@ -287,7 +287,49 @@ fn to_info(pid: Pid, process: &sysinfo::Process, with_usage: bool) -> ProcessInf
         threads: process.tasks().map(|t| t.len() as u32),
         start_time: Some(process.start_time()),
         state: to_state(process.status()),
+        cwd: None,
+        open_files: None,
+        connections: None,
+        environment: None,
     }
+}
+
+/// Deep per-process fields (CWD, open files, connections, environment).
+///
+/// Every field is expensive or permission sensitive — sysinfo reads
+/// `/proc/<pid>/fd` style data per entry on Unix and needs elevated access on
+/// Windows — so this runs only for a single-pid detail view, never in list.
+fn refresh_deep(system: &mut System, pid: u32) {
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[Pid::from_u32(pid)]),
+        true,
+        ProcessRefreshKind::everything(),
+    );
+}
+
+/// Attach the deep fields of one process onto a light snapshot row.
+///
+/// Empty OS-level results stay empty rather than `None`: we cannot tell a
+/// refused read (no permission) from a real empty set, and hiding the field
+/// would make `ps show` look like the platform has nothing to say at all.
+/// Open-file lists and per-process connections are platform-native hooks:
+/// sysinfo only counts file descriptors and has no per-process socket table,
+/// so the platform adapters fill those two in their own `get`.
+fn attach_details(info: &mut ProcessInfo, process: &sysinfo::Process) {
+    info.cwd = process
+        .cwd()
+        .map(|path| path.to_string_lossy().into_owned());
+    info.environment = Some(
+        process
+            .environ()
+            .iter()
+            .filter_map(|entry| {
+                let entry = entry.to_string_lossy();
+                let (key, value) = entry.split_once('=')?;
+                Some((key.to_string(), value.to_string()))
+            })
+            .collect(),
+    );
 }
 
 fn command_line(process: &sysinfo::Process) -> Option<String> {
@@ -356,10 +398,22 @@ impl ProcessManager for SysinfoProcess {
     }
 
     fn get(&self, pid: u32) -> Result<ProcessInfo> {
-        self.snapshot(&ProcessListOptions::light())?
+        let mut info = self
+            .snapshot(&ProcessListOptions::light())?
             .into_iter()
             .find(|p| p.pid == pid)
-            .ok_or_else(|| Error::not_found(format!("process {pid} not found")))
+            .ok_or_else(|| Error::not_found(format!("process {pid} not found")))?;
+        // Deep fields need their own refresh pass; the shared cache keeps it
+        // so repeated `ps show` calls do not re-read everything.
+        let mut system = self
+            .system
+            .lock()
+            .map_err(|_| Error::system("process cache poisoned"))?;
+        refresh_deep(&mut system, pid);
+        if let Some(process) = system.process(Pid::from_u32(pid)) {
+            attach_details(&mut info, process);
+        }
+        Ok(info)
     }
 }
 

@@ -41,6 +41,12 @@ impl ProcessManager for WindowsProcess {
         if row.user.is_none() {
             row.user = super::account_name(pid);
         }
+        // Open files and per-process connections need driver-level or elevated
+        // APIs on Windows (NtQuerySystemInformation / Restart Manager); until
+        // those are wired, report an empty set instead of pretending the
+        // process has none of either.
+        row.open_files = Some(Vec::new());
+        row.connections = Some(Vec::new());
         Ok(row)
     }
 

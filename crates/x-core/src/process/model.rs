@@ -130,6 +130,32 @@ pub struct ProcessInfo {
     pub start_time: Option<u64>,
     /// Lifecycle state.
     pub state: ProcessState,
+    /// Working directory when the platform exposes it. Populated only for
+    /// detail views: walking `/proc`-style CWDs for every process is expensive.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// Open file paths when the platform exposes them. Populated only for
+    /// detail views and capped, a chatty process can hold thousands.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub open_files: Option<Vec<String>>,
+    /// Network connections held by this process.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub connections: Option<Vec<ProcessConnection>>,
+    /// Environment variables when the platform exposes them. Populated only
+    /// for detail views.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub environment: Option<std::collections::BTreeMap<String, String>>,
+}
+
+/// A network connection owned by a process, in source/destination form.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProcessConnection {
+    /// Protocol name, e.g. `tcp` or `udp`.
+    pub protocol: String,
+    /// Local address as `ip:port`.
+    pub local: String,
+    /// Remote address as `ip:port`, empty for a listener.
+    pub remote: String,
 }
 
 impl ProcessInfo {
@@ -349,6 +375,10 @@ mod tests {
             threads: None,
             start_time: None,
             state: ProcessState::Running,
+            cwd: None,
+            open_files: None,
+            connections: None,
+            environment: None,
         }
     }
 
