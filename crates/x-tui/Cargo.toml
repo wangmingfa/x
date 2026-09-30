@@ -1,0 +1,15 @@
+[package]
+name = "x-tui"
+description = "Interactive terminal frontend for x, built on the same x-core context as the CLI"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+x-core = { workspace = true }
+crossterm = { workspace = true }
+ratatui = { workspace = true }
+unicode-width = { workspace = true }

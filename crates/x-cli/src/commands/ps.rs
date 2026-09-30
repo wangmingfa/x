@@ -1,0 +1,360 @@
+//! `x ps`: process listing, detail, tree and termination.
+
+use clap::Subcommand;
+use x_core::error::Result;
+use x_core::process::{ProcessInfo, ProcessListOptions, ProcessNode, ProcessSort};
+use x_core::KillSignal;
+use x_core::SystemContext;
+
+use crate::format::{clip, Confirmer, OutputFormat, Renderer, Table};
+use crate::{row, SignalArg};
+
+/// Width of the command column in the human format. `--json` keeps it whole.
+const COMMAND_WIDTH: usize = 56;
+
+/// `x ps`: an optional search term plus flags, with subcommands for the rest.
+#[derive(Debug, clap::Args)]
+pub struct PsArgs {
+    /// Subcommand. Omitted means "list processes".
+    #[command(subcommand)]
+    pub command: Option<PsCommand>,
+    /// Listing filters, used without a subcommand.
+    #[command(flatten)]
+    pub list: PsListArgs,
+}
+
+/// `x ps` subcommands.
+#[derive(Debug, Subcommand)]
+pub enum PsCommand {
+    /// List processes, busiest first. Accepts an optional search term.
+    List(PsListArgs),
+
+    /// Show the process tree instead of a flat list.
+    Tree(PsListArgs),
+
+    /// Detail for one pid.
+    Show {
+        /// Process id.
+        pid: u32,
+    },
+
+    /// Terminate one process by pid.
+    Kill {
+        /// Process id.
+        pid: u32,
+        /// Signal to deliver.
+        #[arg(long, value_enum, default_value_t = SignalArg::Term)]
+        signal: SignalArg,
+        /// Do not ask for confirmation.
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
+
+    /// Terminate every process whose name matches.
+    KillByName {
+        /// Process name substring.
+        name: String,
+        /// Signal to deliver.
+        #[arg(long, value_enum, default_value_t = SignalArg::Term)]
+        signal: SignalArg,
+        /// Do not ask for confirmation.
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
+}
+
+/// Listing filters.
+#[derive(Debug, Default, clap::Args)]
+pub struct PsListArgs {
+    /// Case insensitive substring of name, command line or executable.
+    pub search: Option<String>,
+    /// Only processes owned by this user.
+    #[arg(long)]
+    pub user: Option<String>,
+    /// Sort key.
+    #[arg(long, value_enum, default_value_t = SortArg::Cpu)]
+    pub sort: SortArg,
+    /// Maximum number of rows.
+    #[arg(long)]
+    pub limit: Option<usize>,
+    /// Skip CPU and memory accounting for a cheaper snapshot.
+    #[arg(long)]
+    pub light: bool,
+}
+
+/// Sort key values.
+#[derive(Debug, Clone, Copy, Default, clap::ValueEnum)]
+pub enum SortArg {
+    /// Highest CPU usage first.
+    #[default]
+    Cpu,
+    /// Highest resident memory first.
+    Memory,
+    /// Process id.
+    Pid,
+    /// Process name.
+    Name,
+    /// Oldest process first.
+    StartTime,
+}
+
+impl From<SortArg> for ProcessSort {
+    fn from(value: SortArg) -> Self {
+        match value {
+            SortArg::Cpu => ProcessSort::Cpu,
+            SortArg::Memory => ProcessSort::Memory,
+            SortArg::Pid => ProcessSort::Pid,
+            SortArg::Name => ProcessSort::Name,
+            SortArg::StartTime => ProcessSort::StartTime,
+        }
+    }
+}
+
+impl PsListArgs {
+    fn options(&self) -> ProcessListOptions {
+        ProcessListOptions {
+            search: self.search.clone(),
+            user: self.user.clone(),
+            sort: self.sort.into(),
+            limit: self.limit,
+            with_usage: !self.light,
+        }
+    }
+}
+
+/// Route a `x ps` invocation.
+pub fn dispatch(
+    context: &SystemContext,
+    renderer: &mut Renderer,
+    confirmer: &mut dyn Confirmer,
+    args: &PsArgs,
+) -> Result<i32> {
+    let Some(command) = &args.command else {
+        return list(context, renderer, &args.list.options());
+    };
+    match command {
+        PsCommand::List(args) => list(context, renderer, &args.options()),
+        PsCommand::Tree(args) => tree(context, renderer, &args.options()),
+        PsCommand::Show { pid } => show(context, renderer, *pid),
+        PsCommand::Kill { pid, signal, yes } => kill(
+            context,
+            renderer,
+            confirmer,
+            vec![*pid],
+            (*signal).into(),
+            *yes,
+        ),
+        PsCommand::KillByName { name, signal, yes } => {
+            let pids: Vec<u32> = context
+                .process
+                .find(name)?
+                .into_iter()
+                .map(|p| p.pid)
+                .collect();
+            kill(context, renderer, confirmer, pids, (*signal).into(), *yes)
+        }
+    }
+}
+
+/// Flat process list.
+pub fn list(
+    context: &SystemContext,
+    renderer: &mut Renderer,
+    options: &ProcessListOptions,
+) -> Result<i32> {
+    let rows = context.process.list(options)?;
+    if renderer.format() == OutputFormat::Json {
+        renderer.always_json(&rows)?;
+    } else {
+        let mut table = Table::new(["pid", "user", "cpu%", "mem", "name", "command"]);
+        for row in &rows {
+            table.push(process_row(row));
+        }
+        renderer.table(&table)?;
+    }
+    Ok(0)
+}
+
+/// Parent/child tree, useful to see what a daemon spawned.
+pub fn tree(
+    context: &SystemContext,
+    renderer: &mut Renderer,
+    options: &ProcessListOptions,
+) -> Result<i32> {
+    let tree = context.process.tree(options)?;
+    if renderer.format() == OutputFormat::Json {
+        renderer.always_json(&tree)?;
+        return Ok(0);
+    }
+
+    let mut table = Table::new(["pid", "ppid", "cpu%", "mem", "name"]);
+    for node in &tree.roots {
+        walk(node, 0, &mut table);
+    }
+    renderer.table(&table)?;
+    Ok(0)
+}
+
+fn walk(node: &ProcessNode, depth: usize, table: &mut Table) {
+    let indent = "  ".repeat(depth);
+    table.push(row![
+        node.process.pid.to_string(),
+        node.process
+            .parent_pid
+            .map(|p| p.to_string())
+            .unwrap_or_default(),
+        format!("{indent}{}", cpu(&node.process)),
+        memory(&node.process),
+        node.process.name.clone(),
+    ]);
+    for child in &node.children {
+        walk(child, depth + 1, table);
+    }
+}
+
+/// Detail for a single process.
+pub fn show(context: &SystemContext, renderer: &mut Renderer, pid: u32) -> Result<i32> {
+    let process = context.process.get(pid)?;
+    if renderer.format() == OutputFormat::Json {
+        renderer.always_json(&process)?;
+        return Ok(0);
+    }
+    let mut table = Table::new(["field", "value"]);
+    table.push(row!["pid", process.pid.to_string()]);
+    if let Some(parent) = process.parent_pid {
+        table.push(row!["ppid", parent.to_string()]);
+    }
+    table.push(row!["name", process.name.clone()]);
+    if let Some(exe) = &process.executable {
+        table.push(row!["executable", exe.clone()]);
+    }
+    if let Some(user) = &process.user {
+        table.push(row!["user", user.clone()]);
+    }
+    if let Some(command) = &process.command_line {
+        table.push(row!["command", command.clone()]);
+    }
+    if let Some(threads) = process.threads {
+        table.push(row!["threads", threads.to_string()]);
+    }
+    if let Some(cpu) = process.cpu_usage {
+        table.push(row!["cpu%", format!("{cpu:.1}")]);
+    }
+    if let Some(mem) = process.memory_bytes {
+        table.push(row!["memory", x_core::format_bytes(mem)]);
+    }
+    renderer.table(&table)?;
+    Ok(0)
+}
+
+/// Terminate the given pids after showing what was selected.
+fn kill(
+    context: &SystemContext,
+    renderer: &mut Renderer,
+    confirmer: &mut dyn Confirmer,
+    pids: Vec<u32>,
+    signal: KillSignal,
+    assume_yes: bool,
+) -> Result<i32> {
+    let json = renderer.format() == OutputFormat::Json;
+
+    if pids.is_empty() {
+        let victims: Vec<ProcessInfo> = Vec::new();
+        if json {
+            renderer.always_json(&KillReport {
+                victims: &victims,
+                killed: 0,
+                failures: &[],
+                aborted: false,
+            })?;
+        } else {
+            renderer.line("no matching process")?;
+        }
+        return Ok(3);
+    }
+
+    let victims: Vec<ProcessInfo> = pids
+        .iter()
+        .filter_map(|pid| context.process.get(*pid).ok())
+        .collect();
+
+    if !json {
+        let mut table = Table::new(["pid", "user", "cpu%", "mem", "name", "command"]);
+        for row in &victims {
+            table.push(process_row(row));
+        }
+        renderer.table(&table)?;
+    }
+
+    if !assume_yes {
+        let question = format!("kill {} process(es)?", victims.len());
+        if !super::port::confirm_or_fail(confirmer, &question)? {
+            if json {
+                renderer.always_json(&KillReport {
+                    victims: &victims,
+                    killed: 0,
+                    failures: &[],
+                    aborted: true,
+                })?;
+            } else {
+                renderer.line("aborted")?;
+            }
+            return Ok(130);
+        }
+    }
+
+    let failures = context.process.kill_many(&pids, signal)?;
+    let killed = pids.len() - failures.len();
+    let messages: Vec<String> = failures.iter().map(|f| f.message().to_string()).collect();
+
+    if json {
+        renderer.always_json(&KillReport {
+            victims: &victims,
+            killed,
+            failures: &messages,
+            aborted: false,
+        })?;
+    } else {
+        renderer.line(format!("killed {killed} of {} process(es)", pids.len()))?;
+        for message in &messages {
+            renderer.line(format!("failed: {message}"))?;
+        }
+    }
+    Ok(if failures.is_empty() { 0 } else { 1 })
+}
+
+/// Result of `x ps kill`, as a single JSON document.
+#[derive(Debug, serde::Serialize)]
+struct KillReport<'a> {
+    victims: &'a [ProcessInfo],
+    killed: usize,
+    failures: &'a [String],
+    aborted: bool,
+}
+
+fn process_row(row: &ProcessInfo) -> Vec<crate::format::Cell> {
+    row![
+        row.pid.to_string(),
+        row.user.clone().unwrap_or_else(|| "-".into()),
+        cpu(row),
+        memory(row),
+        row.name.clone(),
+        row.command_line
+            .as_deref()
+            .map(|cmd| clip(cmd, COMMAND_WIDTH))
+            .unwrap_or_default(),
+    ]
+}
+
+fn cpu(row: &ProcessInfo) -> String {
+    match row.cpu_usage {
+        Some(value) if row.cpu_usage.is_some() => format!("{value:.1}"),
+        _ => "-".into(),
+    }
+}
+
+fn memory(row: &ProcessInfo) -> String {
+    row.memory_bytes
+        .map(x_core::format_bytes)
+        .unwrap_or_default()
+}

@@ -1,0 +1,12 @@
+//! Adapters shared by more than one platform.
+//!
+//! These still live in `x-platform`: only `x-core` must stay OS agnostic. The
+//! difference is that these implementations rely on `sysinfo`, which already
+//! speaks to every kernel we support, so there is no reason to duplicate them
+//! per OS.
+
+pub mod disk_sysinfo;
+pub mod process_sysinfo;
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub mod ifaddrs;

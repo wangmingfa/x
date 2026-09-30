@@ -1,0 +1,19 @@
+[package]
+name = "x-app"
+description = "The x binary: a thin entry point around x-cli and x-tui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "x"
+path = "src/main.rs"
+
+[dependencies]
+x-cli = { workspace = true }
+x-core = { workspace = true }
+x-tui = { workspace = true }
+x-platform = { workspace = true }
