@@ -17,6 +17,28 @@ cargo build -p x-app
 
 产物为 `target/debug/x`（或 `release/x`）。
 
+## 安装
+
+从源码构建并安装（需要 Rust 工具链）：
+
+```sh
+# macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/xsys/x/main/scripts/install.sh | sh
+
+# Windows (PowerShell)
+iwr https://raw.githubusercontent.com/xsys/x/main/scripts/install.ps1 -OutFile install.ps1
+.\install.ps1 -AddToPath
+```
+
+脚本会克隆仓库、`cargo build --release -p x-app` 并把二进制拷到 `PREFIX/bin`
+（默认 `/usr/local/bin`；Windows 默认 `%LOCALAPPDATA%\x`），并提示把该目录加入 PATH。
+
+- **Homebrew**：见 [`Packaging/Homebrew/README.md`](Packaging/Homebrew/README.md)，
+  `brew tap xsys/tap && brew install --head x`。
+- **Windows 安装包**：见 [`Packaging/Windows/x.iss`](Packaging/Windows/x.iss)
+  （Inno Setup 脚本，CI 在打 tag 时自动编译成 `x-*-windows-x86_64-setup.exe`）。
+- 打 tag 触发 `.github/workflows/release.yml` 构建三平台二进制与 Windows 安装包并发布 GitHub Release。
+
 ## 当前功能
 
 ### 端口（`x port`）
@@ -414,5 +436,5 @@ GitHub Actions CI 在 Ubuntu / macOS / Windows 三平台上跑格式、clippy
 - [x] shell 补全：`x completion bash|zsh|fish|powershell|elvish`
 - [x] man 页与帮助生成
 - [x] Dry run：`--dry-run` 先说明将执行的操作（与确认机制互补）
-- [ ] 打包分发：install 脚本 / Homebrew tap / Windows 安装包
+- [x] 打包分发：install 脚本 / Homebrew tap / Windows 安装包
 - [ ] 各平台原生运行时的持续回归（CI 已覆盖，需结合真实故障复现）
