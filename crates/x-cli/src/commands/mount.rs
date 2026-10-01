@@ -130,6 +130,9 @@ pub fn dispatch(
                     return Err(Error::invalid_input("aborted by user"));
                 }
             }
+            if crate::dry_run_guard(renderer, &format!("mount {source} at {target}"))? {
+                return Ok(0);
+            }
             mount.mount(source, target)?;
             renderer.line(format!("mounted {source} at {target}"))?;
         }
@@ -139,6 +142,9 @@ pub fn dispatch(
                 if !confirmer.confirm("continue?")? {
                     return Err(Error::invalid_input("aborted by user"));
                 }
+            }
+            if crate::dry_run_guard(renderer, &format!("unmount {target}"))? {
+                return Ok(0);
             }
             mount.unmount(target)?;
             renderer.line(format!("unmounted {target}"))?;

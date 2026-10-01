@@ -114,6 +114,12 @@ pub fn dispatch(
             }
             let hosts = load(&path)?;
             let new_text = x_core::hostsfile::add(&hosts, ip, names, comment.as_deref());
+            if crate::dry_run_guard(
+                renderer,
+                &format!("add {} -> {ip} to {}", names.join(", "), path.display()),
+            )? {
+                return Ok(0);
+            }
             confirm_write(renderer, *yes, &path, &new_text)?;
             renderer.line(format!("added {} -> {ip}", names.join(", ")))?;
         }
@@ -123,6 +129,9 @@ pub fn dispatch(
                 renderer.line(format!("{name}: not in {path:?}"))?;
                 return Ok(1);
             };
+            if crate::dry_run_guard(renderer, &format!("remove {name} from {}", path.display()))? {
+                return Ok(0);
+            }
             confirm_write(renderer, *yes, &path, &new_text)?;
             renderer.line(format!("removed {name}"))?;
         }

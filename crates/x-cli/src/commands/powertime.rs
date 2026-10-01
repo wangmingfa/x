@@ -99,11 +99,17 @@ pub fn dispatch_power(
         }
         PowerCommand::Sleep { yes } => {
             confirm(renderer, confirmer, *yes, "sleep")?;
+            if crate::dry_run_guard(renderer, "put this machine to sleep")? {
+                return Ok(0);
+            }
             power.sleep()?;
             renderer.line("sleep requested")?;
         }
         PowerCommand::Shutdown { delay, yes } => {
             confirm(renderer, confirmer, *yes, &format!("shutdown in {delay}s"))?;
+            if crate::dry_run_guard(renderer, &format!("shut this machine down in {delay}s"))? {
+                return Ok(0);
+            }
             power.shutdown(*delay)?;
             renderer.line(format!(
                 "shutdown scheduled in {delay}s (cancel with the OS's own command)"
@@ -111,6 +117,9 @@ pub fn dispatch_power(
         }
         PowerCommand::Reboot { delay, yes } => {
             confirm(renderer, confirmer, *yes, &format!("reboot in {delay}s"))?;
+            if crate::dry_run_guard(renderer, &format!("reboot this machine in {delay}s"))? {
+                return Ok(0);
+            }
             power.reboot(*delay)?;
             renderer.line(format!("reboot scheduled in {delay}s"))?;
         }
@@ -201,6 +210,9 @@ pub fn dispatch_time(
                 if !Confirmer::confirm(&mut stdin_confirmer, "continue?")? {
                     return Err(Error::invalid_input("aborted by user"));
                 }
+            }
+            if crate::dry_run_guard(renderer, "trigger a time sync")? {
+                return Ok(0);
             }
             sync_time(renderer)?;
         }

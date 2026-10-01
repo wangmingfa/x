@@ -77,11 +77,17 @@ pub fn dispatch(
         }
         StartupCommand::Enable { name, yes } => {
             confirm(renderer, confirmer, *yes, &format!("enable {name}"))?;
+            if crate::dry_run_guard(renderer, &format!("enable startup item {name}"))? {
+                return Ok(0);
+            }
             startup.enable(name)?;
             renderer.line(format!("enabled {name}"))?;
         }
         StartupCommand::Disable { name, yes } => {
             confirm(renderer, confirmer, *yes, &format!("disable {name}"))?;
+            if crate::dry_run_guard(renderer, &format!("disable startup item {name}"))? {
+                return Ok(0);
+            }
             startup.disable(name)?;
             renderer.line(format!("disabled {name}"))?;
         }

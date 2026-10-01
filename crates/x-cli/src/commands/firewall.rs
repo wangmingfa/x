@@ -122,6 +122,12 @@ pub fn dispatch(
                 args.yes,
                 &format!("open {} port {}", args.proto, args.port),
             )?;
+            if crate::dry_run_guard(
+                renderer,
+                &format!("allow inbound {} port {}", args.proto, args.port),
+            )? {
+                return Ok(0);
+            }
             firewall.allow(args.port, Some(&args.proto), args.name.as_deref())?;
             renderer.line(format!("allowed inbound {} port {}", args.proto, args.port))?;
         }
@@ -132,6 +138,12 @@ pub fn dispatch(
                 args.yes,
                 &format!("block {} port {}", args.proto, args.port),
             )?;
+            if crate::dry_run_guard(
+                renderer,
+                &format!("block inbound {} port {}", args.proto, args.port),
+            )? {
+                return Ok(0);
+            }
             firewall.deny(args.port, Some(&args.proto), args.name.as_deref())?;
             renderer.line(format!("blocked inbound {} port {}", args.proto, args.port))?;
         }

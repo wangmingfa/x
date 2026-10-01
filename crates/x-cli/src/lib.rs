@@ -18,6 +18,8 @@
 pub mod commands;
 pub mod format;
 
+pub use commands::dry_run_guard;
+
 use std::io::Write;
 use std::process::ExitCode;
 
@@ -61,6 +63,10 @@ pub struct Cli {
     /// Force ANSI colors even when stdout is not a terminal.
     #[arg(long, global = true, conflicts_with = "no_color")]
     pub color: bool,
+
+    /// Show what a destructive command would do, without doing it.
+    #[arg(long, global = true)]
+    pub dry_run: bool,
 
     /// Print adapter and contract versions.
     #[arg(long, global = true)]
@@ -274,6 +280,7 @@ pub fn run_with(context: &x_core::SystemContext, cli: Cli) -> i32 {
     };
 
     let mut renderer = Renderer::stdout(format, color);
+    renderer.set_dry_run(cli.dry_run);
     let mut confirmer: Box<dyn Confirmer> = Box::new(StdinConfirmer);
 
     let outcome = dispatch(context, &cli, &mut renderer, &mut *confirmer);

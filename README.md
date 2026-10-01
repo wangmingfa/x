@@ -413,6 +413,6 @@ GitHub Actions CI 在 Ubuntu / macOS / Windows 三平台上跑格式、clippy
 - [x] 输出：`--jsonl`、`--csv`（human / json 已有）
 - [ ] shell 补全：`x completion bash|zsh|fish|powershell|elvish`
 - [ ] man 页与帮助生成
-- [ ] Dry run：`--dry-run` 先说明将执行的操作（与确认机制互补）
+- [x] Dry run：`--dry-run` 先说明将执行的操作（与确认机制互补）
 - [ ] 打包分发：install 脚本 / Homebrew tap / Windows 安装包
 - [ ] 各平台原生运行时的持续回归（CI 已覆盖，需结合真实故障复现）

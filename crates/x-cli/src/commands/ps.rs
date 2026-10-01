@@ -370,6 +370,13 @@ fn kill(
         }
     }
 
+    if crate::dry_run_guard(
+        renderer,
+        &format!("terminate {} process(es) with {:?}", pids.len(), signal),
+    )? {
+        return Ok(0);
+    }
+
     let failures = context.process.kill_many(&pids, signal)?;
     let killed = pids.len() - failures.len();
     let messages: Vec<String> = failures.iter().map(|f| f.message().to_string()).collect();

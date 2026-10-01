@@ -45,3 +45,18 @@ pub fn version(renderer: &mut Renderer) -> Result<i32> {
     renderer.always_json(&info)?;
     Ok(0)
 }
+
+/// Dry-run gate for destructive commands.
+///
+/// Returns `Ok(true)` when `--dry-run` is on: the command has printed what it
+/// *would* do and must stop without mutating anything. `Ok(false)` means
+/// proceed. Read-only commands never call this.
+pub fn dry_run_guard(renderer: &mut Renderer, action: &str) -> Result<bool> {
+    if renderer.dry_run() {
+        renderer.line(format!(
+            "dry-run: would {action} (pass --yes and drop --dry-run to execute)"
+        ))?;
+        return Ok(true);
+    }
+    Ok(false)
+}

@@ -94,6 +94,9 @@ pub fn dispatch(
                     return Err(Error::invalid_input("aborted by user"));
                 }
             }
+            if crate::dry_run_guard(renderer, &format!("schedule `{job}` as {name} ({spec})"))? {
+                return Ok(0);
+            }
             schedule.add(name, spec, job)?;
             renderer.line(format!("scheduled {name}"))?;
         }
@@ -103,6 +106,9 @@ pub fn dispatch(
                 if !confirmer.confirm("continue?")? {
                     return Err(Error::invalid_input("aborted by user"));
                 }
+            }
+            if crate::dry_run_guard(renderer, &format!("remove scheduled task {name}"))? {
+                return Ok(0);
             }
             schedule.remove(name)?;
             renderer.line(format!("removed {name}"))?;

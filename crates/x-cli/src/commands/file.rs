@@ -127,16 +127,25 @@ pub fn dispatch(
         }
         FileCommand::Open { path, yes } => {
             confirm(renderer, confirmer, *yes, "open", path)?;
+            if crate::dry_run_guard(renderer, &format!("open {path}"))? {
+                return Ok(0);
+            }
             file.open(path.as_ref())?;
             renderer.line(format!("opened {path}"))?;
         }
         FileCommand::Reveal { path, yes } => {
             confirm(renderer, confirmer, *yes, "reveal", path)?;
+            if crate::dry_run_guard(renderer, &format!("reveal {path}"))? {
+                return Ok(0);
+            }
             file.reveal(path.as_ref())?;
             renderer.line(format!("revealed {path}"))?;
         }
         FileCommand::Trash { path, yes } => {
             confirm(renderer, confirmer, *yes, "trash", path)?;
+            if crate::dry_run_guard(renderer, &format!("move {path} to trash"))? {
+                return Ok(0);
+            }
             file.trash(path.as_ref())?;
             renderer.line(format!("moved {path} to trash"))?;
         }
@@ -148,6 +157,9 @@ pub fn dispatch(
                 "copy",
                 &format!("{from} -> {to}"),
             )?;
+            if crate::dry_run_guard(renderer, &format!("copy {from} to {to}"))? {
+                return Ok(0);
+            }
             file.copy(from.as_ref(), to.as_ref())?;
             renderer.line(format!("copied {from} to {to}"))?;
         }
@@ -159,6 +171,9 @@ pub fn dispatch(
                 "move",
                 &format!("{from} -> {to}"),
             )?;
+            if crate::dry_run_guard(renderer, &format!("move {from} to {to}"))? {
+                return Ok(0);
+            }
             file.move_path(from.as_ref(), to.as_ref())?;
             renderer.line(format!("moved {from} to {to}"))?;
         }
@@ -174,6 +189,9 @@ pub fn dispatch(
                 "rename",
                 &format!("{path} -> {new_name}"),
             )?;
+            if crate::dry_run_guard(renderer, &format!("rename {path} to {new_name}"))? {
+                return Ok(0);
+            }
             file.rename(path.as_ref(), new_name)?;
             renderer.line(format!("renamed {path} to {new_name}"))?;
         }

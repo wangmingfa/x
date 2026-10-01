@@ -564,6 +564,17 @@ fn kill(
         }
     }
 
+    if crate::dry_run_guard(
+        renderer,
+        &format!(
+            "terminate {} process(es) to free {}",
+            plan.target_pids().len(),
+            describe(&query)
+        ),
+    )? {
+        return Ok(0);
+    }
+
     let killed = context.port.kill_plan(&plan, signal)?;
     if json {
         renderer.always_json(&KillReport {

@@ -213,6 +213,10 @@ fn apply(
         }
     }
 
+    if crate::dry_run_guard(renderer, &format!("{} service `{name}`", verb(action)))? {
+        return Ok(0);
+    }
+
     context.service.action(name, action)?;
     let after = context.service.status(name).unwrap_or(before);
     if renderer.format() == OutputFormat::Json {

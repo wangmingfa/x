@@ -224,6 +224,7 @@ fn csv_line(fields: &[String]) -> String {
 pub struct Renderer {
     format: OutputFormat,
     color: bool,
+    dry_run: bool,
     out: Box<dyn Write>,
 }
 
@@ -233,6 +234,7 @@ impl Renderer {
         Self {
             format,
             color,
+            dry_run: false,
             out: Box::new(io::stdout()),
         }
     }
@@ -242,6 +244,7 @@ impl Renderer {
         Self {
             format,
             color,
+            dry_run: false,
             out: Box::new(out),
         }
     }
@@ -254,6 +257,16 @@ impl Renderer {
     /// The selected format.
     pub fn format(&self) -> OutputFormat {
         self.format
+    }
+
+    /// Turn dry-run mode on: destructive commands report instead of execute.
+    pub fn set_dry_run(&mut self, on: bool) {
+        self.dry_run = on;
+    }
+
+    /// Whether dry-run mode is on.
+    pub fn dry_run(&self) -> bool {
+        self.dry_run
     }
 
     /// Write a table.
