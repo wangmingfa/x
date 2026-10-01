@@ -4,9 +4,7 @@ use crate::common::{cpu_sysinfo, identity};
 use crate::sys;
 use std::os::raw::{c_int, c_void};
 use x_core::error::Result;
-use x_core::system::{
-    CpuUsage, MemoryUsage, OsFamily, PressureLevel, SystemInfo, SystemManager,
-};
+use x_core::system::{CpuUsage, MemoryUsage, OsFamily, PressureLevel, SystemInfo, SystemManager};
 
 /// Reads macOS system facts.
 #[derive(Debug, Default)]
@@ -262,18 +260,9 @@ mod tests {
 
     #[test]
     fn pressure_levels_map_from_the_kernel_scale() {
-        assert_eq!(
-            memory_pressure_from(Some(1)),
-            Some(PressureLevel::Normal)
-        );
-        assert_eq!(
-            memory_pressure_from(Some(2)),
-            Some(PressureLevel::Warning)
-        );
-        assert_eq!(
-            memory_pressure_from(Some(4)),
-            Some(PressureLevel::Critical)
-        );
+        assert_eq!(memory_pressure_from(Some(1)), Some(PressureLevel::Normal));
+        assert_eq!(memory_pressure_from(Some(2)), Some(PressureLevel::Warning));
+        assert_eq!(memory_pressure_from(Some(4)), Some(PressureLevel::Critical));
         assert_eq!(memory_pressure_from(None), None);
     }
 

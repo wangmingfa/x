@@ -51,13 +51,18 @@ pub fn run_command(program: &str, args: &[&str]) -> std::io::Result<String> {
 
 /// `true` when an executable is reachable through `PATH` or an absolute path.
 pub fn command_exists(program: &str) -> bool {
-    if program.contains('/') {
+    if program.contains('/') || program.contains('\\') {
         return std::path::Path::new(program).exists();
     }
     let Some(path) = std::env::var_os("PATH") else {
         return false;
     };
-    std::env::split_paths(&path).any(|dir| dir.join(program).exists())
+    std::env::split_paths(&path).any(|dir| {
+        let candidate = dir.join(program);
+        // Windows resolves an extensionless spawn by appending `.exe`
+        // (CreateProcess behavior), so the check must do the same.
+        candidate.exists() || candidate.with_extension("exe").exists()
+    })
 }
 
 /// Truncate a string to `width` columns, adding an ellipsis when cut.
@@ -96,7 +101,9 @@ mod tests {
 
     #[test]
     fn command_detection() {
-        assert!(command_exists("sh"));
+        // A shell guaranteed to exist on each platform, nothing else.
+        let known = if cfg!(windows) { "cmd" } else { "sh" };
+        assert!(command_exists(known));
         assert!(!command_exists("definitely-not-a-real-binary-xyz"));
     }
 

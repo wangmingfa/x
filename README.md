@@ -24,8 +24,10 @@ cargo build -p x-app
 | 命令 | 说明 |
 | --- | --- |
 | `x port` | 监听中的 socket 及其属主进程 |
-| `x port all` | 全部 socket（不只监听） |
+| `x port all` | 全部 socket（不只监听），含远程地址列 |
 | `x port owners` | 按进程分组 |
+| `x port find <name>` | 按进程名反查其持有的 socket |
+| `x port watch` | 持续轮询，只在 socket 增删时输出（`--interval`、`--count`） |
 | `x port check <port>` | 占用返回 0，空闲返回 1 |
 | `x port kill <port>` / `kill-by-name <name>` | 先展示计划，确认后停止持有端口的进程（`--yes` 跳过确认） |
 
@@ -140,7 +142,7 @@ GitHub Actions CI 在 Ubuntu / macOS / Windows 三平台上跑格式、clippy
 - [x] CPU：Load Average、当前/最大频率、governor / 电源模式（Linux）、P/E 核心（支持的平台）、温度（能获取时）
 - [x] 内存：Swap / Pagefile、内存压力（memory pressure）
 - [x] 进程：CWD、线程数、打开的文件、进程级网络连接、环境变量、进程状态；`ps tree` 支持展开/折叠
-- [ ] 端口：远程地址展示；按进程反查端口（`x port find <name>`）；`x port watch` 持续监视、只在变化时输出
+- [x] 端口：远程地址展示；按进程反查端口（`x port find <name>`）；`x port watch` 持续监视、只在变化时输出
 - [ ] 网络：网卡链路速度、网关；`x net connections`（统一 netstat / ss / lsof -i，支持按进程/端口过滤）；DNS 解析 / 反查 / 刷缓存；ping / trace / resolve
 - [ ] 磁盘：物理盘 / 分区 / UUID / 标签 / 只读标志；目录占用（`x disk usage <path> [--depth N]`，du / ncdu 风格，TUI 树形展示）；网卡收发流量统计（目前为空）
 - [ ] `x net addresses` 的 DHCP 标记（目前恒为空）

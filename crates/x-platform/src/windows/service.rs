@@ -5,14 +5,17 @@
 //! lifecycle actions.
 
 use super::buffer::AlignedBuffer;
-use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_SERVICE_DOES_NOT_EXIST};
+use windows_sys::Win32::Foundation::{
+    GetLastError, ERROR_ACCESS_DENIED, ERROR_MORE_DATA, ERROR_SERVICE_DOES_NOT_EXIST,
+};
 use windows_sys::Win32::System::Services::{
     ChangeServiceConfigW, CloseServiceHandle, ControlService, EnumServicesStatusExW,
     OpenSCManagerW, OpenServiceW, QueryServiceConfigW, StartServiceW, ENUM_SERVICE_STATUS_PROCESSW,
-    QUERY_SERVICE_CONFIGW, SC_HANDLE, SC_MANAGER_CONNECT, SC_MANAGER_ENUMERATE_SERVICE,
-    SERVICE_CHANGE_CONFIG, SERVICE_CONTROL_STOP, SERVICE_DEMAND_START, SERVICE_DISABLED,
-    SERVICE_NO_CHANGE, SERVICE_QUERY_CONFIG, SERVICE_RUNNING, SERVICE_START, SERVICE_START_PENDING,
-    SERVICE_STATUS, SERVICE_STOP, SERVICE_STOPPED, SERVICE_STOP_PENDING, SERVICE_WIN32,
+    QUERY_SERVICE_CONFIGW, SC_ENUM_PROCESS_INFO, SC_HANDLE, SC_MANAGER_CONNECT,
+    SC_MANAGER_ENUMERATE_SERVICE, SERVICE_CHANGE_CONFIG, SERVICE_CONTROL_STOP,
+    SERVICE_DEMAND_START, SERVICE_DISABLED, SERVICE_NO_CHANGE, SERVICE_QUERY_CONFIG,
+    SERVICE_RUNNING, SERVICE_START, SERVICE_START_PENDING, SERVICE_STATE_ALL, SERVICE_STATUS,
+    SERVICE_STOP, SERVICE_STOPPED, SERVICE_STOP_PENDING, SERVICE_WIN32,
 };
 use x_core::error::{Error, ErrorKind, PermissionRequirement, Result};
 use x_core::service::{
@@ -89,72 +92,69 @@ impl ServiceManager for WindowsService {
     fn list(&self, options: &ServiceListOptions) -> Result<Vec<ServiceInfo>> {
         // Enumerating is enough, and it works for a normal user.
         let manager = ScManager::open(SC_MANAGER_ENUMERATE_SERVICE)?;
-        let mut needed: u32 = 0;
-        let mut returned: u32 = 0;
 
-        // SAFETY: a null buffer with its size is the documented size query.
-        unsafe {
-            EnumServicesStatusExW(
-                manager.0,
-                1,             // SC_ENUM_PROCESS_INFO
-                SERVICE_WIN32, // win32 own-process and share-process services
-                0,
-                std::ptr::null_mut(),
-                0,
-                &mut needed,
-                &mut returned,
-                std::ptr::null_mut(),
-                std::ptr::null(),
-            );
-        }
-        if needed == 0 {
-            return Ok(Vec::new());
-        }
-
-        let mut buffer = AlignedBuffer::zeroed(needed as usize);
-        // SAFETY: the buffer is at least the size the API reported and is
-        // aligned for the records it is asked to fill.
-        let ok = unsafe {
-            EnumServicesStatusExW(
-                manager.0,
-                1,
-                SERVICE_WIN32,
-                0,
-                buffer.as_mut_ptr().cast::<u8>(),
-                needed,
-                &mut needed,
-                &mut returned,
-                std::ptr::null_mut(),
-                std::ptr::null(),
-            )
-        };
-        if ok == 0 {
-            return Err(last_error("could not enumerate services"));
-        }
-
+        // Unlike the other Enum* APIs, `EnumServicesStatusExW` refuses to size
+        // a preliminary call: it returns ERROR_MORE_DATA with `needed` left at
+        // zero. The documented pattern is a chunked loop driven by the resume
+        // handle; the strings a batch points at are only valid until the next
+        // call, so rows are materialized per batch.
         let record = std::mem::size_of::<ENUM_SERVICE_STATUS_PROCESSW>();
-        let mut rows = Vec::with_capacity(returned as usize);
-        for index in 0..returned as usize {
-            let start = index * record;
-            if start + record > buffer.len() {
+        let mut rows: Vec<ServiceInfo> = Vec::new();
+        let mut resume: u32 = 0;
+        loop {
+            let mut chunk = AlignedBuffer::zeroed(64 * 1024);
+            let mut needed: u32 = 0;
+            let mut returned: u32 = 0;
+            // SAFETY: buffer and counters outlive the call.
+            let ok = unsafe {
+                EnumServicesStatusExW(
+                    manager.0,
+                    SC_ENUM_PROCESS_INFO,
+                    SERVICE_WIN32, // win32 own-process and share-process services
+                    // 0 is not a valid state mask here: the SCM rejects it with
+                    // ERROR_INVALID_PARAMETER, so "all states" has to be spelled
+                    // out as ACTIVE | INACTIVE.
+                    SERVICE_STATE_ALL,
+                    chunk.as_mut_ptr().cast::<u8>(),
+                    chunk.len() as u32,
+                    &mut needed,
+                    &mut returned,
+                    &mut resume,
+                    std::ptr::null(),
+                )
+            };
+            if ok == 0 {
+                // SAFETY: GetLastError reads the value the failed call set.
+                let more_data = unsafe { GetLastError() } == ERROR_MORE_DATA;
+                if !more_data {
+                    return Err(last_error("could not enumerate services"));
+                }
+            }
+            for index in 0..returned as usize {
+                let start = index * record;
+                if start + record > chunk.len() {
+                    break;
+                }
+                // SAFETY: the buffer holds `returned` records of exactly this
+                // type. Records are packed at the API's offsets, so the read
+                // must not assume they are aligned.
+                let raw = unsafe { chunk.read_at::<ENUM_SERVICE_STATUS_PROCESSW>(start) };
+                rows.push(ServiceInfo {
+                    name: wide_to_string(raw.lpServiceName),
+                    display_name: Some(wide_to_string(raw.lpDisplayName)),
+                    description: None,
+                    state: service_state(raw.ServiceStatusProcess.dwCurrentState),
+                    pid: (raw.ServiceStatusProcess.dwProcessId != 0)
+                        .then_some(raw.ServiceStatusProcess.dwProcessId),
+                    // The enumerated view has no start type; only the per service
+                    // configuration does, so `enabled` stays unknown until then.
+                    enabled: None,
+                    manager: ServiceManagerType::WindowsScm,
+                });
+            }
+            if ok != 0 || resume == 0 {
                 break;
             }
-            // SAFETY: the buffer holds `returned` records of exactly this type.
-            // Records are packed at the API's offsets, so the read must not
-            // assume they are aligned.
-            let raw = unsafe { buffer.read_at::<ENUM_SERVICE_STATUS_PROCESSW>(start) };
-            rows.push(ServiceInfo {
-                name: wide_to_string(raw.lpServiceName),
-                display_name: Some(wide_to_string(raw.lpDisplayName)),
-                description: None,
-                state: service_state(raw.ServiceStatusProcess.dwCurrentState),
-                pid: (raw.ServiceStatusProcess.dwProcessId != 0)
-                    .then_some(raw.ServiceStatusProcess.dwProcessId),
-                // The enumerated view has no start type; only the per service
-                // configuration does, so `enabled` stays unknown until then.
-                enabled: None,
-                manager: ServiceManagerType::WindowsScm,
-            });
         }
 
         Ok(rows

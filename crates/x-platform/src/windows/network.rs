@@ -342,7 +342,9 @@ pub fn parse_route_print(raw: &str) -> Vec<RouteInfo> {
             in_table = false;
             continue;
         };
-        if mask.is_unspecified() {
+        // A default route legitimately carries a 0.0.0.0 netmask; only a
+        // zero mask on a non-zero destination means the table has ended.
+        if mask.is_unspecified() && destination != Ipv4Addr::UNSPECIFIED {
             in_table = false;
             continue;
         }

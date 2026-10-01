@@ -126,13 +126,17 @@ fn tcp_table(family: u32) -> Vec<RawSocket> {
                 // is exactly one `MIB_TCPROW_OWNER_PID`. Rows are not guaranteed
                 // to be aligned, so the read must not assume it.
                 let raw = unsafe { table.buffer.read_at::<MIB_TCPROW_OWNER_PID>(offset) };
+                // A listener carries the peer as 0.0.0.0:0 in the table; the
+                // unified model says "no peer" instead, like the Linux adapter.
+                let remote_port = port(raw.dwRemotePort);
                 RawSocket {
                     pid: raw.dwOwningPid,
                     protocol: Protocol::Tcp,
                     local_address: Ipv4Addr::from(raw.dwLocalAddr.to_le_bytes()).into(),
                     local_port: port(raw.dwLocalPort),
-                    remote_address: Some(Ipv4Addr::from(raw.dwRemoteAddr.to_le_bytes()).into()),
-                    remote_port: Some(port(raw.dwRemotePort)),
+                    remote_address: (remote_port != 0)
+                        .then(|| Ipv4Addr::from(raw.dwRemoteAddr.to_le_bytes()).into()),
+                    remote_port: (remote_port != 0).then_some(remote_port),
                     state: tcp_state(raw.dwState),
                 }
             })
@@ -147,13 +151,14 @@ fn tcp_table(family: u32) -> Vec<RawSocket> {
         .map(|offset| {
             // SAFETY: as above, for `MIB_TCP6ROW_OWNER_PID`.
             let raw = unsafe { table.buffer.read_at::<MIB_TCP6ROW_OWNER_PID>(offset) };
+            let remote_port = port(raw.dwRemotePort);
             RawSocket {
                 pid: raw.dwOwningPid,
                 protocol: Protocol::Tcp,
                 local_address: Ipv6Addr::from(raw.ucLocalAddr).into(),
                 local_port: port(raw.dwLocalPort),
-                remote_address: Some(Ipv6Addr::from(raw.ucRemoteAddr).into()),
-                remote_port: Some(port(raw.dwRemotePort)),
+                remote_address: (remote_port != 0).then(|| Ipv6Addr::from(raw.ucRemoteAddr).into()),
+                remote_port: (remote_port != 0).then_some(remote_port),
                 state: tcp_state(raw.dwState),
             }
         })
@@ -338,8 +343,9 @@ mod tests {
 
     #[test]
     fn ports_are_read_in_network_byte_order() {
-        // 8080 is 0x1F90, stored as 0x901F0000 on the little endian wire layout.
-        assert_eq!(port(0x901F_0000), 8080);
+        // 8080 is 0x1F90; the API stores the two wire bytes in the low 16 bits
+        // of the u32, so the little endian value is 0x0000_901F.
+        assert_eq!(port(0x0000_901F), 8080);
         assert_eq!(port(0x0000_0000), 0);
     }
 

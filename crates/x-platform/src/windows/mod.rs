@@ -83,29 +83,36 @@ fn lookup_sid(sid: *mut c_void) -> Option<String> {
     // SAFETY: `sid` is a live SID owned by the token buffer of the caller.
     unsafe {
         let mut name_len: u32 = 0;
+        let mut domain_len: u32 = 0;
+        // The fill path writes through `pe_use` on success, so it must be a
+        // real location, not null.
+        let mut use_type: windows_sys::Win32::Security::SID_NAME_USE = 0;
+        // Sizing call: both buffers are null, the API reports the lengths.
         LookupAccountSidW(
             std::ptr::null(),
             sid,
             std::ptr::null_mut(),
             &mut name_len,
             std::ptr::null_mut(),
-            &mut 0,
-            std::ptr::null_mut(),
+            &mut domain_len,
+            &mut use_type,
         );
         if name_len == 0 {
             return None;
         }
 
         let mut name = vec![0u16; name_len as usize];
-        let mut domain_len: u32 = 0;
+        let mut domain = vec![0u16; (domain_len as usize).max(1)];
+        // Fill call: both buffers are real and sized. Passing a null domain with
+        // a non-zero length makes the API reject the call outright.
         if LookupAccountSidW(
             std::ptr::null(),
             sid,
             name.as_mut_ptr(),
             &mut name_len,
-            std::ptr::null_mut(),
+            domain.as_mut_ptr(),
             &mut domain_len,
-            std::ptr::null_mut(),
+            &mut use_type,
         ) == 0
         {
             return None;
@@ -115,19 +122,6 @@ fn lookup_sid(sid: *mut c_void) -> Option<String> {
         if domain_len == 0 {
             return Some(account);
         }
-
-        // The domain needs its own sizing call.
-        let mut domain = vec![0u16; domain_len as usize];
-        LookupAccountSidW(
-            std::ptr::null(),
-            sid,
-            name.as_mut_ptr(),
-            &mut name_len,
-            domain.as_mut_ptr(),
-            &mut domain_len,
-            std::ptr::null_mut(),
-        );
-        let _ = account;
         Some(format!(
             "{}\\{}",
             String::from_utf16_lossy(&domain[..domain_len as usize]),

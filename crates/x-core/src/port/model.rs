@@ -61,7 +61,7 @@ impl std::fmt::Display for Protocol {
 }
 
 /// Connection state, normalized across platforms.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConnectionState {
     /// Accepting connections: `LISTEN` on Linux, `LISTENING` on Windows,
@@ -168,6 +168,87 @@ impl PortInfo {
             IpAddr::V6(ip) => format!("[{ip}]:{}", self.local_port),
         }
     }
+}
+
+/// The change set between two socket snapshots.
+///
+/// Produced by [`diff_sockets`] and consumed by `x port watch`, which prints
+/// only what changed since the previous poll.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SocketDiff {
+    /// Sockets present now but not before.
+    pub added: Vec<PortInfo>,
+    /// Sockets present before but not now.
+    pub removed: Vec<PortInfo>,
+}
+
+impl SocketDiff {
+    /// `true` when the two snapshots were identical.
+    pub fn is_empty(&self) -> bool {
+        self.added.is_empty() && self.removed.is_empty()
+    }
+}
+
+/// Socket identity between snapshots: a state change or an ownership change is
+/// reported as removal plus addition, which keeps the diff a plain set
+/// difference. Name and user are derived from the pid, so they stay out.
+type SocketKey = (
+    Protocol,
+    IpAddr,
+    u16,
+    Option<IpAddr>,
+    Option<u16>,
+    ConnectionState,
+    Option<u32>,
+);
+
+fn socket_key(info: &PortInfo) -> SocketKey {
+    (
+        info.protocol,
+        info.local_address,
+        info.local_port,
+        info.remote_address,
+        info.remote_port,
+        info.state,
+        info.pid,
+    )
+}
+
+/// Diff two socket snapshots, each side sorted by port and protocol.
+pub fn diff_sockets(previous: &[PortInfo], current: &[PortInfo]) -> SocketDiff {
+    use std::collections::BTreeSet;
+
+    let before: BTreeSet<SocketKey> = previous.iter().map(socket_key).collect();
+    let after: BTreeSet<SocketKey> = current.iter().map(socket_key).collect();
+
+    let sort = |mut rows: Vec<PortInfo>| {
+        rows.sort_by_key(|p| (p.local_port, p.protocol, p.local_address));
+        rows
+    };
+
+    let mut seen = std::collections::BTreeSet::new();
+    let added = sort(
+        current
+            .iter()
+            .filter(|p| {
+                let key = socket_key(p);
+                !before.contains(&key) && seen.insert(key)
+            })
+            .cloned()
+            .collect(),
+    );
+    let mut seen = std::collections::BTreeSet::new();
+    let removed = sort(
+        previous
+            .iter()
+            .filter(|p| {
+                let key = socket_key(p);
+                !after.contains(&key) && seen.insert(key)
+            })
+            .cloned()
+            .collect(),
+    );
+    SocketDiff { added, removed }
 }
 
 /// Port query, either by number or by owning process name.
@@ -421,5 +502,57 @@ mod tests {
         assert_eq!(Protocol::Tcp.number(), 6);
         assert_eq!(Protocol::Udp.number(), 17);
         assert_eq!(Protocol::parse("TCP"), Some(Protocol::Tcp));
+    }
+
+    #[test]
+    fn diff_reports_added_and_removed_sockets() {
+        let before = vec![
+            info(80, ConnectionState::Listen, None),
+            info(443, ConnectionState::Listen, None),
+        ];
+        let after = vec![
+            info(443, ConnectionState::Listen, None),
+            info(8080, ConnectionState::Listen, None),
+        ];
+        let diff = diff_sockets(&before, &after);
+        assert_eq!(
+            diff.added.iter().map(|p| p.local_port).collect::<Vec<_>>(),
+            vec![8080]
+        );
+        assert_eq!(
+            diff.removed
+                .iter()
+                .map(|p| p.local_port)
+                .collect::<Vec<_>>(),
+            vec![80]
+        );
+    }
+
+    #[test]
+    fn diff_treats_state_change_as_remove_plus_add() {
+        let before = vec![info(22, ConnectionState::Listen, None)];
+        let after = vec![info(22, ConnectionState::Established, None)];
+        let diff = diff_sockets(&before, &after);
+        assert_eq!(diff.added.len(), 1);
+        assert_eq!(diff.removed.len(), 1);
+        assert_eq!(diff.added[0].state, ConnectionState::Established);
+        assert_eq!(diff.removed[0].state, ConnectionState::Listen);
+    }
+
+    #[test]
+    fn diff_treats_ownership_change_as_remove_plus_add() {
+        let mut before = info(3000, ConnectionState::Listen, None);
+        before.pid = Some(1);
+        let mut after = info(3000, ConnectionState::Listen, None);
+        after.pid = Some(2);
+        let diff = diff_sockets(&[before], &[after]);
+        assert_eq!(diff.added[0].pid, Some(2));
+        assert_eq!(diff.removed[0].pid, Some(1));
+    }
+
+    #[test]
+    fn diff_of_identical_snapshots_is_empty() {
+        let rows = vec![info(80, ConnectionState::Listen, None)];
+        assert!(diff_sockets(&rows, &rows).is_empty());
     }
 }

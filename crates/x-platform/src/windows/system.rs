@@ -13,9 +13,7 @@ use windows_sys::Win32::System::SystemInformation::{
     SYSTEM_LOGICAL_PROCESSOR_INFORMATION,
 };
 use x_core::error::Result;
-use x_core::system::{
-    CpuUsage, MemoryUsage, OsFamily, PressureLevel, SystemInfo, SystemManager,
-};
+use x_core::system::{CpuUsage, MemoryUsage, OsFamily, PressureLevel, SystemInfo, SystemManager};
 
 /// Reads Windows system facts.
 #[derive(Debug, Default)]

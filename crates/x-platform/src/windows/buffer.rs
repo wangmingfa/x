@@ -51,7 +51,8 @@ impl AlignedBuffer {
     /// must all belong to that `T`.
     pub(crate) unsafe fn read_at<T: Copy>(&self, start: usize) -> T {
         debug_assert!(start + std::mem::size_of::<T>() <= self.len);
-        unsafe { std::ptr::read_unaligned(self.as_ptr().cast::<T>().add(start)) }
+        // `start` is a byte offset, so the pointer moves in units of one byte.
+        unsafe { std::ptr::read_unaligned(self.as_ptr().cast::<u8>().add(start).cast::<T>()) }
     }
 
     /// Read the first struct of the buffer.

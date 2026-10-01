@@ -232,11 +232,7 @@ fn walk_collapsed(node: &ProcessNode, depth: usize, table: &mut Table) {
     let name = if node.children.is_empty() {
         node.process.name.clone()
     } else {
-        format!(
-            "{} (+{} hidden)",
-            node.process.name,
-            node.depth_total() - 1
-        )
+        format!("{} (+{} hidden)", node.process.name, node.depth_total() - 1)
     };
     table.push(row![
         node.process.pid.to_string(),

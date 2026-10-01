@@ -3,7 +3,8 @@
 use clap::Subcommand;
 use x_core::error::{Error, Result};
 use x_core::port::{
-    ConnectionState, KillPlan, PortInfo, PortListOptions, PortOwner, PortQuery, PortSort, Protocol,
+    diff_sockets, ConnectionState, KillPlan, PortInfo, PortListOptions, PortOwner, PortQuery,
+    PortSort, Protocol,
 };
 use x_core::SystemContext;
 
@@ -12,6 +13,7 @@ use crate::{
     format::{Confirmer, OutputFormat, Renderer, Table},
     row,
 };
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// `x port`: filters apply to the implicit `list`, subcommands do the rest.
 #[derive(Debug, clap::Args)]
@@ -64,6 +66,25 @@ pub enum PortCommand {
         /// Do not ask for confirmation.
         #[arg(long, short = 'y')]
         yes: bool,
+    },
+
+    /// Sockets held by processes whose name matches (read-only counterpart of kill-by-name).
+    Find {
+        /// Process name substring.
+        name: String,
+    },
+
+    /// Poll sockets and print only what changed between polls.
+    Watch {
+        /// Filters, same as `x port all` but defaulting to all states.
+        #[command(flatten)]
+        list: PortListArgs,
+        /// Poll interval in seconds.
+        #[arg(long, default_value_t = 2.0)]
+        interval: f64,
+        /// Stop after this many polls instead of running until Ctrl-C.
+        #[arg(long)]
+        count: Option<usize>,
     },
 }
 
@@ -178,6 +199,12 @@ pub fn dispatch(
             (*signal).into(),
             *yes,
         ),
+        PortCommand::Find { name } => find(context, renderer, name),
+        PortCommand::Watch {
+            list,
+            interval,
+            count,
+        } => watch(context, renderer, &list.options(false), *interval, *count),
     }
 }
 
@@ -274,6 +301,129 @@ struct CheckReport<'a> {
     port: u16,
     in_use: bool,
     owners: &'a [PortInfo],
+}
+
+/// Show every socket held by processes whose name matches.
+pub fn find(context: &SystemContext, renderer: &mut Renderer, name: &str) -> Result<i32> {
+    let rows = context.port.find_process(name)?;
+    if renderer.format() == OutputFormat::Json {
+        renderer.always_json(&rows)?;
+    } else if rows.is_empty() {
+        renderer.line(format!("no sockets for process `{name}`"))?;
+    } else {
+        let mut table = socket_table();
+        for row in &rows {
+            table.push(socket_row(row));
+        }
+        renderer.table(&table)?;
+    }
+    Ok(if rows.is_empty() { 3 } else { 0 })
+}
+
+/// One `x port watch` change event, as JSON.
+#[derive(Debug, serde::Serialize)]
+struct WatchEvent {
+    time: String,
+    added: Vec<PortInfo>,
+    removed: Vec<PortInfo>,
+}
+
+/// Poll sockets and print only the differences between consecutive snapshots.
+///
+/// `--count n` bounds the loop so scripts and tests can take exactly `n`
+/// samples; without it the command runs until Ctrl-C.
+pub fn watch(
+    context: &SystemContext,
+    renderer: &mut Renderer,
+    options: &PortListOptions,
+    interval: f64,
+    count: Option<usize>,
+) -> Result<i32> {
+    let offset = context
+        .system
+        .info()
+        .ok()
+        .and_then(|info| info.utc_offset_seconds)
+        .unwrap_or(0);
+    let interval = if interval.is_finite() {
+        interval.max(0.05)
+    } else {
+        2.0
+    };
+    let json = renderer.format() == OutputFormat::Json;
+
+    let mut previous: Option<Vec<PortInfo>> = None;
+    let mut polls = 0usize;
+    loop {
+        let current = context.port.list(options)?;
+        let time = x_core::format_timestamp(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+            offset,
+        );
+        match &previous {
+            None => {
+                if !json {
+                    renderer.line(format!(
+                        "[{time}] watching {} socket(s), polling every {interval}s",
+                        current.len()
+                    ))?;
+                }
+            }
+            Some(before) => {
+                let diff = diff_sockets(before, &current);
+                if !diff.is_empty() {
+                    if json {
+                        renderer.always_json(&WatchEvent {
+                            time,
+                            added: diff.added,
+                            removed: diff.removed,
+                        })?;
+                    } else {
+                        for row in &diff.removed {
+                            renderer.line(format!("[{time}] - {}", watch_row(row)))?;
+                        }
+                        for row in &diff.added {
+                            renderer.line(format!("[{time}] + {}", watch_row(row)))?;
+                        }
+                    }
+                }
+            }
+        }
+        renderer.flush().map_err(|e| {
+            Error::new(
+                x_core::ErrorKind::System,
+                format!("watch output failed: {e}"),
+            )
+        })?;
+        previous = Some(current);
+        polls += 1;
+        if count.is_some_and(|target| polls >= target) {
+            return Ok(0);
+        }
+        std::thread::sleep(Duration::from_secs_f64(interval));
+    }
+}
+
+/// One socket as a single watch-diff line.
+fn watch_row(row: &PortInfo) -> String {
+    format!(
+        "{} {} pid {} {} {} -> {}",
+        row.protocol.name(),
+        state_label(row.state),
+        row.pid.map(|p| p.to_string()).unwrap_or_else(unknown),
+        row.process_name.clone().unwrap_or_else(unknown),
+        row.endpoint(),
+        remote_label(row),
+    )
+}
+
+fn remote_label(row: &PortInfo) -> String {
+    row.remote_socket_addr()
+        .map(|addr| addr.to_string())
+        .unwrap_or_else(|| "-".to_string())
 }
 
 /// Build the plan, show it, ask, then execute exactly that plan.
@@ -380,7 +530,9 @@ pub(crate) fn confirm_or_fail(confirmer: &mut dyn Confirmer, question: &str) -> 
 }
 
 fn socket_table() -> Table {
-    Table::new(["port", "proto", "state", "pid", "process", "user", "local"])
+    Table::new([
+        "port", "proto", "state", "pid", "process", "user", "local", "remote",
+    ])
 }
 
 fn socket_row(row: &x_core::port::PortInfo) -> Vec<crate::format::Cell> {
@@ -392,6 +544,7 @@ fn socket_row(row: &x_core::port::PortInfo) -> Vec<crate::format::Cell> {
         row.process_name.clone().unwrap_or_else(unknown),
         row.user.clone().unwrap_or_else(unknown),
         row.endpoint(),
+        remote_label(row),
     ]
 }
 

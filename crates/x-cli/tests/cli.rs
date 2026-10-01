@@ -212,7 +212,7 @@ fn plain_output_is_one_tab_separated_record_per_line() {
     assert_eq!(lines.len(), 2);
     assert_eq!(
         lines[0].split('\t').count(),
-        7,
+        8,
         "column count: {:?}",
         lines[0]
     );
@@ -250,6 +250,62 @@ fn port_check_reports_the_port_it_was_asked_about() {
     assert_eq!(value["in_use"], true);
     assert_eq!(value["port"], 8080);
     assert_eq!(value["owners"][0]["local_port"], 8080);
+}
+
+#[test]
+fn port_find_lists_sockets_of_matching_process() {
+    let stubs = populated();
+
+    let found = x(&stubs, &["port", "find", "node"], false);
+    assert_eq!(found.code, 0);
+    assert!(found.stdout.contains("8080"));
+    assert!(!found.stdout.contains("9090"));
+
+    let missing = x(&stubs, &["port", "find", "ghost"], false);
+    assert_eq!(
+        missing.code, 3,
+        "no match is a not-found, like kill previews"
+    );
+    assert!(missing.stdout.contains("no sockets"));
+}
+
+#[test]
+fn port_watch_prints_the_baseline_and_nothing_when_nothing_changed() {
+    let stubs = populated();
+    let out = x(
+        &stubs,
+        &["port", "watch", "--interval", "0.05", "--count", "2"],
+        false,
+    );
+    assert_eq!(out.code, 0);
+    assert!(
+        out.stdout.contains("watching 2 socket(s)"),
+        "baseline missing: {}",
+        out.stdout
+    );
+    assert_eq!(
+        out.stdout.lines().count(),
+        1,
+        "static stubs must not produce diff rows: {:?}",
+        out.stdout
+    );
+}
+
+#[test]
+fn socket_rows_show_remote_endpoints() {
+    let mut established = stub_socket(443, 42, "node");
+    established.state = x_core::ConnectionState::Established;
+    established.remote_address = Some("93.184.216.34".parse().unwrap());
+    established.remote_port = Some(51234);
+    let stubs = Stubs::new().with_ports(vec![established]);
+
+    let out = x(&stubs, &["--plain", "port", "all"], false);
+    assert_eq!(out.code, 0);
+    assert!(
+        out.stdout.contains("93.184.216.34:51234"),
+        "remote column missing: {:?}",
+        out.stdout
+    );
 }
 
 #[test]

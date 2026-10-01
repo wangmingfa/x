@@ -6,9 +6,7 @@ use crate::sys;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use x_core::error::Result;
-use x_core::system::{
-    CpuUsage, MemoryUsage, OsFamily, PressureLevel, SystemInfo, SystemManager,
-};
+use x_core::system::{CpuUsage, MemoryUsage, OsFamily, PressureLevel, SystemInfo, SystemManager};
 
 /// Reads Linux system facts.
 #[derive(Debug, Default)]

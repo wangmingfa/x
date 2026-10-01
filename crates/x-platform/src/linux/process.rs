@@ -14,7 +14,9 @@ use x_core::process::{ProcessConnection, ProcessInfo, ProcessListOptions, Proces
 /// Descriptors owned by other users are simply not readable, which is the
 /// same permission boundary the port adapter draws for sockets.
 fn open_files(pid: u32) -> Vec<String> {
-    let dir = std::path::Path::new("/proc").join(pid.to_string()).join("fd");
+    let dir = std::path::Path::new("/proc")
+        .join(pid.to_string())
+        .join("fd");
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
