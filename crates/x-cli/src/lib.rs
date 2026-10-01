@@ -88,6 +88,9 @@ pub enum Command {
     /// Services.
     #[command(subcommand)]
     Service(commands::service::ServiceCommand),
+
+    /// What this host can actually do: supported / degraded / unsupported.
+    Capability(commands::capability::CapabilityArgs),
 }
 
 /// Signal to deliver to a process.
@@ -207,6 +210,7 @@ fn dispatch(
         Some(Command::Service(cmd)) => {
             commands::service::dispatch(context, renderer, confirmer, cmd)
         }
+        Some(Command::Capability(args)) => commands::capability::dispatch(context, renderer, args),
     }
 }
 

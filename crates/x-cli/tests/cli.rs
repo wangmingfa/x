@@ -442,6 +442,60 @@ fn service_native_passes_arguments_through() {
 }
 
 #[test]
+fn capability_report_covers_every_domain() {
+    let stubs = populated();
+    let out = x(&stubs, &["capability"], false);
+    assert_eq!(out.code, 0);
+    for domain in ["system", "process", "port", "net", "disk", "service"] {
+        assert!(
+            out.stdout.contains(domain),
+            "missing {domain}: {}",
+            out.stdout
+        );
+    }
+    assert!(out.stdout.contains("service logs"));
+    assert!(out.stdout.contains("status"));
+}
+
+#[test]
+fn capability_domain_filter_narrows_the_report() {
+    let stubs = populated();
+    let out = x(&stubs, &["capability", "--domain", "service"], false);
+    assert_eq!(out.code, 0);
+    assert!(out.stdout.contains("service manager"));
+    assert!(
+        !out.stdout.contains("socket list"),
+        "filter leaked other domains: {}",
+        out.stdout
+    );
+
+    let empty = x(&stubs, &["capability", "--domain", "nonsense"], false);
+    assert_eq!(empty.code, 0);
+    assert!(empty.stdout.contains("no capability rows"));
+}
+
+#[test]
+fn capability_json_is_a_row_array_with_snake_statuses() {
+    let stubs = populated();
+    let out = x(
+        &stubs,
+        &["--json", "capability", "--domain", "service"],
+        false,
+    );
+    assert_eq!(out.code, 0);
+    let start = out.stdout.find('[').expect("json array");
+    let value: serde_json::Value = serde_json::from_str(&out.stdout[start..]).expect("valid json");
+    let rows = value.as_array().expect("array");
+    assert!(rows.iter().all(|row| row["domain"] == "service"));
+    let logs = rows
+        .iter()
+        .find(|row| row["feature"] == "service logs")
+        .expect("logs row");
+    // The default stub answers `logs` with Unsupported.
+    assert_eq!(logs["status"], "unsupported");
+}
+
+#[test]
 fn system_commands_render_the_stub_facts() {
     let stubs = populated();
 

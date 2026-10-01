@@ -36,6 +36,7 @@
 //! # }
 //! ```
 
+pub mod capability;
 pub mod context;
 pub mod disk;
 pub mod error;
@@ -46,6 +47,7 @@ pub mod service;
 pub mod system;
 pub mod testing;
 
+pub use capability::{probe as probe_capabilities, Capability, CapabilityStatus};
 pub use context::{SystemContext, SystemContextBuilder};
 pub use disk::{walk_directory, DirUsage, DiskInfo, DiskManager, MediaType};
 pub use error::{Error, ErrorKind, PermissionRequirement, Result, ResultExt};
@@ -61,8 +63,8 @@ pub use process::{
     ProcessState, ProcessTree,
 };
 pub use service::{
-    ServiceAction, ServiceInfo, ServiceListOptions, ServiceManager, ServiceManagerType,
-    ServiceState,
+    NativeOutput, ServiceAction, ServiceInfo, ServiceListOptions, ServiceLogEntry, ServiceLogPage,
+    ServiceManager, ServiceManagerType, ServiceState,
 };
 pub use system::{
     format_bytes, format_duration, format_timestamp, percent, CpuUsage, LoadAverage, MemoryUsage,

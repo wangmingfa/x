@@ -1,5 +1,6 @@
 //! One module per capability, mirroring the `x-core` manager traits.
 
+pub mod capability;
 pub mod disk;
 pub mod net;
 pub mod port;
