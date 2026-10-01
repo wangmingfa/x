@@ -786,3 +786,115 @@ fn firewall_without_the_capability_is_unsupported() {
     let out = x_in(&stub_context(), &["firewall", "status"], false);
     assert_eq!(out.code, ErrorKind::Unsupported.exit_code());
 }
+
+/// One log record for the tests below.
+fn log_entry(time: &str, level: &str, origin: &str, message: &str) -> x_core::logs::LogEntry {
+    x_core::logs::LogEntry {
+        timestamp: Some(time.into()),
+        level: Some(level.into()),
+        origin: Some(origin.into()),
+        message: message.into(),
+    }
+}
+
+#[test]
+fn logs_system_renders_the_page_newest_first() {
+    let stubs = Stubs::new().with_logs(
+        "journalctl",
+        vec![
+            log_entry(
+                "2026-10-01T10:00:00Z",
+                "err",
+                "nginx.service",
+                "worker exited",
+            ),
+            log_entry("2026-10-01T09:59:00Z", "info", "cron", "run-parts"),
+        ],
+    );
+
+    let out = x(&stubs, &["logs", "system"], false);
+    assert_eq!(out.code, 0);
+    assert!(out.stdout.contains("worker exited"), "{}", out.stdout);
+    assert!(out.stdout.contains("nginx.service"));
+    assert_eq!(stubs.logs.reads(), vec!["system".to_string()]);
+}
+
+#[test]
+fn logs_service_and_process_pass_their_scope_down() {
+    let stubs = Stubs::new().with_logs("Get-WinEvent", Vec::new());
+
+    let service = x(&stubs, &["logs", "service", "ssh"], false);
+    assert_eq!(service.code, 0);
+    assert!(
+        service.stdout.contains("no records for service:ssh"),
+        "{}",
+        service.stdout
+    );
+
+    let process = x(&stubs, &["logs", "process", "4242"], false);
+    assert_eq!(process.code, 0);
+    assert_eq!(
+        stubs.logs.reads(),
+        vec!["service:ssh".to_string(), "process:4242".to_string()]
+    );
+}
+
+#[test]
+fn logs_limit_truncates_and_json_carries_the_page() {
+    let stubs = Stubs::new().with_logs(
+        "journalctl",
+        vec![
+            log_entry("t1", "err", "a", "first"),
+            log_entry("t2", "err", "b", "second"),
+            log_entry("t3", "err", "c", "third"),
+        ],
+    );
+
+    let capped = x(
+        &stubs,
+        &["--plain", "logs", "system", "--limit", "2"],
+        false,
+    );
+    assert_eq!(capped.stdout.lines().count(), 2);
+    assert!(
+        !capped.stdout.contains("third"),
+        "limit cut: {}",
+        capped.stdout
+    );
+
+    let json = x(&stubs, &["--json", "logs", "system"], false);
+    let value: serde_json::Value = serde_json::from_str(&json.stdout).expect("valid json");
+    assert_eq!(value["source"], "journalctl");
+    assert_eq!(value["scope"], "system");
+    assert_eq!(value["entries"][0]["message"], "first");
+    assert_eq!(value["entries"].as_array().expect("array").len(), 3);
+}
+
+#[test]
+fn logs_multi_line_messages_stay_on_one_row() {
+    let stubs = Stubs::new().with_logs(
+        "Get-WinEvent",
+        vec![log_entry(
+            "t",
+            "错误",
+            "SCM",
+            "service stopped\nexit code 1067",
+        )],
+    );
+
+    let out = x(&stubs, &["logs", "system"], false);
+    assert!(out.stdout.contains("service stopped exit code 1067"));
+    // The table put the message on its own line; it stays on exactly one.
+    let message_lines: Vec<&str> = out
+        .stdout
+        .lines()
+        .filter(|line| line.contains("service stopped"))
+        .collect();
+    assert_eq!(message_lines.len(), 1, "{:?}", message_lines);
+}
+
+#[test]
+fn logs_without_the_capability_is_unsupported() {
+    let out = x_in(&stub_context(), &["logs", "system"], false);
+    assert_eq!(out.code, ErrorKind::Unsupported.exit_code());
+}

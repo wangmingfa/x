@@ -11,6 +11,7 @@ authors.workspace = true
 [dependencies]
 x-core = { workspace = true }
 libc = { workspace = true }
+serde_json = { workspace = true }
 sysinfo = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]

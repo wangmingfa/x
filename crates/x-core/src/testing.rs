@@ -691,6 +691,58 @@ impl crate::firewall::FirewallManager for StubFirewall {
     }
 }
 
+/// Log reader stub that answers with a fixed page and records the scope asked
+/// for, so tests can assert what the frontend requested.
+#[derive(Debug)]
+pub struct StubLogs {
+    source: String,
+    entries: Vec<crate::logs::LogEntry>,
+    reads: std::sync::Mutex<Vec<String>>,
+}
+
+impl Default for StubLogs {
+    fn default() -> Self {
+        Self {
+            source: "stub".to_string(),
+            entries: Vec::new(),
+            reads: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl StubLogs {
+    /// A reader serving `entries` from `source`.
+    pub fn new(source: &str, entries: Vec<crate::logs::LogEntry>) -> Self {
+        Self {
+            source: source.to_string(),
+            entries,
+            reads: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Scopes read so far, in order.
+    pub fn reads(&self) -> Vec<String> {
+        self.reads.lock().expect("stub mutex").clone()
+    }
+}
+
+impl crate::logs::LogReader for StubLogs {
+    fn read(
+        &self,
+        scope: &crate::logs::LogScope,
+        limit: usize,
+    ) -> crate::error::Result<crate::logs::LogPage> {
+        self.reads.lock().expect("stub mutex").push(scope.label());
+        let mut entries = self.entries.clone();
+        entries.truncate(limit);
+        Ok(crate::logs::LogPage {
+            scope: scope.label(),
+            source: self.source.clone(),
+            entries,
+        })
+    }
+}
+
 /// A context assembled from configurable stubs.
 ///
 /// ```no_run
@@ -716,6 +768,8 @@ pub struct Stubs {
     pub disk: std::sync::Arc<StubDisk>,
     /// Firewall capability.
     pub firewall: std::sync::Arc<StubFirewall>,
+    /// Log reader capability.
+    pub logs: std::sync::Arc<StubLogs>,
 }
 
 impl Default for Stubs {
@@ -735,6 +789,7 @@ impl Stubs {
             system: std::sync::Arc::new(StubSystem::default()),
             disk: std::sync::Arc::new(StubDisk::default()),
             firewall: std::sync::Arc::new(StubFirewall::default()),
+            logs: std::sync::Arc::new(StubLogs::default()),
         }
     }
 
@@ -800,6 +855,14 @@ impl Stubs {
         }
     }
 
+    /// Serve `entries` from a log reader named `source`.
+    pub fn with_logs(self, source: &str, entries: Vec<crate::logs::LogEntry>) -> Self {
+        Self {
+            logs: std::sync::Arc::new(StubLogs::new(source, entries)),
+            ..self
+        }
+    }
+
     /// Assemble the context.
     pub fn context(&self) -> crate::context::SystemContext {
         use std::sync::Arc;
@@ -811,6 +874,7 @@ impl Stubs {
             .service(Arc::clone(&self.service) as Arc<dyn ServiceManager>)
             .disk(Arc::clone(&self.disk) as Arc<dyn DiskManager>)
             .firewall(Arc::clone(&self.firewall) as Arc<dyn crate::firewall::FirewallManager>)
+            .logs(Arc::clone(&self.logs) as Arc<dyn crate::logs::LogReader>)
             .build()
             .expect("stub capabilities are always complete")
     }

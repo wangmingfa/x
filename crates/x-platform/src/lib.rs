@@ -90,6 +90,7 @@ pub fn create_context() -> Result<SystemContext> {
             .startup(std::sync::Arc::new(common::startup_os::PlatformStartup))
             .schedule(std::sync::Arc::new(common::schedule_os::PlatformSchedule))
             .firewall(std::sync::Arc::new(common::firewall_os::PlatformFirewall))
+            .logs(std::sync::Arc::new(common::logs_os::PlatformLogs))
             .build()
     }
 
@@ -114,6 +115,7 @@ pub fn create_context() -> Result<SystemContext> {
             .startup(std::sync::Arc::new(common::startup_os::PlatformStartup))
             .schedule(std::sync::Arc::new(common::schedule_os::PlatformSchedule))
             .firewall(std::sync::Arc::new(common::firewall_os::PlatformFirewall))
+            .logs(std::sync::Arc::new(common::logs_os::PlatformLogs))
             .build()
     }
 
@@ -138,6 +140,7 @@ pub fn create_context() -> Result<SystemContext> {
             .startup(std::sync::Arc::new(common::startup_os::PlatformStartup))
             .schedule(std::sync::Arc::new(common::schedule_os::PlatformSchedule))
             .firewall(std::sync::Arc::new(common::firewall_os::PlatformFirewall))
+            .logs(std::sync::Arc::new(common::logs_os::PlatformLogs))
             .build()
     }
 

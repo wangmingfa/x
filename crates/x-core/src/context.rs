@@ -48,6 +48,8 @@ pub struct SystemContext {
     pub schedule: Option<Arc<dyn crate::schedule::ScheduleManager>>,
     /// Firewall inspection and rule changes.
     pub firewall: Option<Arc<dyn crate::firewall::FirewallManager>>,
+    /// System log reads.
+    pub logs: Option<Arc<dyn crate::logs::LogReader>>,
 }
 
 impl std::fmt::Debug for SystemContext {
@@ -97,6 +99,7 @@ pub struct SystemContextBuilder {
     startup: Option<Arc<dyn crate::startup::StartupManager>>,
     schedule: Option<Arc<dyn crate::schedule::ScheduleManager>>,
     firewall: Option<Arc<dyn crate::firewall::FirewallManager>>,
+    logs: Option<Arc<dyn crate::logs::LogReader>>,
 }
 
 impl SystemContextBuilder {
@@ -196,6 +199,12 @@ impl SystemContextBuilder {
         self
     }
 
+    /// Provide the log reader capability (optional).
+    pub fn logs(mut self, mgr: Arc<dyn crate::logs::LogReader>) -> Self {
+        self.logs = Some(mgr);
+        self
+    }
+
     /// Finish, failing if a mandatory capability is missing.
     pub fn build(self) -> Result<SystemContext> {
         Ok(SystemContext {
@@ -227,6 +236,7 @@ impl SystemContextBuilder {
             startup: self.startup,
             schedule: self.schedule,
             firewall: self.firewall,
+            logs: self.logs,
         })
     }
 }

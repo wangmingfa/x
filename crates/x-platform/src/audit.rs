@@ -363,6 +363,8 @@ pub fn attach(context: SystemContext) -> SystemContext {
                 recorder: recorder(),
             }) as Arc<dyn FirewallManager>
         }),
+        // Log reads are never audited: the doctrine records changes, not reads.
+        logs: context.logs,
     }
 }
 

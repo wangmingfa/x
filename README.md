@@ -95,6 +95,20 @@ cargo build -p x-app
 如实报不支持。`allow` / `deny` 与所有破坏性操作一样先确认、被拒留痕
 （审计动作 `firewall.allow` / `firewall.deny`）。
 
+### 系统日志（`x logs`）
+
+| 命令 | 说明 |
+| --- | --- |
+| `x logs system [--limit N]` | 整机日志：journald / System 通道 / unified log |
+| `x logs service <name> [--limit N]` | 按服务取：systemd unit / 事件提供方 / 守护进程名 |
+| `x logs process <pid\|name> [--limit N]` | 按进程取（Windows 事件日志无进程索引，如实报不支持） |
+
+全部只读：不确认、不提权、不落审计。三套日志体系词汇不通，故时间戳与
+级别按平台原文透传（如 journald 的 `err`、中文 Windows 的「信息」），
+数据源为各平台原生工具的结构化输出（`journalctl -o json` /
+`Get-WinEvent` + `ConvertTo-Json` / `log show --style json`），不做文本
+刮取；新→旧排序，默认 50 条。
+
 ### 能力探测（`x capability`）
 
 | 命令 | 说明 |
@@ -117,6 +131,9 @@ cargo build -p x-app
 | `service.action` | 服务名与动词（start / stop / …） |
 | `service.native` | 原生命令完整参数与退出码（`x capability` 的空参数探测不记录） |
 | `firewall.allow` / `firewall.deny` | 端口、协议与规则名（如 `port 8080/tcp as "web"`） |
+
+读操作不留痕：`x logs` 读系统日志本身不写审计行，审计只覆盖改变机器的
+动作。
 
 日志位置：Windows `%LOCALAPPDATA%\x\audit.log`；Linux
 `$XDG_STATE_HOME`（缺省 `~/.local/state`）`/x/audit.log`；macOS
@@ -230,7 +247,7 @@ GitHub Actions CI 在 Ubuntu / macOS / Windows 三平台上跑格式、clippy
 - [x] 代理（`x proxy get/set/clear`）：HTTP_PROXY / HTTPS_PROXY / NO_PROXY 与系统级代理
 - [x] 主机名（`x hosts list/get/add/remove`）：统一 /etc/hosts 与 Windows hosts
 - [x] 电源与时间：`x power battery/sleep/shutdown/reboot`、`x time / timezone / sync`
-- [ ] 日志（`x logs [service|process]`）：journalctl / Event Viewer / log stream（三套体系差异大，需谨慎设计）
+- [x] 日志（`x logs [service|process]`）：journalctl / Event Viewer / log stream（三套体系差异大，需谨慎设计）
 - [ ] 证书与网络诊断：`x cert check/<host>`（Issuer/Subject/有效期/SAN/TLS）、`x http / tls / headers`；综合诊断 `x doctor <host>`（DNS → TCP → TLS → 证书 → HTTP）
 - [ ] 权限提升细化：统一 PermissionRequired / PermissionDenied / ElevationFailed，按平台给出更具体的提权/排障建议
 

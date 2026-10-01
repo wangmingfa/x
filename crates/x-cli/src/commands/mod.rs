@@ -9,6 +9,7 @@ pub mod file;
 pub mod firewall;
 pub mod gitcmd;
 pub mod hosts;
+pub mod logs;
 pub mod mount;
 pub mod net;
 pub mod permission;

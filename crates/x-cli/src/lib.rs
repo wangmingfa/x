@@ -179,6 +179,10 @@ pub enum Command {
     /// Firewall state and port rules.
     #[command(subcommand)]
     Firewall(commands::firewall::FirewallCommand),
+
+    /// The system log: journal / Event Log / unified log, read-only.
+    #[command(subcommand)]
+    Logs(commands::logs::LogsCommand),
 }
 
 /// Signal to deliver to a process.
@@ -332,6 +336,7 @@ fn dispatch(
         Some(Command::Firewall(cmd)) => {
             commands::firewall::dispatch(context, renderer, confirmer, cmd)
         }
+        Some(Command::Logs(cmd)) => commands::logs::dispatch(context, renderer, cmd),
     }
 }
 
