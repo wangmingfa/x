@@ -143,6 +143,42 @@ pub enum Command {
 
     /// What this host can actually do: supported / degraded / unsupported.
     Capability(commands::capability::CapabilityArgs),
+
+    /// Environment and system proxy.
+    #[command(subcommand)]
+    Proxy(commands::proxy::ProxyCommand),
+
+    /// The hosts file: list, look up, add, remove.
+    #[command(subcommand)]
+    Hosts(commands::hosts::HostsCommand),
+
+    /// Battery and power verbs (sleep / shutdown / reboot).
+    #[command(subcommand)]
+    Power(commands::powertime::PowerCommand),
+
+    /// Clock facts and time sync.
+    #[command(subcommand)]
+    Time(commands::powertime::TimeCommand),
+
+    /// Mounted filesystems and mount / unmount.
+    #[command(subcommand)]
+    Mount(commands::mount::MountCommand),
+
+    /// Who may touch a path (Unix mode bits / Windows ACL).
+    #[command(subcommand)]
+    Permission(commands::permission::PermissionCommand),
+
+    /// Programs that start at login.
+    #[command(subcommand)]
+    Startup(commands::startup::StartupCommand),
+
+    /// Scheduled tasks (cron / Task Scheduler / launchd).
+    #[command(subcommand)]
+    Schedule(commands::schedule::ScheduleCommand),
+
+    /// Firewall state and port rules.
+    #[command(subcommand)]
+    Firewall(commands::firewall::FirewallCommand),
 }
 
 /// Signal to deliver to a process.
@@ -279,6 +315,23 @@ fn dispatch(
         }
         Some(Command::Docker(cmd)) => commands::devtools::dispatch_docker(context, renderer, cmd),
         Some(Command::Capability(args)) => commands::capability::dispatch(context, renderer, args),
+        Some(Command::Proxy(cmd)) => commands::proxy::dispatch(context, renderer, cmd),
+        Some(Command::Hosts(cmd)) => commands::hosts::dispatch(context, renderer, cmd),
+        Some(Command::Power(cmd)) => {
+            commands::powertime::dispatch_power(context, renderer, confirmer, cmd)
+        }
+        Some(Command::Time(cmd)) => commands::powertime::dispatch_time(context, renderer, cmd),
+        Some(Command::Mount(cmd)) => commands::mount::dispatch(context, renderer, confirmer, cmd),
+        Some(Command::Permission(cmd)) => commands::permission::dispatch(context, renderer, cmd),
+        Some(Command::Startup(cmd)) => {
+            commands::startup::dispatch(context, renderer, confirmer, cmd)
+        }
+        Some(Command::Schedule(cmd)) => {
+            commands::schedule::dispatch(context, renderer, confirmer, cmd)
+        }
+        Some(Command::Firewall(cmd)) => {
+            commands::firewall::dispatch(context, renderer, confirmer, cmd)
+        }
     }
 }
 

@@ -324,9 +324,11 @@ impl ServiceManager for WindowsService {
     }
 }
 
-/// Decode console output: UTF-8 when the tool produced it, else the OEM code
-/// page the C runtime falls back to when stdout is redirected.
-fn decode_console(bytes: &[u8]) -> String {
+/// Decode console output: UTF-8 first, then the OEM code page.
+///
+/// Shared with other Windows adapters (firewall's `netsh`) because console
+/// tools answer in the OEM code page — GBK on a zh-CN host.
+pub(crate) fn decode_console(bytes: &[u8]) -> String {
     if let Ok(text) = std::str::from_utf8(bytes) {
         return text.to_string();
     }

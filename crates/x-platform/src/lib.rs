@@ -84,6 +84,12 @@ pub fn create_context() -> Result<SystemContext> {
             ))
             .user(std::sync::Arc::new(common::user_os::PlatformUser))
             .shell(std::sync::Arc::new(common::shell_os::PlatformShell))
+            .proxy(std::sync::Arc::new(common::proxy_cmd::PlatformProxy))
+            .power(std::sync::Arc::new(common::power_os::PlatformPower))
+            .mount(std::sync::Arc::new(common::mount_os::PlatformMount))
+            .startup(std::sync::Arc::new(common::startup_os::PlatformStartup))
+            .schedule(std::sync::Arc::new(common::schedule_os::PlatformSchedule))
+            .firewall(std::sync::Arc::new(common::firewall_os::PlatformFirewall))
             .build()
     }
 
@@ -102,6 +108,12 @@ pub fn create_context() -> Result<SystemContext> {
             ))
             .user(std::sync::Arc::new(common::user_os::PlatformUser))
             .shell(std::sync::Arc::new(common::shell_os::PlatformShell))
+            .proxy(std::sync::Arc::new(common::proxy_cmd::PlatformProxy))
+            .power(std::sync::Arc::new(common::power_os::PlatformPower))
+            .mount(std::sync::Arc::new(common::mount_os::PlatformMount))
+            .startup(std::sync::Arc::new(common::startup_os::PlatformStartup))
+            .schedule(std::sync::Arc::new(common::schedule_os::PlatformSchedule))
+            .firewall(std::sync::Arc::new(common::firewall_os::PlatformFirewall))
             .build()
     }
 
@@ -120,6 +132,12 @@ pub fn create_context() -> Result<SystemContext> {
             ))
             .user(std::sync::Arc::new(common::user_os::PlatformUser))
             .shell(std::sync::Arc::new(common::shell_os::PlatformShell))
+            .proxy(std::sync::Arc::new(common::proxy_cmd::PlatformProxy))
+            .power(std::sync::Arc::new(common::power_os::PlatformPower))
+            .mount(std::sync::Arc::new(common::mount_os::PlatformMount))
+            .startup(std::sync::Arc::new(common::startup_os::PlatformStartup))
+            .schedule(std::sync::Arc::new(common::schedule_os::PlatformSchedule))
+            .firewall(std::sync::Arc::new(common::firewall_os::PlatformFirewall))
             .build()
     }
 

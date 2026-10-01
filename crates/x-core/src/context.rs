@@ -36,6 +36,18 @@ pub struct SystemContext {
     pub user: Option<Arc<dyn crate::user::UserManager>>,
     /// Login shells, when the platform adapter is compiled in.
     pub shell: Option<Arc<dyn crate::shell::ShellManager>>,
+    /// Proxy inspection, when the platform adapter is compiled in.
+    pub proxy: Option<Arc<dyn crate::proxy::ProxyManager>>,
+    /// Power verbs and battery facts, when the platform adapter is compiled in.
+    pub power: Option<Arc<dyn crate::power::PowerManager>>,
+    /// Mounted filesystems and mount/unmount verbs.
+    pub mount: Option<Arc<dyn crate::mount::MountManager>>,
+    /// Login startup items.
+    pub startup: Option<Arc<dyn crate::startup::StartupManager>>,
+    /// Scheduled tasks / jobs.
+    pub schedule: Option<Arc<dyn crate::schedule::ScheduleManager>>,
+    /// Firewall inspection and rule changes.
+    pub firewall: Option<Arc<dyn crate::firewall::FirewallManager>>,
 }
 
 impl std::fmt::Debug for SystemContext {
@@ -79,6 +91,12 @@ pub struct SystemContextBuilder {
     clipboard: Option<Arc<dyn crate::clipboard::ClipboardManager>>,
     user: Option<Arc<dyn crate::user::UserManager>>,
     shell: Option<Arc<dyn crate::shell::ShellManager>>,
+    proxy: Option<Arc<dyn crate::proxy::ProxyManager>>,
+    power: Option<Arc<dyn crate::power::PowerManager>>,
+    mount: Option<Arc<dyn crate::mount::MountManager>>,
+    startup: Option<Arc<dyn crate::startup::StartupManager>>,
+    schedule: Option<Arc<dyn crate::schedule::ScheduleManager>>,
+    firewall: Option<Arc<dyn crate::firewall::FirewallManager>>,
 }
 
 impl SystemContextBuilder {
@@ -142,6 +160,42 @@ impl SystemContextBuilder {
         self
     }
 
+    /// Provide the proxy capability (optional).
+    pub fn proxy(mut self, mgr: Arc<dyn crate::proxy::ProxyManager>) -> Self {
+        self.proxy = Some(mgr);
+        self
+    }
+
+    /// Provide the power capability (optional).
+    pub fn power(mut self, mgr: Arc<dyn crate::power::PowerManager>) -> Self {
+        self.power = Some(mgr);
+        self
+    }
+
+    /// Provide the mount capability (optional).
+    pub fn mount(mut self, mgr: Arc<dyn crate::mount::MountManager>) -> Self {
+        self.mount = Some(mgr);
+        self
+    }
+
+    /// Provide the startup capability (optional).
+    pub fn startup(mut self, mgr: Arc<dyn crate::startup::StartupManager>) -> Self {
+        self.startup = Some(mgr);
+        self
+    }
+
+    /// Provide the schedule capability (optional).
+    pub fn schedule(mut self, mgr: Arc<dyn crate::schedule::ScheduleManager>) -> Self {
+        self.schedule = Some(mgr);
+        self
+    }
+
+    /// Provide the firewall capability (optional).
+    pub fn firewall(mut self, mgr: Arc<dyn crate::firewall::FirewallManager>) -> Self {
+        self.firewall = Some(mgr);
+        self
+    }
+
     /// Finish, failing if a mandatory capability is missing.
     pub fn build(self) -> Result<SystemContext> {
         Ok(SystemContext {
@@ -167,6 +221,12 @@ impl SystemContextBuilder {
             clipboard: self.clipboard,
             user: self.user,
             shell: self.shell,
+            proxy: self.proxy,
+            power: self.power,
+            mount: self.mount,
+            startup: self.startup,
+            schedule: self.schedule,
+            firewall: self.firewall,
         })
     }
 }

@@ -14,7 +14,8 @@ impl UserManager for PlatformUser {
     fn current(&self) -> Result<UserInfo> {
         #[cfg(unix)]
         {
-            let name = x_platform_sys::current_user_name();
+            let name = x_platform_sys::current_user_name()
+                .ok_or_else(|| Error::unsupported("cannot determine the current user"))?;
             self.info(&name)
         }
         #[cfg(windows)]
@@ -217,7 +218,7 @@ fn parse_group(text: &str) -> Vec<GroupInfo> {
             let name = fields.next()?.to_string();
             let gid = fields.next().map(str::to_string);
             let members = fields
-                .last()
+                .next_back()
                 .map(|m| {
                     m.split(',')
                         .filter(|s| !s.is_empty())

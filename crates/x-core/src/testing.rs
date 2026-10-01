@@ -133,6 +133,9 @@ pub fn stub_context() -> crate::context::SystemContext {
         .clipboard(Arc::new(NoopClipboard))
         .user(Arc::new(NoopUser))
         .shell(Arc::new(NoopShell))
+        .proxy(Arc::new(NoopProxy))
+        .power(Arc::new(NoopPower))
+        .mount(Arc::new(NoopMount))
         .build()
         .expect("stub capabilities are always complete")
 }
@@ -204,6 +207,41 @@ impl crate::shell::ShellManager for NoopShell {
     }
     fn default(&self) -> crate::error::Result<crate::shell::ShellInfo> {
         self.current()
+    }
+}
+
+/// Proxy stub: env layer is real, system layer absent.
+pub struct NoopProxy;
+
+impl crate::proxy::ProxyManager for NoopProxy {}
+
+/// Power stub: battery absent, verbs succeed without side effects.
+pub struct NoopPower;
+
+impl crate::power::PowerManager for NoopPower {
+    fn sleep(&self) -> crate::error::Result<()> {
+        Ok(())
+    }
+    fn shutdown(&self, _delay_seconds: u32) -> crate::error::Result<()> {
+        Ok(())
+    }
+    fn reboot(&self, _delay_seconds: u32) -> crate::error::Result<()> {
+        Ok(())
+    }
+}
+
+/// Mount stub: nothing mounted, verbs succeed without side effects.
+pub struct NoopMount;
+
+impl crate::mount::MountManager for NoopMount {
+    fn list(&self) -> crate::error::Result<Vec<crate::mount::MountInfo>> {
+        Ok(Vec::new())
+    }
+    fn mount(&self, _source: &str, _target: &str) -> crate::error::Result<()> {
+        Ok(())
+    }
+    fn unmount(&self, _target: &str) -> crate::error::Result<()> {
+        Ok(())
     }
 }
 
@@ -597,6 +635,62 @@ impl DiskManager for StubDisk {
     }
 }
 
+/// Firewall capability backed by a fixed rule list, recording every change.
+#[derive(Debug, Default)]
+pub struct StubFirewall {
+    enabled: bool,
+    rules: Mutex<Vec<crate::firewall::FirewallRule>>,
+    changes: Mutex<Vec<(String, u16, String)>>,
+}
+
+impl StubFirewall {
+    /// A firewall that answers with `rules` and reports `enabled`.
+    pub fn new(enabled: bool, rules: Vec<crate::firewall::FirewallRule>) -> Self {
+        Self {
+            enabled,
+            rules: Mutex::new(rules),
+            changes: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Changes the frontend asked for, in order: `(verb, port, protocol)`.
+    pub fn changes(&self) -> Vec<(String, u16, String)> {
+        self.changes.lock().expect("stub mutex").clone()
+    }
+}
+
+impl crate::firewall::FirewallManager for StubFirewall {
+    fn stack(&self) -> crate::firewall::FirewallStack {
+        crate::firewall::FirewallStack::Unknown
+    }
+
+    fn enabled(&self) -> Result<bool> {
+        Ok(self.enabled)
+    }
+
+    fn list(&self) -> Result<Vec<crate::firewall::FirewallRule>> {
+        Ok(self.rules.lock().expect("stub mutex").clone())
+    }
+
+    fn allow(&self, port: u16, protocol: Option<&str>, _name: Option<&str>) -> Result<()> {
+        self.changes.lock().expect("stub mutex").push((
+            "allow".to_string(),
+            port,
+            protocol.unwrap_or("tcp").to_string(),
+        ));
+        Ok(())
+    }
+
+    fn deny(&self, port: u16, protocol: Option<&str>, _name: Option<&str>) -> Result<()> {
+        self.changes.lock().expect("stub mutex").push((
+            "deny".to_string(),
+            port,
+            protocol.unwrap_or("tcp").to_string(),
+        ));
+        Ok(())
+    }
+}
+
 /// A context assembled from configurable stubs.
 ///
 /// ```no_run
@@ -620,6 +714,8 @@ pub struct Stubs {
     pub system: std::sync::Arc<StubSystem>,
     /// Disk capability.
     pub disk: std::sync::Arc<StubDisk>,
+    /// Firewall capability.
+    pub firewall: std::sync::Arc<StubFirewall>,
 }
 
 impl Default for Stubs {
@@ -638,6 +734,7 @@ impl Stubs {
             service: std::sync::Arc::new(StubService::default()),
             system: std::sync::Arc::new(StubSystem::default()),
             disk: std::sync::Arc::new(StubDisk::default()),
+            firewall: std::sync::Arc::new(StubFirewall::default()),
         }
     }
 
@@ -695,6 +792,14 @@ impl Stubs {
         }
     }
 
+    /// Use `rules` as the firewall rule list with the given global state.
+    pub fn with_firewall(self, enabled: bool, rules: Vec<crate::firewall::FirewallRule>) -> Self {
+        Self {
+            firewall: std::sync::Arc::new(StubFirewall::new(enabled, rules)),
+            ..self
+        }
+    }
+
     /// Assemble the context.
     pub fn context(&self) -> crate::context::SystemContext {
         use std::sync::Arc;
@@ -705,6 +810,7 @@ impl Stubs {
             .network(Arc::clone(&self.network) as Arc<dyn NetworkManager>)
             .service(Arc::clone(&self.service) as Arc<dyn ServiceManager>)
             .disk(Arc::clone(&self.disk) as Arc<dyn DiskManager>)
+            .firewall(Arc::clone(&self.firewall) as Arc<dyn crate::firewall::FirewallManager>)
             .build()
             .expect("stub capabilities are always complete")
     }

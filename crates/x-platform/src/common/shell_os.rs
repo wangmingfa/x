@@ -5,6 +5,8 @@
 //! `default` reads the login database.
 
 use std::process::Command;
+#[cfg(not(windows))]
+use x_core::error::Error;
 use x_core::error::Result;
 use x_core::shell::{ShellInfo, ShellManager};
 
@@ -93,7 +95,7 @@ impl ShellManager for PlatformShell {
     fn default(&self) -> Result<ShellInfo> {
         #[cfg(unix)]
         {
-            let user = crate::sys::current_user_name();
+            let user = crate::sys::current_user_name().unwrap_or_default();
             #[cfg(all(unix, not(target_os = "macos")))]
             {
                 if let Ok(text) = Command::new("getent").arg("passwd").arg(&user).output() {

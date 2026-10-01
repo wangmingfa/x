@@ -142,6 +142,13 @@ pub trait FileManager: Send + Sync {
     /// Move the path to the platform trash / recycle bin.
     fn trash(&self, path: &Path) -> Result<()>;
 
+    /// Platform-native access control detail (Windows ACL, POSIX ACL), when
+    /// the platform can produce one cheaply. `None` means "only the basic
+    /// mode bits apply" or "no acl tool present".
+    fn acl(&self, _path: &Path) -> Result<Option<String>> {
+        Ok(None)
+    }
+
     /// Copy a file or a directory tree. Existing destinations are overwritten.
     fn copy(&self, from: &Path, to: &Path) -> Result<()> {
         copy_path(from, to)

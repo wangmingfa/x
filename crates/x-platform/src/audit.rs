@@ -22,6 +22,7 @@ use std::sync::Arc;
 use x_core::audit::AuditEntry;
 use x_core::context::SystemContext;
 use x_core::error::Result;
+use x_core::firewall::{FirewallManager, FirewallRule, FirewallStack};
 use x_core::port::{KillPlan, PortInfo, PortListOptions, PortManager, PortQuery};
 use x_core::process::{KillSignal, ProcessInfo, ProcessListOptions, ProcessManager};
 use x_core::service::{
@@ -282,6 +283,48 @@ impl ServiceManager for AuditedService {
     }
 }
 
+/// Firewall capability that records rule changes.
+pub struct AuditedFirewall {
+    inner: Arc<dyn FirewallManager>,
+    recorder: Recorder,
+}
+
+/// `port 8080/tcp as \`web\`` — what a firewall change was about.
+fn rule_target(port: u16, protocol: Option<&str>, name: Option<&str>) -> String {
+    match name {
+        Some(name) => format!("port {port}/{} as `{name}`", protocol.unwrap_or("tcp")),
+        None => format!("port {port}/{}", protocol.unwrap_or("tcp")),
+    }
+}
+
+impl FirewallManager for AuditedFirewall {
+    fn stack(&self) -> FirewallStack {
+        self.inner.stack()
+    }
+
+    fn enabled(&self) -> Result<bool> {
+        self.inner.enabled()
+    }
+
+    fn list(&self) -> Result<Vec<FirewallRule>> {
+        self.inner.list()
+    }
+
+    fn allow(&self, port: u16, protocol: Option<&str>, name: Option<&str>) -> Result<()> {
+        let result = self.inner.allow(port, protocol, name);
+        self.recorder
+            .note_result("firewall.allow", rule_target(port, protocol, name), &result);
+        result
+    }
+
+    fn deny(&self, port: u16, protocol: Option<&str>, name: Option<&str>) -> Result<()> {
+        let result = self.inner.deny(port, protocol, name);
+        self.recorder
+            .note_result("firewall.deny", rule_target(port, protocol, name), &result);
+        result
+    }
+}
+
 /// Wrap the destructive capabilities of `context` so real runs are audited.
 ///
 /// This is called from the composition root only: stub-driven CLI and TUI
@@ -309,6 +352,17 @@ pub fn attach(context: SystemContext) -> SystemContext {
         clipboard: context.clipboard,
         user: context.user,
         shell: context.shell,
+        proxy: context.proxy,
+        power: context.power,
+        mount: context.mount,
+        startup: context.startup,
+        schedule: context.schedule,
+        firewall: context.firewall.map(|inner| {
+            Arc::new(AuditedFirewall {
+                inner,
+                recorder: recorder(),
+            }) as Arc<dyn FirewallManager>
+        }),
     }
 }
 
@@ -317,7 +371,7 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
     use x_core::testing::{
-        stub_socket, NoopProcess, NoopService, StubPort, StubProcess, StubService,
+        stub_socket, NoopProcess, NoopService, StubFirewall, StubPort, StubProcess, StubService,
     };
 
     /// Every test in here manipulates the process-wide audit environment
@@ -524,6 +578,31 @@ mod tests {
         // The probe shape: empty args, outcome irrelevant.
         let _ = service.native(&[]);
         assert!(read_lines(&path).is_empty(), "probe wrote a record");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn firewall_changes_are_attributed_to_their_rule_target() {
+        let _guard = ENV.lock().expect("env mutex");
+        let path = scratch("firewall");
+        use_log(Some(path.clone()));
+
+        let firewall = AuditedFirewall {
+            inner: Arc::new(StubFirewall::new(true, Vec::new())),
+            recorder: Recorder { user: None },
+        };
+        firewall.allow(8080, Some("tcp"), None).expect("stub allow");
+        firewall
+            .deny(53, Some("udp"), Some("dns"))
+            .expect("stub deny");
+
+        let lines = read_lines(&path);
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(lines[0].contains("\"action\":\"firewall.allow\""));
+        assert!(lines[0].contains("\"target\":\"port 8080/tcp\""));
+        assert!(lines[0].contains("\"outcome\":\"ok\""));
+        assert!(lines[1].contains("\"action\":\"firewall.deny\""));
+        assert!(lines[1].contains("port 53/udp as `dns`"));
         std::fs::remove_file(&path).ok();
     }
 }

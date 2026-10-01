@@ -12,7 +12,16 @@ pub mod process_sysinfo;
 
 pub mod clipboard_cmd;
 pub mod file_open;
+pub mod firewall_os;
+pub mod hosts_os;
+pub mod mount_os;
+pub mod pathperm_os;
+pub mod power_os;
+pub mod proxy_cmd;
+pub mod proxy_os;
+pub mod schedule_os;
 pub mod shell_os;
+pub mod startup_os;
 pub mod user_os;
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]

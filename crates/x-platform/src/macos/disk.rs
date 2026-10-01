@@ -108,7 +108,7 @@ fn plist_value<'a>(plist: &'a str, key: &str) -> Option<&'a str> {
     let open = match rest {
         s if s.starts_with("<string>") => "<string>",
         s if s.starts_with("<true/>") || s.starts_with("<false/>") => {
-            return Some(rest.split_whitespace().next()?);
+            return rest.split_whitespace().next();
         }
         _ => return None,
     };

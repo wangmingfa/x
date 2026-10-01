@@ -81,6 +81,20 @@ cargo build -p x-app
 | `x service logs <name> [--lines N]` | 服务最近的日志（journalctl / log show / 事件日志），最新在前 |
 | `x service native <args>…` | 逃生舱：参数原样交给平台管理器命令（systemctl / launchctl / sc），子进程非零退出则 x 退出码 1 |
 
+### 防火墙（`x firewall`）
+
+| 命令 | 说明 |
+| --- | --- |
+| `x firewall status` | 哪个防火墙在应答（Windows Firewall / netfilter / pf）与是否启用 |
+| `x firewall list [--limit N]` | 可见规则；截断时说明还有多少条 |
+| `x firewall allow <port> [--proto tcp\|udp] [--name N]` | 放行入站端口（需管理员 / root，先确认） |
+| `x firewall deny <port> [--proto tcp\|udp] [--name N]` | 阻断入站端口（Windows 上落为 Block 规则，阻断优先于放行） |
+
+读取走各平台自己的工具（`netsh advfirewall` / `ufw`、`nft`、`iptables` /
+`socketfilterfw`）；macOS 的 pf 规则修改需要锚点与 root，`allow` / `deny`
+如实报不支持。`allow` / `deny` 与所有破坏性操作一样先确认、被拒留痕
+（审计动作 `firewall.allow` / `firewall.deny`）。
+
 ### 能力探测（`x capability`）
 
 | 命令 | 说明 |
@@ -102,6 +116,7 @@ cargo build -p x-app
 | `port.kill_plan` | 查询目标（`port 8080` / `process node`）、杀掉进程数 |
 | `service.action` | 服务名与动词（start / stop / …） |
 | `service.native` | 原生命令完整参数与退出码（`x capability` 的空参数探测不记录） |
+| `firewall.allow` / `firewall.deny` | 端口、协议与规则名（如 `port 8080/tcp as "web"`） |
 
 日志位置：Windows `%LOCALAPPDATA%\x\audit.log`；Linux
 `$XDG_STATE_HOME`（缺省 `~/.local/state`）`/x/audit.log`；macOS
@@ -207,14 +222,14 @@ GitHub Actions CI 在 Ubuntu / macOS / Windows 三平台上跑格式、clippy
 
 ### P2 系统管理
 
-- [ ] 启动项（`x startup list/enable/disable`）：Windows Startup / 注册表 Run / 计划任务；Linux systemd / .desktop；macOS LaunchAgents / LaunchDaemons
-- [ ] 计划任务（`x schedule list/add/remove`）：Windows Task Scheduler / Linux cron、systemd timer / macOS launchd
-- [ ] 挂载（`x mount list/info/mount/unmount`）：统一 mount / umount / diskutil / net use
-- [ ] 权限（`x permission <path>` / `check`）：Windows ACL / Unix 权限 / POSIX ACL
-- [ ] 防火墙（`x firewall status/list/allow/deny`）：Windows Firewall / nftables、iptables、ufw / macOS pf（权限与破坏性操作需谨慎处理）
-- [ ] 代理（`x proxy get/set/clear`）：HTTP_PROXY / HTTPS_PROXY / NO_PROXY 与系统级代理
-- [ ] 主机名（`x hosts list/get/add/remove`）：统一 /etc/hosts 与 Windows hosts
-- [ ] 电源与时间：`x power battery/sleep/shutdown/reboot`、`x time / timezone / sync`
+- [x] 启动项（`x startup list/enable/disable`）：Windows Startup / 注册表 Run / 计划任务；Linux systemd / .desktop；macOS LaunchAgents / LaunchDaemons
+- [x] 计划任务（`x schedule list/add/remove`）：Windows Task Scheduler / Linux cron、systemd timer / macOS launchd
+- [x] 挂载（`x mount list/info/mount/unmount`）：统一 mount / umount / diskutil / net use
+- [x] 权限（`x permission <path>` / `check`）：Windows ACL / Unix 权限 / POSIX ACL
+- [x] 防火墙（`x firewall status/list/allow/deny`）：Windows Firewall / nftables、iptables、ufw / macOS pf（权限与破坏性操作需谨慎处理）
+- [x] 代理（`x proxy get/set/clear`）：HTTP_PROXY / HTTPS_PROXY / NO_PROXY 与系统级代理
+- [x] 主机名（`x hosts list/get/add/remove`）：统一 /etc/hosts 与 Windows hosts
+- [x] 电源与时间：`x power battery/sleep/shutdown/reboot`、`x time / timezone / sync`
 - [ ] 日志（`x logs [service|process]`）：journalctl / Event Viewer / log stream（三套体系差异大，需谨慎设计）
 - [ ] 证书与网络诊断：`x cert check/<host>`（Issuer/Subject/有效期/SAN/TLS）、`x http / tls / headers`；综合诊断 `x doctor <host>`（DNS → TCP → TLS → 证书 → HTTP）
 - [ ] 权限提升细化：统一 PermissionRequired / PermissionDenied / ElevationFailed，按平台给出更具体的提权/排障建议

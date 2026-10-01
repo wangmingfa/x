@@ -70,11 +70,46 @@ impl FileManager for PlatformFile {
         Ok(info)
     }
 
+    fn acl(&self, path: &Path) -> Result<Option<String>> {
+        #[cfg(windows)]
+        {
+            let native = path.to_string_lossy().replace('/', "\\");
+            let output = Command::new("icacls")
+                .arg(&native)
+                .output()
+                .map_err(|e| Error::system(format!("cannot run icacls: {e}")))?;
+            if output.status.success() {
+                return Ok(Some(
+                    String::from_utf8_lossy(&output.stdout).trim().to_string(),
+                ));
+            }
+            Ok(None)
+        }
+        #[cfg(unix)]
+        {
+            // POSIX ACL detail needs `getfacl`; absent → basic mode only.
+            if let Ok(output) = Command::new("getfacl").arg("-p").arg(path).output() {
+                if output.status.success() {
+                    return Ok(Some(
+                        String::from_utf8_lossy(&output.stdout).trim().to_string(),
+                    ));
+                }
+            }
+            Ok(None)
+        }
+        #[cfg(not(any(unix, windows)))]
+        return Ok(None);
+    }
+
     fn open(&self, path: &Path) -> Result<()> {
         #[cfg(target_os = "macos")]
-        return run("open", &[&path.to_string_lossy()]);
+        {
+            run("open", &[&path.to_string_lossy()])
+        }
         #[cfg(all(unix, not(target_os = "macos")))]
-        return run("xdg-open", &[&path.to_string_lossy()]);
+        {
+            run("xdg-open", &[&path.to_string_lossy()])
+        }
         #[cfg(windows)]
         {
             // `explorer <path>` opens the file or directory with the default
@@ -91,7 +126,9 @@ impl FileManager for PlatformFile {
 
     fn reveal(&self, path: &Path) -> Result<()> {
         #[cfg(target_os = "macos")]
-        return run("open", &["-R", &path.to_string_lossy()]);
+        {
+            run("open", &["-R", &path.to_string_lossy()])
+        }
         #[cfg(all(unix, not(target_os = "macos")))]
         {
             // No "select in file manager" verb that works across desktops;

@@ -10,8 +10,8 @@ use std::sync::{Arc, Mutex};
 use clap::Parser;
 use x_core::error::{ErrorKind, PermissionRequirement};
 use x_core::testing::StubFailure;
-use x_core::testing::{stub_process, stub_service, stub_socket, Stubs};
-use x_core::{CpuUsage, LoadAverage, MemoryUsage, SystemInfo};
+use x_core::testing::{stub_context, stub_process, stub_service, stub_socket, Stubs};
+use x_core::{CpuUsage, LoadAverage, MemoryUsage, SystemContext, SystemInfo};
 
 use x_cli::format::{Confirmer, OutputFormat, Renderer};
 use x_cli::{execute, Cli};
@@ -129,8 +129,8 @@ struct Output {
     code: i32,
 }
 
-/// Run a command line, capturing both streams.
-fn x(stubs: &Stubs, args: &[&str], answer: bool) -> Output {
+/// Run a command line against a hand-built context.
+fn x_in(context: &SystemContext, args: &[&str], answer: bool) -> Output {
     let cli = Cli::parse_from(std::iter::once("x").chain(args.iter().copied()));
     let format = if cli.json {
         OutputFormat::Json
@@ -144,7 +144,7 @@ fn x(stubs: &Stubs, args: &[&str], answer: bool) -> Output {
     let mut renderer = Renderer::to_sink(format, false, stdout.clone());
     let (mut confirmer, _asked) = ScriptedConfirmer::new(answer);
 
-    let outcome = execute(&stubs.context(), &cli, &mut renderer, &mut confirmer);
+    let outcome = execute(context, &cli, &mut renderer, &mut confirmer);
     let flush = renderer.flush();
     let stderr = Buffer::default();
 
@@ -167,6 +167,11 @@ fn x(stubs: &Stubs, args: &[&str], answer: bool) -> Output {
         stderr: stderr.text(),
         code,
     }
+}
+
+/// Run a command line against the context assembled by `stubs`.
+fn x(stubs: &Stubs, args: &[&str], answer: bool) -> Output {
+    x_in(&stubs.context(), args, answer)
 }
 
 #[test]
@@ -661,4 +666,123 @@ fn version_info_needs_no_data_at_all() {
     let out = x(&stubs, &["--version-info"], false);
     assert_eq!(out.code, 0);
     assert!(out.stdout.to_lowercase().contains("contract"));
+}
+
+/// One firewall rule for the tests below.
+fn fw_rule(name: &str, action: &str, port: &str, proto: &str) -> x_core::firewall::FirewallRule {
+    x_core::firewall::FirewallRule {
+        name: name.into(),
+        action: action.into(),
+        port: Some(port.into()),
+        protocol: Some(proto.into()),
+        enabled: true,
+    }
+}
+
+#[test]
+fn firewall_status_reports_stack_and_state() {
+    let stubs = Stubs::new().with_firewall(true, Vec::new());
+
+    let out = x(&stubs, &["firewall", "status"], false);
+    assert_eq!(out.code, 0);
+    assert!(out.stdout.contains("stack"), "{}", out.stdout);
+    assert!(out.stdout.contains("yes"), "{}", out.stdout);
+
+    let json = x(&stubs, &["--json", "firewall", "status"], false);
+    let value: serde_json::Value = serde_json::from_str(&json.stdout).expect("valid json");
+    assert_eq!(value["stack"], "unknown");
+    assert_eq!(value["enabled"], true);
+}
+
+#[test]
+fn firewall_list_honours_the_limit_and_says_what_it_hid() {
+    let stubs = Stubs::new().with_firewall(
+        true,
+        vec![
+            fw_rule("web", "allow", "80", "tcp"),
+            fw_rule("dns", "allow", "53", "udp"),
+            fw_rule("backdoor", "block", "8080", "tcp"),
+        ],
+    );
+
+    let all = x(&stubs, &["--plain", "firewall", "list"], false);
+    assert_eq!(all.stdout.lines().count(), 3);
+
+    let capped = x(
+        &stubs,
+        &["--plain", "firewall", "list", "--limit", "2"],
+        false,
+    );
+    assert!(capped.stdout.contains("web"));
+    assert!(
+        !capped.stdout.contains("backdoor"),
+        "the limit must actually cut: {}",
+        capped.stdout
+    );
+    assert!(
+        capped.stdout.contains("1 more rule(s)"),
+        "hidden rows are announced: {}",
+        capped.stdout
+    );
+}
+
+#[test]
+fn firewall_write_asks_first_and_changes_nothing_when_refused() {
+    let stubs = Stubs::new().with_firewall(true, Vec::new());
+
+    let refused = x(&stubs, &["firewall", "allow", "8080"], false);
+    assert_eq!(refused.code, ErrorKind::InvalidInput.exit_code());
+    assert!(refused.stderr.contains("aborted"));
+    assert!(stubs.firewall.changes().is_empty());
+}
+
+#[test]
+fn firewall_writes_reach_the_manager_when_confirmed() {
+    let stubs = Stubs::new().with_firewall(true, Vec::new());
+
+    let out = x(&stubs, &["firewall", "allow", "8080", "--yes"], true);
+    assert_eq!(out.code, 0);
+    assert!(out.stdout.contains("allowed inbound tcp port 8080"));
+    assert_eq!(
+        stubs.firewall.changes(),
+        vec![("allow".to_string(), 8080u16, "tcp".to_string())]
+    );
+
+    let blocked = x(
+        &stubs,
+        &["firewall", "deny", "53", "--proto", "udp", "--yes"],
+        true,
+    );
+    assert_eq!(blocked.code, 0);
+    assert_eq!(
+        stubs.firewall.changes()[1],
+        ("deny".to_string(), 53u16, "udp".to_string())
+    );
+}
+
+#[test]
+fn firewall_json_write_skips_the_prompt() {
+    let stubs = Stubs::new().with_firewall(true, Vec::new());
+
+    let out = x(
+        &stubs,
+        &["--json", "firewall", "allow", "443", "--yes"],
+        true,
+    );
+    assert_eq!(out.code, 0);
+    assert!(
+        !out.stdout.contains("about to"),
+        "no prompt text in a json run: {}",
+        out.stdout
+    );
+    assert_eq!(
+        stubs.firewall.changes(),
+        vec![("allow".to_string(), 443u16, "tcp".to_string())]
+    );
+}
+
+#[test]
+fn firewall_without_the_capability_is_unsupported() {
+    let out = x_in(&stub_context(), &["firewall", "status"], false);
+    assert_eq!(out.code, ErrorKind::Unsupported.exit_code());
 }
