@@ -191,19 +191,19 @@ GitHub Actions CI 在 Ubuntu / macOS / Windows 三平台上跑格式、clippy
 
 ### P1 开发者日常
 
-- [ ] 文件：`x file info / type / permissions / owner / size`；`open / reveal / trash / copy / move / rename`（`x file reveal` 优先）
-- [ ] 环境与 PATH：`x env list/get/set`、`x path list/find/add/remove`、`x which <cmd>`（统一 where / which / command -v）
-- [ ] Shell：`x shell info / list / default`
-- [ ] 用户与组：`x user current/list/info`（UID/GID/home/groups/会话）、`x group list/info/members`
-- [ ] 剪贴板：`x clipboard get/set/clear`
-- [ ] SSH：`x ssh hosts/connect/test/ping`，读取 `~/.ssh/config`、known_hosts、keys
-- [ ] Git（可先做插件）：`x git status/branches/changed/conflicts/root`
-- [ ] 开发环境检测（`x dev` / `x dev node`）：Node / npm / pnpm / yarn / Bun / Deno / Rust / Python / Go / Java / Docker / Git / SSH
-- [ ] 命令体检（`x doctor <cmd>`）：依赖命令是否存在、版本、路径
-- [ ] 端口 → 进程 → 项目推断：`x port <n>` 额外给出 CWD、Git 仓库、项目类型与启动命令
-- [ ] 项目检测（`x project` / `x project info`）：自动识别 Git / Node / Rust / Python / Go / Java 项目、包管理器、分支
-- [ ] Docker / 容器（插件形态）：`x docker ps/images/ports/logs`、`x docker port <n>`；未来 Podman / containerd 统一到 `x container …`
-- [ ] 系统体检（`x doctor`）：一次性检查网络 / DNS / 代理 / Git / Node / Rust / Docker / SSH 等，输出 ✓/⚠
+- [x] 文件：`x file info / type / permissions / owner / size`；`open / reveal / trash / copy / move / rename`（`x file reveal` 优先）
+- [x] 环境与 PATH：`x env list/get/set`、`x path list/find/add/remove`、`x which <cmd>`（统一 where / which / command -v）
+- [x] Shell：`x shell info / list / default`
+- [x] 用户与组：`x user current/list/info`（UID/GID/home/groups/会话）、`x group list/info/members`
+- [x] 剪贴板：`x clipboard get/set/clear`
+- [x] SSH：`x ssh hosts/connect/test/ping`，读取 `~/.ssh/config`、known_hosts、keys
+- [x] Git（可先做插件）：`x git status/branches/changed/conflicts/root`
+- [x] 开发环境检测（`x dev` / `x dev node`）：Node / npm / pnpm / yarn / Bun / Deno / Rust / Python / Go / Java / Docker / Git / SSH
+- [x] 命令体检（`x doctor <cmd>`）：依赖命令是否存在、版本、路径
+- [x] 端口 → 进程 → 项目推断：`x port <n>` 额外给出 CWD、Git 仓库、项目类型与启动命令
+- [x] 项目检测（`x project` / `x project info`）：自动识别 Git / Node / Rust / Python / Go / Java 项目、包管理器、分支
+- [x] Docker / 容器（插件形态）：`x docker ps/images/ports/logs/port <n>`；未来 Podman / containerd 统一到 `x container …`
+- [x] 系统体检（`x doctor`）：一次性检查网络 / DNS / 代理 / Git / Node / Rust / Docker / SSH 等，输出 ✓/⚠
 
 ### P2 系统管理
 

@@ -28,6 +28,14 @@ pub struct SystemContext {
     pub service: Arc<dyn ServiceManager>,
     /// Mounted filesystems.
     pub disk: Arc<dyn DiskManager>,
+    /// File open/reveal/trash, when the platform adapter is compiled in.
+    pub file: Option<Arc<dyn crate::file::FileManager>>,
+    /// Clipboard text, when the platform adapter is compiled in.
+    pub clipboard: Option<Arc<dyn crate::clipboard::ClipboardManager>>,
+    /// Users and groups, when the platform adapter is compiled in.
+    pub user: Option<Arc<dyn crate::user::UserManager>>,
+    /// Login shells, when the platform adapter is compiled in.
+    pub shell: Option<Arc<dyn crate::shell::ShellManager>>,
 }
 
 impl std::fmt::Debug for SystemContext {
@@ -67,6 +75,10 @@ pub struct SystemContextBuilder {
     network: Option<Arc<dyn NetworkManager>>,
     service: Option<Arc<dyn ServiceManager>>,
     disk: Option<Arc<dyn DiskManager>>,
+    file: Option<Arc<dyn crate::file::FileManager>>,
+    clipboard: Option<Arc<dyn crate::clipboard::ClipboardManager>>,
+    user: Option<Arc<dyn crate::user::UserManager>>,
+    shell: Option<Arc<dyn crate::shell::ShellManager>>,
 }
 
 impl SystemContextBuilder {
@@ -106,6 +118,30 @@ impl SystemContextBuilder {
         self
     }
 
+    /// Provide the file capability (optional).
+    pub fn file(mut self, mgr: Arc<dyn crate::file::FileManager>) -> Self {
+        self.file = Some(mgr);
+        self
+    }
+
+    /// Provide the clipboard capability (optional).
+    pub fn clipboard(mut self, mgr: Arc<dyn crate::clipboard::ClipboardManager>) -> Self {
+        self.clipboard = Some(mgr);
+        self
+    }
+
+    /// Provide the user capability (optional).
+    pub fn user(mut self, mgr: Arc<dyn crate::user::UserManager>) -> Self {
+        self.user = Some(mgr);
+        self
+    }
+
+    /// Provide the shell capability (optional).
+    pub fn shell(mut self, mgr: Arc<dyn crate::shell::ShellManager>) -> Self {
+        self.shell = Some(mgr);
+        self
+    }
+
     /// Finish, failing if a mandatory capability is missing.
     pub fn build(self) -> Result<SystemContext> {
         Ok(SystemContext {
@@ -127,6 +163,10 @@ impl SystemContextBuilder {
             disk: self
                 .disk
                 .ok_or_else(|| Error::unsupported("disk capability not registered"))?,
+            file: self.file,
+            clipboard: self.clipboard,
+            user: self.user,
+            shell: self.shell,
         })
     }
 }

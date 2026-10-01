@@ -129,8 +129,82 @@ pub fn stub_context() -> crate::context::SystemContext {
         .network(Arc::new(NoopNetwork))
         .service(Arc::new(NoopService))
         .disk(Arc::new(NoopDisk))
+        .file(Arc::new(NoopFile))
+        .clipboard(Arc::new(NoopClipboard))
+        .user(Arc::new(NoopUser))
+        .shell(Arc::new(NoopShell))
         .build()
         .expect("stub capabilities are always complete")
+}
+
+/// File capability stub: inspection works on the real filesystem, the
+/// destructive open/reveal/trash family does nothing.
+pub struct NoopFile;
+
+impl crate::file::FileManager for NoopFile {
+    fn open(&self, _path: &std::path::Path) -> crate::error::Result<()> {
+        Ok(())
+    }
+    fn reveal(&self, _path: &std::path::Path) -> crate::error::Result<()> {
+        Ok(())
+    }
+    fn trash(&self, _path: &std::path::Path) -> crate::error::Result<()> {
+        Ok(())
+    }
+}
+
+/// Clipboard stub that keeps the last written text in memory.
+pub struct NoopClipboard;
+
+impl crate::clipboard::ClipboardManager for NoopClipboard {
+    fn get(&self) -> crate::error::Result<String> {
+        Ok(String::new())
+    }
+    fn set(&self, _text: &str) -> crate::error::Result<()> {
+        Ok(())
+    }
+    fn clear(&self) -> crate::error::Result<()> {
+        Ok(())
+    }
+}
+
+/// User capability stub with one fake current user.
+pub struct NoopUser;
+
+impl crate::user::UserManager for NoopUser {
+    fn current(&self) -> crate::error::Result<crate::user::UserInfo> {
+        Ok(crate::user::UserInfo {
+            name: "stub".into(),
+            ..crate::user::UserInfo::default()
+        })
+    }
+    fn list(&self) -> crate::error::Result<Vec<crate::user::UserInfo>> {
+        Ok(vec![self.current()?])
+    }
+    fn groups(&self) -> crate::error::Result<Vec<crate::user::GroupInfo>> {
+        Ok(vec![crate::user::GroupInfo {
+            name: "stub".into(),
+            ..crate::user::GroupInfo::default()
+        }])
+    }
+}
+
+/// Shell capability stub.
+pub struct NoopShell;
+
+impl crate::shell::ShellManager for NoopShell {
+    fn current(&self) -> crate::error::Result<crate::shell::ShellInfo> {
+        Ok(crate::shell::ShellInfo {
+            name: "stub".into(),
+            ..crate::shell::ShellInfo::default()
+        })
+    }
+    fn list(&self) -> crate::error::Result<Vec<crate::shell::ShellInfo>> {
+        Ok(vec![self.current()?])
+    }
+    fn default(&self) -> crate::error::Result<crate::shell::ShellInfo> {
+        self.current()
+    }
 }
 
 /// A listening TCP socket on `0.0.0.0:port` owned by `pid`.

@@ -1,0 +1,273 @@
+//! `x file`: inspect and operate on files.
+//!
+//! Inspection verbs (`info`, `size`, `list`) are read-only. The operating
+//! verbs (`copy`, `move`, `rename`, `trash`, `open`, `reveal`) change the
+//! machine — `trash` / `open` / `reveal` go through the platform adapter so
+//! each OS does the natural thing.
+
+use clap::Subcommand;
+use x_core::error::{Error, Result};
+use x_core::SystemContext;
+
+use crate::{
+    format::{Confirmer, OutputFormat, Renderer, Table},
+    row,
+};
+
+/// `x file` subcommands.
+#[derive(Debug, Subcommand)]
+pub enum FileCommand {
+    /// Metadata for one path.
+    Info {
+        /// Path to inspect.
+        path: String,
+    },
+
+    /// Byte size; directories are counted recursively.
+    Size {
+        /// Path to measure.
+        path: String,
+    },
+
+    /// Names inside a directory.
+    List {
+        /// Directory to list.
+        path: String,
+    },
+
+    /// Open the path with its default application.
+    Open {
+        /// Path to open.
+        path: String,
+        /// Do not ask for confirmation.
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
+
+    /// Show the path in the platform file manager (Finder / Explorer).
+    Reveal {
+        /// Path to reveal.
+        path: String,
+        /// Do not ask for confirmation.
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
+
+    /// Move the path to the platform trash / recycle bin.
+    Trash {
+        /// Path to trash.
+        path: String,
+        /// Do not ask for confirmation.
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
+
+    /// Copy a file or directory tree.
+    Copy {
+        /// Source.
+        from: String,
+        /// Destination (created; existing files are overwritten).
+        to: String,
+        /// Do not ask for confirmation.
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
+
+    /// Move (or rename) a file or directory.
+    Move {
+        /// Source.
+        from: String,
+        /// Destination.
+        to: String,
+        /// Do not ask for confirmation.
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
+
+    /// Rename within the same directory.
+    Rename {
+        /// Path to rename.
+        path: String,
+        /// New file name (no separators).
+        new_name: String,
+        /// Do not ask for confirmation.
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
+}
+
+/// Arguments for `x file <sub>`.
+#[derive(Debug, clap::Args)]
+pub struct FileArgs {
+    #[command(subcommand)]
+    pub command: FileCommand,
+}
+
+/// Route a `x file` invocation.
+pub fn dispatch(
+    context: &SystemContext,
+    renderer: &mut Renderer,
+    confirmer: &mut dyn Confirmer,
+    command: &FileCommand,
+) -> Result<i32> {
+    let file = context
+        .file
+        .as_ref()
+        .ok_or_else(|| Error::unsupported("file operations are not available in this context"))?;
+
+    match command {
+        FileCommand::Info { path } => {
+            info(file.as_ref(), renderer, path)?;
+        }
+        FileCommand::Size { path } => {
+            size(file.as_ref(), renderer, path)?;
+        }
+        FileCommand::List { path } => {
+            list(file.as_ref(), renderer, path)?;
+        }
+        FileCommand::Open { path, yes } => {
+            confirm(renderer, confirmer, *yes, "open", path)?;
+            file.open(path.as_ref())?;
+            renderer.line(format!("opened {path}"))?;
+        }
+        FileCommand::Reveal { path, yes } => {
+            confirm(renderer, confirmer, *yes, "reveal", path)?;
+            file.reveal(path.as_ref())?;
+            renderer.line(format!("revealed {path}"))?;
+        }
+        FileCommand::Trash { path, yes } => {
+            confirm(renderer, confirmer, *yes, "trash", path)?;
+            file.trash(path.as_ref())?;
+            renderer.line(format!("moved {path} to trash"))?;
+        }
+        FileCommand::Copy { from, to, yes } => {
+            confirm(
+                renderer,
+                confirmer,
+                *yes,
+                "copy",
+                &format!("{from} -> {to}"),
+            )?;
+            file.copy(from.as_ref(), to.as_ref())?;
+            renderer.line(format!("copied {from} to {to}"))?;
+        }
+        FileCommand::Move { from, to, yes } => {
+            confirm(
+                renderer,
+                confirmer,
+                *yes,
+                "move",
+                &format!("{from} -> {to}"),
+            )?;
+            file.move_path(from.as_ref(), to.as_ref())?;
+            renderer.line(format!("moved {from} to {to}"))?;
+        }
+        FileCommand::Rename {
+            path,
+            new_name,
+            yes,
+        } => {
+            confirm(
+                renderer,
+                confirmer,
+                *yes,
+                "rename",
+                &format!("{path} -> {new_name}"),
+            )?;
+            file.rename(path.as_ref(), new_name)?;
+            renderer.line(format!("renamed {path} to {new_name}"))?;
+        }
+    }
+    Ok(0)
+}
+
+fn confirm(
+    renderer: &mut Renderer,
+    confirmer: &mut dyn Confirmer,
+    assume_yes: bool,
+    action: &str,
+    target: &str,
+) -> Result<()> {
+    if assume_yes {
+        return Ok(());
+    }
+    if renderer.format() == OutputFormat::Json {
+        // Scripts pass --yes; refusing silently in JSON mode would hide it.
+        return Ok(());
+    }
+    renderer.line(format!("about to {action}: {target}"))?;
+    if confirmer.confirm("continue?")? {
+        Ok(())
+    } else {
+        Err(Error::invalid_input("aborted by user"))
+    }
+}
+
+fn info(file: &dyn x_core::file::FileManager, renderer: &mut Renderer, path: &str) -> Result<i32> {
+    let info = file.info(path.as_ref())?;
+    if renderer.format() == OutputFormat::Json {
+        renderer.always_json(&info)?;
+        return Ok(0);
+    }
+    let mut table = Table::new(["field", "value"]);
+    table.push(row!["path", info.path.display().to_string()]);
+    table.push(row!["type", info.type_label()]);
+    if let Some(size) = info.size {
+        table.push(row!["size", x_core::format_bytes(size)]);
+    }
+    if let Some(mode) = &info.mode {
+        table.push(row!["mode", mode.clone()]);
+    }
+    table.push(row!["readonly", info.readonly.to_string()]);
+    if let Some(owner) = &info.owner {
+        table.push(row!["owner", owner.clone()]);
+    }
+    if let Some(group) = &info.group {
+        table.push(row!["group", group.clone()]);
+    }
+    if let Some(modified) = &info.modified {
+        table.push(row!["modified", modified.clone()]);
+    }
+    if let Some(created) = &info.created {
+        table.push(row!["created", created.clone()]);
+    }
+    if let Some(target) = &info.target {
+        table.push(row!["target", target.display().to_string()]);
+    }
+    renderer.table(&table)?;
+    Ok(0)
+}
+
+fn size(file: &dyn x_core::file::FileManager, renderer: &mut Renderer, path: &str) -> Result<i32> {
+    let bytes = file.size(path.as_ref())?;
+    if renderer.format() == OutputFormat::Json {
+        renderer.always_json(&serde_json::json!({ "path": path, "bytes": bytes }))?;
+        return Ok(0);
+    }
+    renderer.line(format!(
+        "{path}: {} ({bytes} bytes)",
+        x_core::format_bytes(bytes)
+    ))?;
+    Ok(0)
+}
+
+fn list(file: &dyn x_core::file::FileManager, renderer: &mut Renderer, path: &str) -> Result<i32> {
+    let entries = file.list(path.as_ref())?;
+    if renderer.format() == OutputFormat::Json {
+        renderer.always_json(&entries)?;
+        return Ok(0);
+    }
+    let mut table = Table::new(["name", "type", "size"]);
+    for entry in &entries {
+        table.push(row![
+            entry.name.clone(),
+            entry.file_type.name().to_string(),
+            entry
+                .size
+                .map(x_core::format_bytes)
+                .unwrap_or_else(|| "-".into()),
+        ]);
+    }
+    renderer.table(&table)?;
+    Ok(0)
+}

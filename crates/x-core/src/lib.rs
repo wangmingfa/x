@@ -38,15 +38,25 @@
 
 pub mod audit;
 pub mod capability;
+pub mod clipboard;
 pub mod context;
+pub mod devcheck;
+pub mod devenv;
 pub mod disk;
+pub mod dockerinfo;
 pub mod error;
+pub mod file;
+pub mod gitcmd;
 pub mod network;
 pub mod port;
 pub mod process;
+pub mod project;
 pub mod service;
+pub mod shell;
+pub mod sshcfg;
 pub mod system;
 pub mod testing;
+pub mod user;
 
 pub use audit::{now_utc_rfc3339, rfc3339_utc, AuditEntry};
 pub use capability::{probe as probe_capabilities, Capability, CapabilityStatus};

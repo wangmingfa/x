@@ -10,6 +10,11 @@ pub mod disk_sysinfo;
 pub mod identity;
 pub mod process_sysinfo;
 
+pub mod clipboard_cmd;
+pub mod file_open;
+pub mod shell_os;
+pub mod user_os;
+
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub mod ifaddrs;
 #[cfg(any(target_os = "macos", target_os = "linux"))]

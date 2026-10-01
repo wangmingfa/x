@@ -78,6 +78,12 @@ pub fn create_context() -> Result<SystemContext> {
             .network(macos::network::manager())
             .service(macos::service::manager())
             .disk(macos::disk::manager())
+            .file(std::sync::Arc::new(common::file_open::PlatformFile))
+            .clipboard(std::sync::Arc::new(
+                common::clipboard_cmd::PlatformClipboard,
+            ))
+            .user(std::sync::Arc::new(common::user_os::PlatformUser))
+            .shell(std::sync::Arc::new(common::shell_os::PlatformShell))
             .build()
     }
 
@@ -90,6 +96,12 @@ pub fn create_context() -> Result<SystemContext> {
             .network(linux::network::manager())
             .service(linux::service::manager())
             .disk(linux::disk::manager())
+            .file(std::sync::Arc::new(common::file_open::PlatformFile))
+            .clipboard(std::sync::Arc::new(
+                common::clipboard_cmd::PlatformClipboard,
+            ))
+            .user(std::sync::Arc::new(common::user_os::PlatformUser))
+            .shell(std::sync::Arc::new(common::shell_os::PlatformShell))
             .build()
     }
 
@@ -102,6 +114,12 @@ pub fn create_context() -> Result<SystemContext> {
             .network(windows::network::manager())
             .service(windows::service::manager())
             .disk(windows::disk::manager())
+            .file(std::sync::Arc::new(common::file_open::PlatformFile))
+            .clipboard(std::sync::Arc::new(
+                common::clipboard_cmd::PlatformClipboard,
+            ))
+            .user(std::sync::Arc::new(common::user_os::PlatformUser))
+            .shell(std::sync::Arc::new(common::shell_os::PlatformShell))
             .build()
     }
 

@@ -305,6 +305,10 @@ pub fn attach(context: SystemContext) -> SystemContext {
             inner: context.service,
             recorder: recorder(),
         }),
+        file: context.file,
+        clipboard: context.clipboard,
+        user: context.user,
+        shell: context.shell,
     }
 }
 

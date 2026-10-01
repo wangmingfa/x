@@ -21,6 +21,9 @@ pub struct PortArgs {
     /// Subcommand. Omitted means "list listening sockets".
     #[command(subcommand)]
     pub command: Option<PortCommand>,
+    /// A bare port number means "who owns this, and which project is it".
+    #[arg(value_name = "PORT")]
+    pub port: Option<u16>,
     /// Filters, only used without a subcommand.
     #[command(flatten)]
     pub list: PortListArgs,
@@ -176,6 +179,9 @@ pub fn dispatch(
     args: &PortArgs,
 ) -> Result<i32> {
     let Some(command) = &args.command else {
+        if let Some(port) = args.port {
+            return who(context, renderer, port);
+        }
         return list(context, renderer, &args.list.options(true));
     };
     match command {
@@ -576,4 +582,116 @@ fn describe(query: &PortQuery) -> String {
         PortQuery::Port(port) => format!("port {port}"),
         PortQuery::Process(name) => format!("process `{name}`"),
     }
+}
+
+/// `x port <n>`: owner, CWD, git repository, project kind and start command.
+///
+/// The chain is port → process → working directory → project detection; every
+/// hop degrades honestly when the platform cannot see it.
+pub fn who(context: &SystemContext, renderer: &mut Renderer, port: u16) -> Result<i32> {
+    let owners = context.port.find_port(port)?;
+    if renderer.format() == OutputFormat::Json {
+        let reports: Vec<PortWhoReport> = owners
+            .iter()
+            .map(|owner| port_who_report(context, port, owner))
+            .collect();
+        renderer.always_json(&reports)?;
+        return Ok(0);
+    }
+    if owners.is_empty() {
+        renderer.line(format!("{port} is free"))?;
+        return Ok(1);
+    }
+    for owner in &owners {
+        let report = port_who_report(context, port, owner);
+        renderer.line(format!(
+            "{port}: {} ({})",
+            owner.process_name.clone().unwrap_or_else(unknown),
+            owner.pid.map(|p| p.to_string()).unwrap_or_else(unknown),
+        ))?;
+        if let Some(cwd) = &report.cwd {
+            renderer.line(format!("cwd: {cwd}"))?;
+        }
+        if let Some(git_root) = &report.git_root {
+            renderer.line(format!("git: {git_root}"))?;
+        }
+        if let Some(branch) = &report.branch {
+            renderer.line(format!("branch: {branch}"))?;
+        }
+        if let Some(project) = &report.project {
+            renderer.line(format!("project: {project}"))?;
+        }
+        if let Some(manager) = &report.package_manager {
+            renderer.line(format!("package manager: {manager}"))?;
+        }
+        if let Some(start) = &report.start_command {
+            renderer.line(format!("start: {start}"))?;
+        }
+        if let Some(command_line) = &report.command_line {
+            renderer.line(format!("command: {command_line}"))?;
+        }
+    }
+    Ok(0)
+}
+
+/// What `x port <n>` reports for one owning process.
+#[derive(Debug, serde::Serialize)]
+struct PortWhoReport {
+    port: u16,
+    pid: Option<u32>,
+    process: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cwd: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    git_root: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    branch: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    project: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    package_manager: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    start_command: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    command_line: Option<String>,
+}
+
+fn port_who_report(context: &SystemContext, port: u16, socket: &PortInfo) -> PortWhoReport {
+    let pid = socket.pid;
+    let process = socket.process_name.clone().unwrap_or_else(unknown);
+
+    let detail = pid.and_then(|pid| context.process.get(pid).ok());
+    let cwd = detail.as_ref().and_then(|p| p.cwd.clone());
+    let command_line = detail.as_ref().and_then(|p| p.command_line.clone());
+
+    let mut report = PortWhoReport {
+        port,
+        pid,
+        process,
+        cwd,
+        git_root: None,
+        branch: None,
+        project: None,
+        package_manager: None,
+        start_command: None,
+        command_line,
+    };
+
+    if let Some(cwd) = &report.cwd {
+        let path = std::path::Path::new(cwd);
+        report.git_root = x_core::gitcmd::repo_root(path)
+            .ok()
+            .map(|root| root.display().to_string());
+        let project = x_core::project::detect(path);
+        report.branch = project.branch.clone();
+        report.package_manager = project.package_manager.map(|m| m.name().to_string());
+        report.start_command = project
+            .package_manager
+            .and_then(|m| m.command())
+            .map(str::to_string);
+        if !project.kinds.is_empty() {
+            report.project = Some(project.kinds.join(", "));
+        }
+    }
+    report
 }

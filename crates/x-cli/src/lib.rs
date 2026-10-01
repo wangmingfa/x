@@ -89,6 +89,58 @@ pub enum Command {
     #[command(subcommand)]
     Service(commands::service::ServiceCommand),
 
+    /// Files: inspect, open, reveal, trash, copy, move, rename.
+    #[command(subcommand)]
+    File(commands::file::FileCommand),
+
+    /// Environment variables.
+    #[command(subcommand)]
+    Env(commands::envpath::EnvCommand),
+
+    /// PATH inspection and edits (this process only).
+    #[command(subcommand)]
+    Path(commands::envpath::PathCommand),
+
+    /// Resolve a command on PATH (`where` / `which` / `command -v`).
+    Which(commands::envpath::WhichArgs),
+
+    /// Login shells.
+    #[command(subcommand)]
+    Shell(commands::shell::ShellCommand),
+
+    /// Users.
+    #[command(subcommand)]
+    User(commands::usergroup::UserCommand),
+
+    /// Groups.
+    #[command(subcommand)]
+    Group(commands::usergroup::GroupCommand),
+
+    /// Clipboard.
+    #[command(subcommand)]
+    Clipboard(commands::clipboard::ClipboardCommand),
+
+    /// SSH hosts, reachability and connections.
+    #[command(subcommand)]
+    Ssh(commands::ssh::SshCommand),
+
+    /// Git repository facts.
+    #[command(subcommand)]
+    Git(commands::gitcmd::GitCommand),
+
+    /// Development toolchains installed here.
+    Dev(commands::devtools::DevArgs),
+
+    /// Health-check one command, or sweep the whole environment.
+    Doctor(commands::devtools::DoctorArgs),
+
+    /// What kind of project is this directory.
+    Project(commands::devtools::ProjectArgs),
+
+    /// Docker containers, images, ports and logs.
+    #[command(subcommand)]
+    Docker(commands::devtools::DockerCommand),
+
     /// What this host can actually do: supported / degraded / unsupported.
     Capability(commands::capability::CapabilityArgs),
 }
@@ -210,6 +262,22 @@ fn dispatch(
         Some(Command::Service(cmd)) => {
             commands::service::dispatch(context, renderer, confirmer, cmd)
         }
+        Some(Command::File(cmd)) => commands::file::dispatch(context, renderer, confirmer, cmd),
+        Some(Command::Env(cmd)) => commands::envpath::dispatch_env(context, renderer, cmd),
+        Some(Command::Path(cmd)) => commands::envpath::dispatch_path(context, renderer, cmd),
+        Some(Command::Which(args)) => commands::envpath::dispatch_which(context, renderer, args),
+        Some(Command::Shell(cmd)) => commands::shell::dispatch(context, renderer, cmd),
+        Some(Command::User(cmd)) => commands::usergroup::dispatch_user(context, renderer, cmd),
+        Some(Command::Group(cmd)) => commands::usergroup::dispatch_group(context, renderer, cmd),
+        Some(Command::Clipboard(cmd)) => commands::clipboard::dispatch(context, renderer, cmd),
+        Some(Command::Ssh(cmd)) => commands::ssh::dispatch(context, renderer, cmd),
+        Some(Command::Git(cmd)) => commands::gitcmd::dispatch(context, renderer, cmd),
+        Some(Command::Dev(args)) => commands::devtools::dispatch_dev(context, renderer, args),
+        Some(Command::Doctor(args)) => commands::devtools::dispatch_doctor(context, renderer, args),
+        Some(Command::Project(args)) => {
+            commands::devtools::dispatch_project(context, renderer, args)
+        }
+        Some(Command::Docker(cmd)) => commands::devtools::dispatch_docker(context, renderer, cmd),
         Some(Command::Capability(args)) => commands::capability::dispatch(context, renderer, args),
     }
 }

@@ -1,12 +1,20 @@
 //! One module per capability, mirroring the `x-core` manager traits.
 
 pub mod capability;
+pub mod clipboard;
+pub mod devtools;
 pub mod disk;
+pub mod envpath;
+pub mod file;
+pub mod gitcmd;
 pub mod net;
 pub mod port;
 pub mod ps;
 pub mod service;
+pub mod shell;
+pub mod ssh;
 pub mod sys;
+pub mod usergroup;
 
 use x_core::error::Result;
 
