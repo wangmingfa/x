@@ -94,6 +94,7 @@ pub fn create_context() -> Result<SystemContext> {
             .device(std::sync::Arc::new(common::device_os::PlatformDevices))
             .bluetooth(std::sync::Arc::new(common::bluetooth_os::PlatformBluetooth))
             .display(std::sync::Arc::new(common::display_os::PlatformDisplays))
+            .window(std::sync::Arc::new(common::window_os::PlatformWindows))
             .build()
     }
 
@@ -122,6 +123,7 @@ pub fn create_context() -> Result<SystemContext> {
             .device(std::sync::Arc::new(common::device_os::PlatformDevices))
             .bluetooth(std::sync::Arc::new(common::bluetooth_os::PlatformBluetooth))
             .display(std::sync::Arc::new(common::display_os::PlatformDisplays))
+            .window(std::sync::Arc::new(common::window_os::PlatformWindows))
             .build()
     }
 
@@ -150,6 +152,7 @@ pub fn create_context() -> Result<SystemContext> {
             .device(std::sync::Arc::new(common::device_os::PlatformDevices))
             .bluetooth(std::sync::Arc::new(common::bluetooth_os::PlatformBluetooth))
             .display(windows::display::manager())
+            .window(windows::window::manager())
             .build()
     }
 

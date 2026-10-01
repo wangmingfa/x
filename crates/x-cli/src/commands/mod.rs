@@ -28,6 +28,7 @@ pub mod ssh;
 pub mod startup;
 pub mod sys;
 pub mod usergroup;
+pub mod window;
 
 use x_core::error::Result;
 

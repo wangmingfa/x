@@ -1269,6 +1269,163 @@ fn display_without_the_capability_is_unsupported() {
     assert_eq!(out.code, ErrorKind::Unsupported.exit_code());
 }
 
+// ---------------------------------------------------------------------------
+// x window
+// ---------------------------------------------------------------------------
+
+use x_core::window::WindowInfo;
+
+/// A normal window with everything a platform might report.
+fn window_row(title: &str, active: bool) -> WindowInfo {
+    let mut info = WindowInfo::new(title);
+    info.id = Some("0x0012345".into());
+    info.pid = Some(4242);
+    info.app = Some("editor".into());
+    info.active = Some(active);
+    info.minimized = Some(false);
+    info.maximized = Some(false);
+    info
+}
+
+/// A row the platform knows almost nothing about.
+fn bare_window() -> WindowInfo {
+    WindowInfo {
+        title: None,
+        id: Some("0x0000ABC".into()),
+        pid: None,
+        app: Some("ghost".into()),
+        active: None,
+        minimized: None,
+        maximized: None,
+    }
+}
+
+#[test]
+fn window_list_prints_a_dash_for_every_unknown() {
+    let stubs =
+        Stubs::new().with_windows(vec![window_row("Editor — main.rs", true), bare_window()]);
+    let out = x(&stubs, &["window", "list"], false);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert!(out.stdout.contains("Editor — main.rs"));
+    assert!(out.stdout.contains("editor"));
+    assert!(out.stdout.contains("4242"));
+    // The ghost row reports no states: no fabricated yes/no appears in it.
+    let ghost = out
+        .stdout
+        .lines()
+        .find(|line| line.contains("ghost"))
+        .expect("ghost row");
+    assert!(ghost.contains('-'), "{ghost}");
+    assert!(!ghost.contains("yes"), "{ghost}");
+}
+
+#[test]
+fn window_list_json_omits_unknown_fields() {
+    let stubs = Stubs::new().with_windows(vec![window_row("Editor", true), bare_window()]);
+    let out = x(&stubs, &["window", "list", "--json"], false);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    let value: serde_json::Value = serde_json::from_str(&out.stdout).expect("json");
+    let rows = value.as_array().expect("array");
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["active"], serde_json::json!(true));
+    assert_eq!(rows[0]["pid"], serde_json::json!(4242));
+    assert!(rows[1].get("title").is_none());
+    assert!(rows[1].get("pid").is_none());
+    assert!(rows[1].get("active").is_none());
+    assert!(rows[1].get("minimized").is_none());
+}
+
+#[test]
+fn window_active_follows_the_focused_row() {
+    let stubs = Stubs::new().with_windows(vec![
+        window_row("Editor", true),
+        window_row("Browser", false),
+    ]);
+    let out = x(&stubs, &["window", "active"], false);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert!(out.stdout.contains("Editor"));
+    assert!(!out.stdout.contains("Browser"), "{}", out.stdout);
+
+    // No row is marked active: the answer is honestly none, in both formats.
+    let none_stubs = Stubs::new().with_windows(vec![window_row("Editor", false)]);
+    let none = x(&none_stubs, &["window", "active"], false);
+    assert_eq!(none.code, 0, "{}", none.stderr);
+    assert!(none.stdout.contains("no active window"));
+    let json = x(&none_stubs, &["window", "active", "--json"], false);
+    assert_eq!(json.stdout.trim(), "null");
+}
+
+#[test]
+fn window_verbs_resolve_the_target_and_record_it() {
+    let stubs = Stubs::new().with_windows(vec![
+        window_row("Editor — main.rs", true),
+        window_row("Browser", false),
+    ]);
+
+    let by_title = x(&stubs, &["window", "focus", "browser", "-y"], false);
+    assert_eq!(by_title.code, 0, "{}", by_title.stderr);
+    assert_eq!(
+        stubs.window.verbs(),
+        vec![("focus".to_string(), "`Browser`".to_string())]
+    );
+
+    let by_number = x(&stubs, &["window", "minimize", "2", "-y"], false);
+    assert_eq!(by_number.code, 0, "{}", by_number.stderr);
+    assert_eq!(
+        stubs.window.verbs().last(),
+        Some(&("minimize".to_string(), "`Browser`".to_string()))
+    );
+}
+
+#[test]
+fn window_verbs_ask_before_acting() {
+    let stubs = Stubs::new().with_windows(vec![window_row("Editor", true)]);
+    let refused = x(&stubs, &["window", "maximize", "1"], false);
+    assert_eq!(refused.code, ErrorKind::InvalidInput.exit_code());
+    assert!(refused.stderr.contains("aborted by user"));
+    assert!(stubs.window.verbs().is_empty(), "refusal must not act");
+
+    let accepted = x(&stubs, &["window", "maximize", "1"], true);
+    assert_eq!(accepted.code, 0, "{}", accepted.stderr);
+    assert_eq!(
+        stubs.window.verbs(),
+        vec![("maximize".to_string(), "`Editor`".to_string())]
+    );
+}
+
+#[test]
+fn window_selects_refuse_missing_and_ambiguous_targets() {
+    let stubs = Stubs::new().with_windows(vec![
+        window_row("Generic A", true),
+        window_row("Generic B", false),
+    ]);
+
+    let missing = x(&stubs, &["window", "focus", "Ghost", "-y"], false);
+    assert_eq!(missing.code, ErrorKind::NotFound.exit_code());
+    assert!(missing.stderr.contains("no window matching"));
+
+    let ambiguous = x(&stubs, &["window", "focus", "Generic", "-y"], false);
+    assert_eq!(ambiguous.code, ErrorKind::InvalidInput.exit_code());
+    assert!(ambiguous.stderr.contains("matches 2 windows"));
+
+    let zero = x(&stubs, &["window", "focus", "0", "-y"], false);
+    assert_eq!(zero.code, ErrorKind::InvalidInput.exit_code());
+
+    let out_of_range = x(&stubs, &["window", "focus", "9", "-y"], false);
+    assert_eq!(out_of_range.code, ErrorKind::NotFound.exit_code());
+
+    assert!(
+        stubs.window.verbs().is_empty(),
+        "nothing resolved, nothing ran"
+    );
+}
+
+#[test]
+fn window_without_the_capability_is_unsupported() {
+    let out = x_in(&stub_context(), &["window", "list"], false);
+    assert_eq!(out.code, ErrorKind::Unsupported.exit_code());
+}
+
 /// A TLS stub that answers like a verified handshake.
 fn stub_tls() -> x_core::netdiag::TlsInfo {
     x_core::netdiag::TlsInfo {

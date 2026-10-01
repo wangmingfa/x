@@ -19,6 +19,7 @@ pub mod port;
 pub mod process;
 pub mod service;
 pub mod system;
+pub mod window;
 
 use std::ffi::c_void;
 

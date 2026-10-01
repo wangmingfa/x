@@ -196,6 +196,10 @@ pub enum Command {
     #[command(subcommand)]
     Display(commands::display::DisplayCommand),
 
+    /// Open windows: inventory, focus, minimize, maximize.
+    #[command(subcommand)]
+    Window(commands::window::WindowCommand),
+
     /// Certificate facts for a host (TLS handshake through platform tools).
     #[command(subcommand)]
     Cert(commands::netdiag::CertCommand),
@@ -367,6 +371,7 @@ fn dispatch(
             commands::bluetooth::dispatch(context, renderer, confirmer, cmd)
         }
         Some(Command::Display(cmd)) => commands::display::dispatch(context, renderer, cmd),
+        Some(Command::Window(cmd)) => commands::window::dispatch(context, renderer, confirmer, cmd),
         Some(Command::Cert(cmd)) => commands::netdiag::dispatch_cert(context, renderer, cmd),
         Some(Command::Tls(args)) => commands::netdiag::dispatch_tls(context, renderer, args),
         Some(Command::Http(args)) => commands::netdiag::dispatch_http(context, renderer, args),

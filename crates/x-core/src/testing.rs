@@ -914,6 +914,69 @@ impl crate::display::DisplayManager for StubDisplay {
     }
 }
 
+/// Window stub serving a fixed list, marking the row whose `active` is
+/// `Some(true)` as the focused one, and recording every verb it was asked to
+/// run. Unconfigured reads stay honest: they fail unsupported.
+#[derive(Debug, Default)]
+pub struct StubWindows {
+    rows: Option<Vec<crate::window::WindowInfo>>,
+    verbs: Mutex<Vec<(String, String)>>,
+}
+
+impl StubWindows {
+    /// Fixed inventory.
+    pub fn new(rows: Vec<crate::window::WindowInfo>) -> Self {
+        Self {
+            rows: Some(rows),
+            verbs: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Verbs requested so far, in order: `("focus", "`Title`")`, …
+    pub fn verbs(&self) -> Vec<(String, String)> {
+        self.verbs.lock().expect("stub mutex").clone()
+    }
+
+    fn verb(&self, name: &str, window: &crate::window::WindowInfo) -> crate::error::Result<()> {
+        if self.rows.is_none() {
+            return Err(crate::Error::unsupported("stub windows not configured"));
+        }
+        self.verbs
+            .lock()
+            .expect("stub mutex")
+            .push((name.to_string(), window.label()));
+        Ok(())
+    }
+}
+
+impl crate::window::WindowManager for StubWindows {
+    fn windows(&self) -> crate::error::Result<Vec<crate::window::WindowInfo>> {
+        match &self.rows {
+            Some(rows) => Ok(rows.clone()),
+            None => Err(crate::Error::unsupported("stub cannot list windows")),
+        }
+    }
+
+    fn active(&self) -> crate::error::Result<Option<crate::window::WindowInfo>> {
+        match &self.rows {
+            Some(rows) => Ok(rows.iter().find(|row| row.active == Some(true)).cloned()),
+            None => Err(crate::Error::unsupported("stub cannot list windows")),
+        }
+    }
+
+    fn focus(&self, window: &crate::window::WindowInfo) -> crate::error::Result<()> {
+        self.verb("focus", window)
+    }
+
+    fn minimize(&self, window: &crate::window::WindowInfo) -> crate::error::Result<()> {
+        self.verb("minimize", window)
+    }
+
+    fn maximize(&self, window: &crate::window::WindowInfo) -> crate::error::Result<()> {
+        self.verb("maximize", window)
+    }
+}
+
 /// A context assembled from configurable stubs.
 ///
 /// ```no_run
@@ -947,6 +1010,8 @@ pub struct Stubs {
     pub bluetooth: std::sync::Arc<StubBluetooth>,
     /// Display capability.
     pub display: std::sync::Arc<StubDisplay>,
+    /// Window capability.
+    pub window: std::sync::Arc<StubWindows>,
 }
 
 impl Default for Stubs {
@@ -970,6 +1035,7 @@ impl Stubs {
             device: std::sync::Arc::new(StubDevices::default()),
             bluetooth: std::sync::Arc::new(StubBluetooth::default()),
             display: std::sync::Arc::new(StubDisplay::default()),
+            window: std::sync::Arc::new(StubWindows::default()),
         }
     }
 
@@ -1071,6 +1137,14 @@ impl Stubs {
         }
     }
 
+    /// Serve `rows` as the window list.
+    pub fn with_windows(self, rows: Vec<crate::window::WindowInfo>) -> Self {
+        Self {
+            window: std::sync::Arc::new(StubWindows::new(rows)),
+            ..self
+        }
+    }
+
     /// Canned DNS / TLS / HTTP probe answers on the network capability.
     pub fn with_net_probes(
         self,
@@ -1101,6 +1175,7 @@ impl Stubs {
             .device(Arc::clone(&self.device) as Arc<dyn crate::device::DeviceManager>)
             .bluetooth(Arc::clone(&self.bluetooth) as Arc<dyn crate::bluetooth::BluetoothManager>)
             .display(Arc::clone(&self.display) as Arc<dyn crate::display::DisplayManager>)
+            .window(Arc::clone(&self.window) as Arc<dyn crate::window::WindowManager>)
             .build()
             .expect("stub capabilities are always complete")
     }

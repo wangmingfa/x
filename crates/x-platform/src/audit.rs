@@ -30,6 +30,7 @@ use x_core::service::{
     NativeOutput, ServiceAction, ServiceInfo, ServiceListOptions, ServiceLogPage, ServiceManager,
     ServiceManagerType,
 };
+use x_core::window::{WindowInfo, WindowManager};
 
 /// Set to `off` to stop writing records entirely.
 const ENABLE_VAR: &str = "X_AUDIT";
@@ -365,6 +366,47 @@ impl BluetoothManager for AuditedBluetooth {
     }
 }
 
+/// Window capability that records the three control verbs.
+///
+/// Reads (windows, active) pass through: the doctrine records changes, not
+/// queries. A backend without a real control path answers Unsupported, which
+/// is recorded too — a refused attempt is a fact worth keeping.
+pub struct AuditedWindow {
+    inner: Arc<dyn WindowManager>,
+    recorder: Recorder,
+}
+
+impl WindowManager for AuditedWindow {
+    fn windows(&self) -> Result<Vec<WindowInfo>> {
+        self.inner.windows()
+    }
+
+    fn active(&self) -> Result<Option<WindowInfo>> {
+        self.inner.active()
+    }
+
+    fn focus(&self, window: &WindowInfo) -> Result<()> {
+        let result = self.inner.focus(window);
+        self.recorder
+            .note_result("window.focus", window.label(), &result);
+        result
+    }
+
+    fn minimize(&self, window: &WindowInfo) -> Result<()> {
+        let result = self.inner.minimize(window);
+        self.recorder
+            .note_result("window.minimize", window.label(), &result);
+        result
+    }
+
+    fn maximize(&self, window: &WindowInfo) -> Result<()> {
+        let result = self.inner.maximize(window);
+        self.recorder
+            .note_result("window.maximize", window.label(), &result);
+        result
+    }
+}
+
 /// Wrap the destructive capabilities of `context` so real runs are audited.
 ///
 /// This is called from the composition root only: stub-driven CLI and TUI
@@ -415,6 +457,12 @@ pub fn attach(context: SystemContext) -> SystemContext {
                 recorder: recorder(),
             }) as Arc<dyn BluetoothManager>
         }),
+        window: context.window.map(|inner| {
+            Arc::new(AuditedWindow {
+                inner,
+                recorder: recorder(),
+            }) as Arc<dyn WindowManager>
+        }),
     }
 }
 
@@ -424,7 +472,7 @@ mod tests {
     use std::sync::Mutex;
     use x_core::testing::{
         stub_socket, NoopProcess, NoopService, StubBluetooth, StubFirewall, StubPort, StubProcess,
-        StubService,
+        StubService, StubWindows,
     };
 
     /// Every test in here manipulates the process-wide audit environment
@@ -682,6 +730,33 @@ mod tests {
         assert!(lines[0].contains("\"action\":\"bluetooth.connect\""));
         assert!(lines[0].contains("\"target\":\"AA:BB:CC:DD:EE:FF\""));
         assert!(lines[1].contains("\"action\":\"bluetooth.disconnect\""));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn window_verbs_are_recorded_but_reads_are_not() {
+        let _guard = ENV.lock().expect("env mutex");
+        let path = scratch("window");
+        use_log(Some(path.clone()));
+
+        let mut row = WindowInfo::new("Editor — main.rs");
+        row.id = Some("0x1A2B".into());
+        let window = AuditedWindow {
+            inner: Arc::new(StubWindows::new(vec![row.clone()])),
+            recorder: Recorder { user: None },
+        };
+        window.windows().expect("stub windows");
+        window.active().expect("stub active");
+        window.focus(&row).expect("stub focus");
+        window.minimize(&row).expect("stub minimize");
+        window.maximize(&row).expect("stub maximize");
+
+        let lines = read_lines(&path);
+        assert_eq!(lines.len(), 3, "reads stay out of the log: {lines:?}");
+        assert!(lines[0].contains("\"action\":\"window.focus\""));
+        assert!(lines[0].contains("`Editor — main.rs`"));
+        assert!(lines[1].contains("\"action\":\"window.minimize\""));
+        assert!(lines[2].contains("\"action\":\"window.maximize\""));
         std::fs::remove_file(&path).ok();
     }
 }

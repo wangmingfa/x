@@ -56,6 +56,8 @@ pub struct SystemContext {
     pub bluetooth: Option<Arc<dyn crate::bluetooth::BluetoothManager>>,
     /// Display topology, when the platform adapter is compiled in.
     pub display: Option<Arc<dyn crate::display::DisplayManager>>,
+    /// Open windows and their verbs, when the platform adapter is compiled in.
+    pub window: Option<Arc<dyn crate::window::WindowManager>>,
 }
 
 impl std::fmt::Debug for SystemContext {
@@ -109,6 +111,7 @@ pub struct SystemContextBuilder {
     device: Option<Arc<dyn crate::device::DeviceManager>>,
     bluetooth: Option<Arc<dyn crate::bluetooth::BluetoothManager>>,
     display: Option<Arc<dyn crate::display::DisplayManager>>,
+    window: Option<Arc<dyn crate::window::WindowManager>>,
 }
 
 impl SystemContextBuilder {
@@ -232,6 +235,12 @@ impl SystemContextBuilder {
         self
     }
 
+    /// Provide the window capability (optional).
+    pub fn window(mut self, mgr: Arc<dyn crate::window::WindowManager>) -> Self {
+        self.window = Some(mgr);
+        self
+    }
+
     /// Finish, failing if a mandatory capability is missing.
     pub fn build(self) -> Result<SystemContext> {
         Ok(SystemContext {
@@ -267,6 +276,7 @@ impl SystemContextBuilder {
             device: self.device,
             bluetooth: self.bluetooth,
             display: self.display,
+            window: self.window,
         })
     }
 }

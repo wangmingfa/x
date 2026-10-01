@@ -162,6 +162,32 @@ SettingsW(ENUM_CURRENT_SETTINGS)` 取当前模式与桌面位置、`GetDpiForMon
 如实缺席；macOS 解析 `system_profiler SPDisplaysDataType -json`，含
 Retina「as W x H」缩放换算。全部只读，不落审计。
 
+### 窗口（`x window`）
+
+| 命令 | 说明 |
+| --- | --- |
+| `x window list` | 打开窗口清单：标题、应用、PID、激活 / 最小化 / 最大化 |
+| `x window active` | 当前前台窗口（没有前台窗口时如实说无） |
+| `x window focus <序号或标题> [-y]` | 把窗口带到前台 |
+| `x window minimize <序号或标题> [-y]` | 最小化窗口 |
+| `x window maximize <序号或标题> [-y]` | 最大化窗口 |
+
+Windows 走 user32 原生（`EnumWindows` + `GetWindowTextW` 列窗口，
+`IsIconic` / `IsZoomed` 判状态，`SetForegroundWindow` / `ShowWindow`
+执行动词）；前台锁拒绝置顶时如实报 InvalidState 并说明原因，不假装
+成功。Linux 用 `wmctrl` 列窗口、`xprop` 读 `_NET_ACTIVE_WINDOW` /
+`_NET_WM_STATE`，动词投递 `wmctrl -i -a` 与 `-b add,hidden` /
+`add,maximized_*`；两者缺一或 `DISPLAY` 未设即如实不支持（附安装
+提示）。macOS 用 `CGWindowListCopyWindowInfo` 免权限列出窗口——未授
+「屏幕录制」时标题整列缺席；动词与 active 走 `osascript` System Events，
+未授「辅助功能」的拒绝原样透出（错误码 -1719 / -25211）。
+
+窗口 id 统一规范成 `0x{:08X}`（wmctrl 补零与 xprop 无补零因此可比）；
+目标按 1 起序号或标题选择，歧义即拒。`focus` / `minimize` / `maximize`
+与 firewall 同规格：先确认、经审计装饰器落盘（平台拒绝同样留痕）；
+`list` / `active` 是读，不留痕。平台没报的状态显示 `-`，JSON 里整字段
+缺席，不拿「未知」冒充「否」。
+
 ### 证书与网络诊断（`x cert` / `x tls` / `x http` / `x net check`）
 
 | 命令 | 说明 |
@@ -331,7 +357,7 @@ GitHub Actions CI 在 Ubuntu / macOS / Windows 三平台上跑格式、clippy
 - [x] 设备（`x device list/usb/audio/display/…`）：USB、蓝牙、音频、显示、摄像头、键鼠（HID）、网卡；三平台原文透传 + 保守归类
 - [x] 蓝牙（`x bluetooth devices/scan/connect/disconnect`）：读三平台原文透传，动词 Linux 全量、Windows/macOS 如实不支持；确认 + 审计
 - [x] 显示（`x display list/info`）：分辨率、刷新率、缩放、主显示器、位置；HDR 未提供（Windows 需再过 QueryDisplayConfig，macOS/Linux 口径不一，留待后续如实读取）
-- [ ] 窗口（`x window list/active/focus/minimize/maximize`）
+- [x] 窗口（`x window list/active/focus/minimize/maximize`）：Windows user32 原生全量；Linux 借 wmctrl/xprop；macOS 免权限列窗口 + System Events 动词（屏幕录制 / 辅助功能按需索取，拒绝原样透出）；动词确认 + 审计
 - [ ] 事件（`x events`）：进程启停、网络连接、USB 插拔、磁盘挂载、服务状态变化，适合 TUI 实时展示
 - [ ] TUI 增强：Dashboard 首页（CPU / 内存 / 磁盘 / 端口概览 + 侧边导航）
 - [ ] TUI 增强：命令面板（Ctrl+P，可搜索功能而非仅输入命令）

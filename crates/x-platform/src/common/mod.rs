@@ -28,6 +28,7 @@ pub mod schedule_os;
 pub mod shell_os;
 pub mod startup_os;
 pub mod user_os;
+pub mod window_os;
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub mod ifaddrs;

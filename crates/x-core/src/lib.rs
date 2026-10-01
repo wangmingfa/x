@@ -70,6 +70,7 @@ pub mod startup;
 pub mod system;
 pub mod testing;
 pub mod user;
+pub mod window;
 
 pub use audit::{now_utc_rfc3339, rfc3339_utc, AuditEntry};
 pub use capability::{probe as probe_capabilities, Capability, CapabilityStatus};
@@ -95,6 +96,7 @@ pub use system::{
     format_bytes, format_duration, format_timestamp, percent, CpuUsage, LoadAverage, MemoryUsage,
     OsFamily, PressureLevel, SystemInfo, SystemManager,
 };
+pub use window::{WindowInfo, WindowManager};
 
 /// Version of the `x-core` contract, useful for plugin compatibility checks.
 pub const CONTRACT_VERSION: u32 = 1;
