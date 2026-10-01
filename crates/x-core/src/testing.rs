@@ -822,6 +822,73 @@ impl crate::device::DeviceManager for StubDevices {
     }
 }
 
+/// Bluetooth stub serving fixed adapter/device lists and recording the verbs
+/// it was asked to run. Unconfigured reads stay honest: they fail unsupported.
+#[derive(Debug, Default)]
+pub struct StubBluetooth {
+    adapters: Option<Vec<crate::bluetooth::BluetoothAdapter>>,
+    devices: Option<Vec<crate::bluetooth::BluetoothDevice>>,
+    verbs: Mutex<Vec<(String, String)>>,
+}
+
+impl StubBluetooth {
+    /// Fixed inventory.
+    pub fn new(
+        adapters: Vec<crate::bluetooth::BluetoothAdapter>,
+        devices: Vec<crate::bluetooth::BluetoothDevice>,
+    ) -> Self {
+        Self {
+            adapters: Some(adapters),
+            devices: Some(devices),
+            verbs: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Verbs requested so far, in order: `("connect", address)`, …
+    pub fn verbs(&self) -> Vec<(String, String)> {
+        self.verbs.lock().expect("stub mutex").clone()
+    }
+
+    fn verb(&self, name: &str, address: &str) -> crate::error::Result<()> {
+        if self.adapters.is_none() {
+            return Err(crate::Error::unsupported("stub bluetooth not configured"));
+        }
+        self.verbs
+            .lock()
+            .expect("stub mutex")
+            .push((name.to_string(), address.to_string()));
+        Ok(())
+    }
+}
+
+impl crate::bluetooth::BluetoothManager for StubBluetooth {
+    fn adapters(&self) -> crate::error::Result<Vec<crate::bluetooth::BluetoothAdapter>> {
+        match &self.adapters {
+            Some(rows) => Ok(rows.clone()),
+            None => Err(crate::Error::unsupported(
+                "stub cannot list bluetooth adapters",
+            )),
+        }
+    }
+
+    fn devices(&self) -> crate::error::Result<Vec<crate::bluetooth::BluetoothDevice>> {
+        match &self.devices {
+            Some(rows) => Ok(rows.clone()),
+            None => Err(crate::Error::unsupported(
+                "stub cannot list bluetooth devices",
+            )),
+        }
+    }
+
+    fn connect(&self, address: &str) -> crate::error::Result<()> {
+        self.verb("connect", address)
+    }
+
+    fn disconnect(&self, address: &str) -> crate::error::Result<()> {
+        self.verb("disconnect", address)
+    }
+}
+
 /// A context assembled from configurable stubs.
 ///
 /// ```no_run
@@ -851,6 +918,8 @@ pub struct Stubs {
     pub logs: std::sync::Arc<StubLogs>,
     /// Device inventory capability.
     pub device: std::sync::Arc<StubDevices>,
+    /// Bluetooth capability.
+    pub bluetooth: std::sync::Arc<StubBluetooth>,
 }
 
 impl Default for Stubs {
@@ -872,6 +941,7 @@ impl Stubs {
             firewall: std::sync::Arc::new(StubFirewall::default()),
             logs: std::sync::Arc::new(StubLogs::default()),
             device: std::sync::Arc::new(StubDevices::default()),
+            bluetooth: std::sync::Arc::new(StubBluetooth::default()),
         }
     }
 
@@ -953,6 +1023,18 @@ impl Stubs {
         }
     }
 
+    /// Serve fixed Bluetooth adapters and devices.
+    pub fn with_bluetooth(
+        self,
+        adapters: Vec<crate::bluetooth::BluetoothAdapter>,
+        devices: Vec<crate::bluetooth::BluetoothDevice>,
+    ) -> Self {
+        Self {
+            bluetooth: std::sync::Arc::new(StubBluetooth::new(adapters, devices)),
+            ..self
+        }
+    }
+
     /// Canned DNS / TLS / HTTP probe answers on the network capability.
     pub fn with_net_probes(
         self,
@@ -981,6 +1063,7 @@ impl Stubs {
             .firewall(Arc::clone(&self.firewall) as Arc<dyn crate::firewall::FirewallManager>)
             .logs(Arc::clone(&self.logs) as Arc<dyn crate::logs::LogReader>)
             .device(Arc::clone(&self.device) as Arc<dyn crate::device::DeviceManager>)
+            .bluetooth(Arc::clone(&self.bluetooth) as Arc<dyn crate::bluetooth::BluetoothManager>)
             .build()
             .expect("stub capabilities are always complete")
     }

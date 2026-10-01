@@ -188,6 +188,10 @@ pub enum Command {
     #[command(subcommand)]
     Device(commands::device::DeviceCommand),
 
+    /// Bluetooth radios, known devices, and the link verbs.
+    #[command(subcommand)]
+    Bluetooth(commands::bluetooth::BluetoothCommand),
+
     /// Certificate facts for a host (TLS handshake through platform tools).
     #[command(subcommand)]
     Cert(commands::netdiag::CertCommand),
@@ -355,6 +359,9 @@ fn dispatch(
         }
         Some(Command::Logs(cmd)) => commands::logs::dispatch(context, renderer, cmd),
         Some(Command::Device(cmd)) => commands::device::dispatch(context, renderer, cmd),
+        Some(Command::Bluetooth(cmd)) => {
+            commands::bluetooth::dispatch(context, renderer, confirmer, cmd)
+        }
         Some(Command::Cert(cmd)) => commands::netdiag::dispatch_cert(context, renderer, cmd),
         Some(Command::Tls(args)) => commands::netdiag::dispatch_tls(context, renderer, args),
         Some(Command::Http(args)) => commands::netdiag::dispatch_http(context, renderer, args),

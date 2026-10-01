@@ -1029,6 +1029,129 @@ fn device_without_the_capability_is_unsupported() {
     assert_eq!(out.code, ErrorKind::Unsupported.exit_code());
 }
 
+// ---------------------------------------------------------------------------
+// x bluetooth
+// ---------------------------------------------------------------------------
+
+use x_core::bluetooth::{BluetoothAdapter, BluetoothDevice};
+
+fn bt_adapter() -> BluetoothAdapter {
+    BluetoothAdapter {
+        name: "Intel Wireless Bluetooth".into(),
+        address: Some("AA:BB:CC:DD:EE:FF".into()),
+        powered: None,
+        state: Some("OK".into()),
+        manufacturer: Some("Intel Corporation".into()),
+    }
+}
+
+fn bt_device() -> BluetoothDevice {
+    BluetoothDevice {
+        name: Some("WH-1000XM3".into()),
+        address: Some("80:A9:CD:54:6B:81".into()),
+        paired: Some(true),
+        connected: None,
+        rssi: None,
+        id: None,
+    }
+}
+
+fn bt_stubs() -> Stubs {
+    Stubs::new().with_bluetooth(vec![bt_adapter()], vec![bt_device()])
+}
+
+#[test]
+fn bluetooth_adapter_table_shows_only_reported_fields() {
+    let stubs = bt_stubs();
+    let out = x(&stubs, &["bluetooth", "adapters"], false);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert!(out.stdout.contains("Intel Wireless Bluetooth"));
+    assert!(out.stdout.contains("AA:BB:CC:DD:EE:FF"));
+    // `powered` is unknown on this backend: the column exists, but no
+    // fabricated yes/no appears.
+    assert!(out.stdout.contains("powered"), "{}", out.stdout);
+    assert!(!out.stdout.contains("yes"), "{}", out.stdout);
+}
+
+#[test]
+fn bluetooth_devices_json_omits_the_unknown_flags() {
+    let stubs = bt_stubs();
+    let out = x(&stubs, &["bluetooth", "devices", "--json"], false);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    let value: serde_json::Value = serde_json::from_str(&out.stdout).expect("json");
+    let rows = value.as_array().expect("array");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["paired"], serde_json::json!(true));
+    assert!(rows[0].get("connected").is_none());
+    assert!(rows[0].get("rssi").is_none());
+}
+
+#[test]
+fn bluetooth_connect_normalizes_and_records() {
+    let stubs = bt_stubs();
+    let out = x(
+        &stubs,
+        &["bluetooth", "connect", "aa:bB:cc:dd:ee:ff", "-y"],
+        false,
+    );
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(
+        stubs.bluetooth.verbs(),
+        vec![("connect".to_string(), "AA:BB:CC:DD:EE:FF".to_string())]
+    );
+}
+
+#[test]
+fn bluetooth_connect_refuses_a_malformed_address() {
+    let stubs = bt_stubs();
+    let out = x(
+        &stubs,
+        &["bluetooth", "connect", "aabbccddeeff", "-y"],
+        false,
+    );
+    assert_eq!(out.code, ErrorKind::InvalidInput.exit_code());
+    assert!(out.stderr.contains("expected form"));
+    assert!(stubs.bluetooth.verbs().is_empty());
+}
+
+#[test]
+fn bluetooth_connect_asks_before_touching_the_link() {
+    let stubs = bt_stubs();
+    let refused = x(
+        &stubs,
+        &["bluetooth", "connect", "AA:BB:CC:DD:EE:FF"],
+        false,
+    );
+    assert_eq!(refused.code, ErrorKind::InvalidInput.exit_code());
+    assert!(refused.stderr.contains("aborted by user"));
+    assert!(stubs.bluetooth.verbs().is_empty(), "refusal must not act");
+
+    let accepted = x(
+        &stubs,
+        &["bluetooth", "disconnect", "aa:bb:cc:dd:ee:ff"],
+        true,
+    );
+    assert_eq!(accepted.code, 0, "{}", accepted.stderr);
+    assert_eq!(
+        stubs.bluetooth.verbs(),
+        vec![("disconnect".to_string(), "AA:BB:CC:DD:EE:FF".to_string())]
+    );
+}
+
+#[test]
+fn bluetooth_scan_and_default_verbs_stay_unsupported() {
+    let stubs = bt_stubs();
+    // The stub only implements the reads; the trait's default verbs answer 7.
+    let scan = x(&stubs, &["bluetooth", "scan", "--timeout", "2"], false);
+    assert_eq!(scan.code, ErrorKind::Unsupported.exit_code());
+}
+
+#[test]
+fn bluetooth_without_the_capability_is_unsupported() {
+    let out = x_in(&stub_context(), &["bluetooth", "adapters"], false);
+    assert_eq!(out.code, ErrorKind::Unsupported.exit_code());
+}
+
 /// A TLS stub that answers like a verified handshake.
 fn stub_tls() -> x_core::netdiag::TlsInfo {
     x_core::netdiag::TlsInfo {

@@ -37,6 +37,7 @@
 //! ```
 
 pub mod audit;
+pub mod bluetooth;
 pub mod capability;
 pub mod clipboard;
 pub mod context;

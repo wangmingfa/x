@@ -125,6 +125,27 @@ macOS `system_profiler -json`。平台自己的类别/状态原文保留在
 类别只归明确认识的 token，归不了的进 `other`，不做猜测；字段没报就整列
 缺席。全部只读，不落审计。
 
+### 蓝牙（`x bluetooth`）
+
+| 命令 | 说明 |
+| --- | --- |
+| `x bluetooth adapters` | 本机蓝牙控制器 |
+| `x bluetooth devices` | 平台已知设备（已配对 / 已枚举） |
+| `x bluetooth scan [--timeout 10]` | 定时发现附近设备（Linux） |
+| `x bluetooth connect <MAC> [-y]` | 连接设备（Linux） |
+| `x bluetooth disconnect <MAC> [-y]` | 断开连接（Linux） |
+
+三平台能力天然不对等，如实呈现：Linux 用 BlueZ 自带的 `bluetoothctl`
+（`list`/`show`/`devices`/`--timeout N scan on`/`connect`/`disconnect`，
+全套可用）；Windows 读 `Get-PnpDevice -Class Bluetooth` 的 JSON 投影，
+macOS 读 `system_profiler SPBluetoothDataType -json`——两者没有命令行
+连接/断开的第一方通道，动词如实返回不支持（退出码 7），不代 GUI 操作。
+地址在入口统一校验并规范成大写冒号分组的 `AA:BB:…`，坏输入先拒后审。
+`connect` / `disconnect` 与 firewall 同规格：先确认、经审计装饰器落盘
+（被平台拒绝的尝试同样留痕）；`adapters` / `devices` / `scan` 是读，
+不留痕。平台没报 `powered` / `paired` 等标志就显示 `-`，JSON 里整字段
+缺席，不拿「未知」冒充「否」。
+
 ### 证书与网络诊断（`x cert` / `x tls` / `x http` / `x net check`）
 
 | 命令 | 说明 |
@@ -292,7 +313,7 @@ GitHub Actions CI 在 Ubuntu / macOS / Windows 三平台上跑格式、clippy
 ### P3 高级系统能力
 
 - [x] 设备（`x device list/usb/audio/display/…`）：USB、蓝牙、音频、显示、摄像头、键鼠（HID）、网卡；三平台原文透传 + 保守归类
-- [ ] 蓝牙（`x bluetooth devices/scan/connect/disconnect`）
+- [x] 蓝牙（`x bluetooth devices/scan/connect/disconnect`）：读三平台原文透传，动词 Linux 全量、Windows/macOS 如实不支持；确认 + 审计
 - [ ] 显示（`x display list/info`）：分辨率、刷新率、缩放、主显示器、位置、HDR
 - [ ] 窗口（`x window list/active/focus/minimize/maximize`）
 - [ ] 事件（`x events`）：进程启停、网络连接、USB 插拔、磁盘挂载、服务状态变化，适合 TUI 实时展示

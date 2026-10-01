@@ -20,6 +20,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use x_core::audit::AuditEntry;
+use x_core::bluetooth::{BluetoothAdapter, BluetoothDevice, BluetoothManager};
 use x_core::context::SystemContext;
 use x_core::error::Result;
 use x_core::firewall::{FirewallManager, FirewallRule, FirewallStack};
@@ -325,6 +326,45 @@ impl FirewallManager for AuditedFirewall {
     }
 }
 
+/// Bluetooth capability that records the link-changing verbs.
+///
+/// Reads (adapters, devices, scan) pass through: the doctrine records
+/// changes, not queries. Only a backend with real verbs (Linux) ever
+/// reaches the log; the others answer Unsupported, which is recorded too —
+/// a refused attempt is a fact worth keeping.
+pub struct AuditedBluetooth {
+    inner: Arc<dyn BluetoothManager>,
+    recorder: Recorder,
+}
+
+impl BluetoothManager for AuditedBluetooth {
+    fn adapters(&self) -> Result<Vec<BluetoothAdapter>> {
+        self.inner.adapters()
+    }
+
+    fn devices(&self) -> Result<Vec<BluetoothDevice>> {
+        self.inner.devices()
+    }
+
+    fn scan(&self, timeout_ms: u64) -> Result<Vec<BluetoothDevice>> {
+        self.inner.scan(timeout_ms)
+    }
+
+    fn connect(&self, address: &str) -> Result<()> {
+        let result = self.inner.connect(address);
+        self.recorder
+            .note_result("bluetooth.connect", address.to_string(), &result);
+        result
+    }
+
+    fn disconnect(&self, address: &str) -> Result<()> {
+        let result = self.inner.disconnect(address);
+        self.recorder
+            .note_result("bluetooth.disconnect", address.to_string(), &result);
+        result
+    }
+}
+
 /// Wrap the destructive capabilities of `context` so real runs are audited.
 ///
 /// This is called from the composition root only: stub-driven CLI and TUI
@@ -367,6 +407,12 @@ pub fn attach(context: SystemContext) -> SystemContext {
         logs: context.logs,
         // Device enumeration is a read too; it passes straight through.
         device: context.device,
+        bluetooth: context.bluetooth.map(|inner| {
+            Arc::new(AuditedBluetooth {
+                inner,
+                recorder: recorder(),
+            }) as Arc<dyn BluetoothManager>
+        }),
     }
 }
 
@@ -375,7 +421,8 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
     use x_core::testing::{
-        stub_socket, NoopProcess, NoopService, StubFirewall, StubPort, StubProcess, StubService,
+        stub_socket, NoopProcess, NoopService, StubBluetooth, StubFirewall, StubPort, StubProcess,
+        StubService,
     };
 
     /// Every test in here manipulates the process-wide audit environment
@@ -607,6 +654,32 @@ mod tests {
         assert!(lines[0].contains("\"outcome\":\"ok\""));
         assert!(lines[1].contains("\"action\":\"firewall.deny\""));
         assert!(lines[1].contains("port 53/udp as `dns`"));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn bluetooth_verbs_are_recorded_but_reads_are_not() {
+        let _guard = ENV.lock().expect("env mutex");
+        let path = scratch("bluetooth");
+        use_log(Some(path.clone()));
+
+        let bluetooth = AuditedBluetooth {
+            inner: Arc::new(StubBluetooth::new(Vec::new(), Vec::new())),
+            recorder: Recorder { user: None },
+        };
+        bluetooth.adapters().expect("stub adapters");
+        bluetooth
+            .connect("AA:BB:CC:DD:EE:FF")
+            .expect("stub connect");
+        bluetooth
+            .disconnect("AA:BB:CC:DD:EE:FF")
+            .expect("stub disconnect");
+
+        let lines = read_lines(&path);
+        assert_eq!(lines.len(), 2, "reads stay out of the log: {lines:?}");
+        assert!(lines[0].contains("\"action\":\"bluetooth.connect\""));
+        assert!(lines[0].contains("\"target\":\"AA:BB:CC:DD:EE:FF\""));
+        assert!(lines[1].contains("\"action\":\"bluetooth.disconnect\""));
         std::fs::remove_file(&path).ok();
     }
 }

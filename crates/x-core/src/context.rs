@@ -52,6 +52,8 @@ pub struct SystemContext {
     pub logs: Option<Arc<dyn crate::logs::LogReader>>,
     /// Hardware device inventory.
     pub device: Option<Arc<dyn crate::device::DeviceManager>>,
+    /// Bluetooth adapters and devices, when the platform adapter is compiled in.
+    pub bluetooth: Option<Arc<dyn crate::bluetooth::BluetoothManager>>,
 }
 
 impl std::fmt::Debug for SystemContext {
@@ -103,6 +105,7 @@ pub struct SystemContextBuilder {
     firewall: Option<Arc<dyn crate::firewall::FirewallManager>>,
     logs: Option<Arc<dyn crate::logs::LogReader>>,
     device: Option<Arc<dyn crate::device::DeviceManager>>,
+    bluetooth: Option<Arc<dyn crate::bluetooth::BluetoothManager>>,
 }
 
 impl SystemContextBuilder {
@@ -214,6 +217,12 @@ impl SystemContextBuilder {
         self
     }
 
+    /// Provide the bluetooth capability (optional).
+    pub fn bluetooth(mut self, mgr: Arc<dyn crate::bluetooth::BluetoothManager>) -> Self {
+        self.bluetooth = Some(mgr);
+        self
+    }
+
     /// Finish, failing if a mandatory capability is missing.
     pub fn build(self) -> Result<SystemContext> {
         Ok(SystemContext {
@@ -247,6 +256,7 @@ impl SystemContextBuilder {
             firewall: self.firewall,
             logs: self.logs,
             device: self.device,
+            bluetooth: self.bluetooth,
         })
     }
 }

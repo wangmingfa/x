@@ -10,6 +10,7 @@ pub mod disk_sysinfo;
 pub mod identity;
 pub mod process_sysinfo;
 
+pub mod bluetooth_os;
 pub mod clipboard_cmd;
 pub mod device_os;
 pub mod file_open;

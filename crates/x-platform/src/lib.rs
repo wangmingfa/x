@@ -92,6 +92,7 @@ pub fn create_context() -> Result<SystemContext> {
             .firewall(std::sync::Arc::new(common::firewall_os::PlatformFirewall))
             .logs(std::sync::Arc::new(common::logs_os::PlatformLogs))
             .device(std::sync::Arc::new(common::device_os::PlatformDevices))
+            .bluetooth(std::sync::Arc::new(common::bluetooth_os::PlatformBluetooth))
             .build()
     }
 
@@ -118,6 +119,7 @@ pub fn create_context() -> Result<SystemContext> {
             .firewall(std::sync::Arc::new(common::firewall_os::PlatformFirewall))
             .logs(std::sync::Arc::new(common::logs_os::PlatformLogs))
             .device(std::sync::Arc::new(common::device_os::PlatformDevices))
+            .bluetooth(std::sync::Arc::new(common::bluetooth_os::PlatformBluetooth))
             .build()
     }
 
@@ -144,6 +146,7 @@ pub fn create_context() -> Result<SystemContext> {
             .firewall(std::sync::Arc::new(common::firewall_os::PlatformFirewall))
             .logs(std::sync::Arc::new(common::logs_os::PlatformLogs))
             .device(std::sync::Arc::new(common::device_os::PlatformDevices))
+            .bluetooth(std::sync::Arc::new(common::bluetooth_os::PlatformBluetooth))
             .build()
     }
 
