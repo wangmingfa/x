@@ -10,7 +10,8 @@ use crate::network::{AddressInfo, DnsConfig, InterfaceInfo, NetworkManager, Rout
 use crate::port::{ConnectionState, PortInfo, PortListOptions, PortManager, Protocol};
 use crate::process::{KillSignal, ProcessInfo, ProcessListOptions, ProcessManager, ProcessState};
 use crate::service::{
-    ServiceAction, ServiceInfo, ServiceListOptions, ServiceManager, ServiceManagerType,
+    NativeOutput, ServiceAction, ServiceInfo, ServiceListOptions, ServiceLogPage, ServiceManager,
+    ServiceManagerType,
 };
 use crate::system::{CpuUsage, MemoryUsage, SystemInfo, SystemManager};
 use std::net::{IpAddr, Ipv4Addr};
@@ -389,6 +390,8 @@ impl NetworkManager for StubNetwork {
 pub struct StubService {
     rows: Mutex<Vec<ServiceInfo>>,
     actions: Mutex<Vec<(String, ServiceAction)>>,
+    logs: Mutex<Option<ServiceLogPage>>,
+    native_calls: Mutex<Vec<Vec<String>>>,
 }
 
 impl StubService {
@@ -397,12 +400,23 @@ impl StubService {
         Self {
             rows: Mutex::new(rows),
             actions: Mutex::new(Vec::new()),
+            ..Default::default()
         }
     }
 
     /// Actions the frontend requested, in order.
     pub fn actions(&self) -> Vec<(String, ServiceAction)> {
         self.actions.lock().expect("stub mutex").clone()
+    }
+
+    /// Answer every `logs` call with this page.
+    pub fn set_logs(&self, page: ServiceLogPage) {
+        *self.logs.lock().expect("stub mutex") = Some(page);
+    }
+
+    /// Argument lists passed to `native`, in order.
+    pub fn native_calls(&self) -> Vec<Vec<String>> {
+        self.native_calls.lock().expect("stub mutex").clone()
     }
 }
 
@@ -430,6 +444,28 @@ impl ServiceManager for StubService {
             .expect("stub mutex")
             .push((name.to_string(), action));
         Ok(())
+    }
+
+    fn logs(&self, _name: &str, _limit: Option<usize>) -> Result<ServiceLogPage> {
+        self.logs
+            .lock()
+            .expect("stub mutex")
+            .clone()
+            .ok_or_else(|| crate::error::Error::unsupported("stub service has no logs configured"))
+    }
+
+    fn native(&self, args: &[String]) -> Result<NativeOutput> {
+        self.native_calls
+            .lock()
+            .expect("stub mutex")
+            .push(args.to_vec());
+        Ok(NativeOutput {
+            program: "stub".to_string(),
+            args: args.to_vec(),
+            exit_code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+        })
     }
 }
 

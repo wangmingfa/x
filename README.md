@@ -78,6 +78,8 @@ cargo build -p x-app
 | `x service list` | 服务列表及状态 |
 | `x service status <name>` | 单个服务详情 |
 | `x service start / stop / restart / reload / enable / disable <name>` | 确认后对单个服务执行操作 |
+| `x service logs <name> [--lines N]` | 服务最近的日志（journalctl / log show / 事件日志），最新在前 |
+| `x service native <args>…` | 逃生舱：参数原样交给平台管理器命令（systemctl / launchctl / sc），子进程非零退出则 x 退出码 1 |
 
 ### 交互式 TUI（`x tui` / `x ui`）
 
@@ -153,7 +155,7 @@ GitHub Actions CI 在 Ubuntu / macOS / Windows 三平台上跑格式、clippy
 - [x] 网络：网卡链路速度、网关；`x net connections`（统一 netstat / ss / lsof -i，支持按进程/端口过滤）；DNS 解析 / 反查 / 刷缓存；ping / trace / resolve
 - [x] 磁盘：物理盘 / 分区 / UUID / 标签 / 只读标志；目录占用（`x disk usage <path> [--depth N]`，du 风格，TUI disk 页签树形展开/折叠）；网卡收发流量统计
 - [x] `x net addresses` 的 DHCP 标记（Windows/macOS 已接入；Linux 内核不记录地址来源，诚实留空）
-- [ ] 服务：`x service logs <name>`；平台原生操作逃生舱
+- [x] 服务：`x service logs <name> [--lines N]`（journalctl / macOS 统一日志 / Windows 事件日志）；平台原生操作逃生舱 `x service native <args>…`（systemctl / launchctl / sc 直通）
 - [ ] 能力探测（`x capability`）：按平台报告各能力 支持/降级/不支持
 - [ ] 审计：破坏性操作（kill、服务、防火墙…）写入本地日志，便于回溯
 

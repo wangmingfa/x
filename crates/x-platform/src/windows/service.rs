@@ -2,12 +2,17 @@
 //!
 //! Everything here is native: `EnumServicesStatusExW` for the list, and
 //! `StartServiceW`, `ControlService` and `ChangeServiceConfigW` for the
-//! lifecycle actions.
+//! lifecycle actions. The one level-3 piece is `logs`: there is no public API
+//! for reading the event log with an XPath provider filter that beats
+//! `wevtutil qe /f:xml` on fidelity, and `native` deliberately hands its
+//! arguments to the SCM's own `sc` command line.
 
 use super::buffer::AlignedBuffer;
+use crate::sys;
 use windows_sys::Win32::Foundation::{
     GetLastError, ERROR_ACCESS_DENIED, ERROR_MORE_DATA, ERROR_SERVICE_DOES_NOT_EXIST,
 };
+use windows_sys::Win32::Globalization::{MultiByteToWideChar, CP_OEMCP};
 use windows_sys::Win32::System::Services::{
     ChangeServiceConfigW, CloseServiceHandle, ControlService, EnumServicesStatusExW,
     OpenSCManagerW, OpenServiceW, QueryServiceConfigW, StartServiceW, ENUM_SERVICE_STATUS_PROCESSW,
@@ -19,8 +24,8 @@ use windows_sys::Win32::System::Services::{
 };
 use x_core::error::{Error, ErrorKind, PermissionRequirement, Result};
 use x_core::service::{
-    ServiceAction, ServiceInfo, ServiceListOptions, ServiceManager, ServiceManagerType,
-    ServiceState,
+    NativeOutput, ServiceAction, ServiceInfo, ServiceListOptions, ServiceLogEntry, ServiceLogPage,
+    ServiceManager, ServiceManagerType, ServiceState, DEFAULT_LOG_LINES,
 };
 
 /// Reads and drives Windows services.
@@ -242,6 +247,227 @@ impl ServiceManager for WindowsService {
             ServiceAction::Disable => self.set_start_type(name, SERVICE_DISABLED),
         }
     }
+
+    fn logs(&self, name: &str, limit: Option<usize>) -> Result<ServiceLogPage> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(Error::invalid_input("service name must not be empty"));
+        }
+        // The name is interpolated into an XPath string literal.
+        if name.contains(['\'', '"']) {
+            return Err(Error::invalid_input(format!(
+                "`{name}` cannot be used inside an event query"
+            )));
+        }
+        if !sys::command_exists("wevtutil") {
+            return Err(Error::unsupported("`wevtutil` is not available"));
+        }
+        let lines = limit.unwrap_or(DEFAULT_LOG_LINES);
+        // Services rarely publish under their own provider name; the SCM
+        // records their lifecycle into the System log with the service and
+        // display names in EventData. Query both shapes, over-fetch, and
+        // filter locally. The log is shared, so a busy host can bury quiet
+        // services deep; the window is deliberately wide.
+        let query =
+            format!("*[System[Provider[@Name='{name}' or @Name='Service Control Manager']]]");
+        let fetch = lines.saturating_mul(8).clamp(100, 1024);
+        let owned: Vec<String> = vec![
+            "qe".into(),
+            "System".into(),
+            format!("/q:{query}"),
+            format!("/c:{fetch}"),
+            "/rd:true".into(),
+            "/f:xml".into(),
+        ];
+        let borrowed: Vec<&str> = owned.iter().map(String::as_str).collect();
+        let (exit_code, stdout, stderr) = sys::run_command_capture("wevtutil", &borrowed)
+            .map_err(|err| Error::system(format!("cannot run `wevtutil`: {err}")))?;
+        if exit_code != 0 {
+            return Err(Error::system(format!(
+                "wevtutil exited with {exit_code}: {}",
+                decode_console(&stderr).trim()
+            )));
+        }
+        let xml = decode_console(&stdout);
+        let display = self
+            .status(name)
+            .ok()
+            .and_then(|row| row.display_name)
+            .unwrap_or_default();
+        let entries = sc_events(&xml, name, &display)
+            .into_iter()
+            .take(lines)
+            .collect();
+        Ok(ServiceLogPage {
+            service: name.to_string(),
+            source: "wevtutil qe System".to_string(),
+            entries,
+        })
+    }
+
+    fn native(&self, args: &[String]) -> Result<NativeOutput> {
+        if args.is_empty() {
+            return Err(Error::invalid_input(
+                "x service native needs at least one manager argument",
+            ));
+        }
+        let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
+        let (exit_code, stdout, stderr) = sys::run_command_capture("sc", &borrowed)
+            .map_err(|err| Error::system(format!("cannot run `sc`: {err}")))?;
+        Ok(NativeOutput {
+            program: "sc".to_string(),
+            args: args.to_vec(),
+            exit_code,
+            stdout: decode_console(&stdout),
+            stderr: decode_console(&stderr),
+        })
+    }
+}
+
+/// Decode console output: UTF-8 when the tool produced it, else the OEM code
+/// page the C runtime falls back to when stdout is redirected.
+fn decode_console(bytes: &[u8]) -> String {
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        return text.to_string();
+    }
+    // SAFETY: arguments pair each pointer with its length; the sizing call
+    // writes nothing.
+    let wide_len = unsafe {
+        MultiByteToWideChar(
+            CP_OEMCP,
+            0,
+            bytes.as_ptr(),
+            bytes.len() as i32,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if wide_len <= 0 {
+        return String::from_utf8_lossy(bytes).into_owned();
+    }
+    let mut wide = vec![0u16; wide_len as usize];
+    // SAFETY: `wide` is sized exactly to what the conversion reported.
+    let written = unsafe {
+        MultiByteToWideChar(
+            CP_OEMCP,
+            0,
+            bytes.as_ptr(),
+            bytes.len() as i32,
+            wide.as_mut_ptr(),
+            wide_len,
+        )
+    };
+    if written <= 0 {
+        return String::from_utf8_lossy(bytes).into_owned();
+    }
+    String::from_utf16_lossy(&wide[..written as usize])
+}
+
+/// Parse `wevtutil qe /f:xml` output into entries for one service, newest
+/// first (the query already asks for reverse direction).
+fn sc_events(xml: &str, name: &str, display: &str) -> Vec<ServiceLogEntry> {
+    let name = name.to_ascii_lowercase();
+    let display = display.to_ascii_lowercase();
+    let mut entries = Vec::new();
+    for chunk in xml.split("<Event ").skip(1) {
+        let Some(end) = chunk.find("</Event>") else {
+            continue;
+        };
+        let event = &chunk[..end + "</Event>".len()];
+        let provider = provider_name(event).unwrap_or_default();
+        let data = data_values(event);
+        // SCM events cover every service; keep only the ones that mention
+        // this service by its name or its (localized) display name.
+        if provider.eq_ignore_ascii_case("Service Control Manager") {
+            let mentions = data.iter().any(|value| {
+                let value = value.to_ascii_lowercase();
+                value.contains(&name) || (!display.is_empty() && value.contains(&display))
+            });
+            if !mentions {
+                continue;
+            }
+        }
+        entries.push(ServiceLogEntry {
+            timestamp: attribute(event, "SystemTime"),
+            level: element_text(event, "Level").as_deref().map(event_level),
+            message: if data.is_empty() {
+                provider.clone()
+            } else {
+                data.join(" | ")
+            },
+        });
+    }
+    entries
+}
+
+/// The `Name` attribute of the event's `Provider` element.
+fn provider_name(event: &str) -> Option<String> {
+    let at = event.find("<Provider")?;
+    attribute(&event[at..], "Name")
+}
+
+/// A quoted XML attribute value, handling both quote styles `wevtutil` emits.
+fn attribute(text: &str, key: &str) -> Option<String> {
+    let marker = format!("{key}=");
+    let at = text.find(&marker)? + marker.len();
+    let quote = text[at..]
+        .chars()
+        .next()
+        .filter(|c| *c == '\'' || *c == '"')?;
+    let close = 1 + text[at + 1..].find(quote)?;
+    Some(unescape_xml(&text[at + 1..at + close]))
+}
+
+/// The text of a simple element such as `<Level>2</Level>`.
+fn element_text(text: &str, tag: &str) -> Option<String> {
+    let open = format!("<{tag}>");
+    let at = text.find(&open)? + open.len();
+    let end = text[at..].find("<")?;
+    Some(unescape_xml(text[at..at + end].trim()))
+}
+
+/// Every `EventData`/`Data` value, in order.
+fn data_values(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(at) = rest.find("<Data") {
+        rest = &rest[at + "<Data".len()..];
+        let Some(gt) = rest.find('>') else { break };
+        if rest[..gt].ends_with('/') {
+            // Self-closed: no value, but keep scanning for the next one.
+            rest = &rest[gt + 1..];
+            continue;
+        }
+        rest = &rest[gt + 1..];
+        let Some(close) = rest.find("</Data>") else {
+            break;
+        };
+        out.push(unescape_xml(&rest[..close]));
+        rest = &rest[close + "</Data>".len()..];
+    }
+    out
+}
+
+/// `Level` numbers with their documented names.
+fn event_level(raw: &str) -> String {
+    match raw {
+        "1" => "critical",
+        "2" => "error",
+        "3" => "warning",
+        "4" => "information",
+        "5" => "verbose",
+        other => other,
+    }
+    .to_string()
+}
+
+fn unescape_xml(value: &str) -> String {
+    value
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&")
 }
 
 impl WindowsService {
@@ -415,5 +641,141 @@ mod tests {
             .expect("list");
         assert!(rows.len() > 1, "no services returned: {rows:?}");
         assert!(rows.iter().all(|row| !row.name.is_empty()));
+    }
+
+    #[test]
+    fn event_xml_is_read_without_an_xml_library() {
+        let xml = "<Events>
+<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System>
+<Provider Name='Service Control Manager' Guid='{555908d1-a6d7-4695-8e1e-26997a3d7cc1}'/>
+<EventID Qualifiers='16384'>7036</EventID>
+<Level>4</Level>
+<TimeCreated SystemTime='2026-10-01T04:00:00.000000Z'/>
+</System><EventData><Data>Windows Spooler Service</Data><Data>running</Data></EventData>
+</Event>
+<Event xmlns='x'><System>
+<Provider Name='MyService'/>
+<Level>2</Level>
+<TimeCreated SystemTime='2026-10-01T04:01:00.000000Z'/>
+</System><EventData><Data Name='param1'>boom &amp; out</Data></EventData></Event>
+</Events>";
+        let entries = sc_events(xml, "Spooler", "Windows Spooler Service");
+        assert_eq!(entries.len(), 2, "SCM hit plus own-provider event");
+        assert_eq!(
+            entries[0].timestamp.as_deref(),
+            Some("2026-10-01T04:00:00.000000Z")
+        );
+        assert_eq!(entries[0].level.as_deref(), Some("information"));
+        assert_eq!(entries[0].message, "Windows Spooler Service | running");
+        assert_eq!(entries[1].level.as_deref(), Some("error"));
+        assert_eq!(entries[1].message, "boom & out");
+    }
+
+    #[test]
+    fn scm_events_for_other_services_are_dropped() {
+        let xml = "<Event xmlns='x'><System>\
+<Provider Name='Service Control Manager'/><Level>4</Level>\
+<TimeCreated SystemTime='2026-10-01T04:00:00Z'/></System>\
+<EventData><Data>Some Other Service</Data><Data>stopped</Data></EventData></Event>";
+        assert!(sc_events(xml, "Spooler", "").is_empty());
+        // A display-name match works even when the name does not appear.
+        assert_eq!(sc_events(xml, "other", "Some Other Service").len(), 1);
+    }
+
+    #[test]
+    fn level_numbers_get_their_documented_names() {
+        assert_eq!(event_level("1"), "critical");
+        assert_eq!(event_level("2"), "error");
+        assert_eq!(event_level("3"), "warning");
+        assert_eq!(event_level("4"), "information");
+        assert_eq!(event_level("9"), "9");
+    }
+
+    #[test]
+    fn console_bytes_survive_a_round_trip() {
+        assert_eq!(decode_console(b"plain ascii"), "plain ascii");
+        assert_eq!(decode_console("中文字".as_bytes()), "中文字");
+        assert_eq!(decode_console(b""), "");
+    }
+
+    #[test]
+    fn quote_characters_never_reach_the_xpath() {
+        let err = WindowsService::new()
+            .logs("evil' or true", None)
+            .expect_err("must be rejected");
+        assert_eq!(err.kind(), ErrorKind::InvalidInput);
+        assert!(WindowsService::new().logs("", None).is_err());
+    }
+
+    #[test]
+    fn native_refuses_an_empty_argument_list() {
+        let err = WindowsService::new().native(&[]).expect_err("must reject");
+        assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn logs_find_the_service_behind_a_real_scm_event() {
+        // Read the recent SCM events raw, take one whose EventData names a
+        // real service, and require `logs` to surface it. This does not assume
+        // any particular service (or event ID) exists on the host.
+        let owned: Vec<String> = vec![
+            "qe".into(),
+            "System".into(),
+            "/q:*[System[Provider[@Name='Service Control Manager']]]".into(),
+            "/c:200".into(),
+            "/rd:true".into(),
+            "/f:xml".into(),
+        ];
+        let borrowed: Vec<&str> = owned.iter().map(String::as_str).collect();
+        let (code, stdout, stderr) =
+            sys::run_command_capture("wevtutil", &borrowed).expect("wevtutil must run");
+        assert_eq!(code, 0, "wevtutil: {}", decode_console(&stderr));
+        let xml = decode_console(&stdout);
+
+        let names: std::collections::HashSet<String> = WindowsService::new()
+            .list(&ServiceListOptions::default())
+            .expect("list")
+            .into_iter()
+            .map(|row| row.name.to_ascii_lowercase())
+            .collect();
+        let mut target = None;
+        for chunk in xml.split("<Event ").skip(1) {
+            for value in data_values(chunk) {
+                if names.contains(&value.to_ascii_lowercase()) {
+                    target = Some(value);
+                    break;
+                }
+            }
+            if target.is_some() {
+                break;
+            }
+        }
+        let Some(target) = target else {
+            // No SCM event names a known service (fresh image): nothing to
+            // assert, but the query itself already proved the pipeline works.
+            return;
+        };
+        let page = WindowsService::new()
+            .logs(&target, Some(10))
+            .expect("logs must answer");
+        assert!(
+            !page.entries.is_empty(),
+            "logs missed an event for `{target}` that the raw query just returned"
+        );
+        assert!(page.entries.iter().all(|entry| !entry.message.is_empty()));
+    }
+
+    #[test]
+    fn native_sc_passthrough_answers() {
+        let out = WindowsService::new()
+            .native(&["query".into(), "Spooler".into()])
+            .expect("sc must run");
+        assert_eq!(out.program, "sc");
+        assert_eq!(out.exit_code, 0, "sc query Spooler: {out:?}");
+        assert!(
+            out.stdout.to_ascii_lowercase().contains("spooler"),
+            "unexpected sc output: {:?}",
+            out.stdout
+        );
     }
 }

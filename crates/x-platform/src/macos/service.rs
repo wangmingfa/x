@@ -7,8 +7,8 @@
 use crate::sys;
 use x_core::error::{Error, PermissionRequirement, Result};
 use x_core::service::{
-    ServiceAction, ServiceInfo, ServiceListOptions, ServiceManager, ServiceManagerType,
-    ServiceState,
+    NativeOutput, ServiceAction, ServiceInfo, ServiceListOptions, ServiceLogEntry, ServiceLogPage,
+    ServiceManager, ServiceManagerType, ServiceState, DEFAULT_LOG_LINES,
 };
 
 /// Reads and controls launchd jobs.
@@ -177,6 +177,99 @@ impl ServiceManager for MacosService {
             }
         }
     }
+
+    fn logs(&self, name: &str, limit: Option<usize>) -> Result<ServiceLogPage> {
+        let process = name.trim();
+        if process.is_empty() {
+            return Err(Error::invalid_input("service name must not be empty"));
+        }
+        // The name goes inside a quoted predicate string; a quote or backslash
+        // there would change the query itself.
+        if process.contains(['"', '\'', '\\']) {
+            return Err(Error::invalid_input(format!(
+                "`{process}` cannot be used as a log predicate value"
+            )));
+        }
+        if !sys::command_exists("log") {
+            return Err(Error::unsupported("`log` is not available on this host"));
+        }
+        // The unified log is keyed by executable name, not launchd label:
+        // `sshd`, not `com.openssh.sshd`. There is no per-job window, so the
+        // last hour is the documented bound.
+        let predicate = format!("process == \"{process}\"");
+        let output = sys::run_command(
+            "log",
+            &[
+                "show",
+                "--predicate",
+                &predicate,
+                "--last",
+                "1h",
+                "--style",
+                "compact",
+                "--info",
+            ],
+        )
+        .map_err(|err| Error::system(format!("log show: {err}")))?;
+
+        let lines = limit.unwrap_or(DEFAULT_LOG_LINES);
+        let mut entries: Vec<ServiceLogEntry> = output
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(compact_log_line)
+            .collect();
+        // `log show` prints oldest first; a page is newest first.
+        entries.reverse();
+        entries.truncate(lines);
+        Ok(ServiceLogPage {
+            service: process.to_string(),
+            source: "log show".to_string(),
+            entries,
+        })
+    }
+
+    fn native(&self, args: &[String]) -> Result<NativeOutput> {
+        if args.is_empty() {
+            return Err(Error::invalid_input(
+                "x service native needs at least one manager argument",
+            ));
+        }
+        sys::run_native_lossy("launchctl", args)
+            .map_err(|err| Error::system(format!("cannot run `launchctl`: {err}")))
+    }
+}
+
+/// One `log show --style compact` line: date, time, then the record body.
+fn compact_log_line(line: &str) -> ServiceLogEntry {
+    let mut rest = line;
+    let mut stamp = String::new();
+    for _ in 0..2 {
+        let trimmed = rest.trim_start();
+        let end = trimmed.find(char::is_whitespace).unwrap_or(trimmed.len());
+        if end == 0 {
+            break;
+        }
+        if !stamp.is_empty() {
+            stamp.push(' ');
+        }
+        stamp.push_str(&trimmed[..end]);
+        rest = &trimmed[end..];
+    }
+    // The date token is a guaranteed shape; anything else (a header or
+    // wrapped line) keeps its full text as the message.
+    let looks_like_timestamp = stamp.len() >= 20 && stamp.as_bytes()[0].is_ascii_digit();
+    if !looks_like_timestamp {
+        return ServiceLogEntry {
+            timestamp: None,
+            level: None,
+            message: line.to_string(),
+        };
+    }
+    ServiceLogEntry {
+        timestamp: Some(stamp),
+        level: None,
+        message: rest.trim_start().to_string(),
+    }
 }
 
 /// `com.apple.something` style labels, with a friendly alias for common jobs.
@@ -268,5 +361,40 @@ mod tests {
         assert_eq!(normalize_label("sshd"), "com.openssh.sshd");
         assert_eq!(normalize_label("nginx"), "homebrew.mxcl.nginx");
         assert_eq!(normalize_label("custom.daemon"), "custom.daemon");
+    }
+
+    #[test]
+    fn compact_log_lines_split_the_timestamp() {
+        let entry = compact_log_line(
+            "2026-10-01 12:00:00.123456+0800 0x5f3a  Default  0x0  123  0  launchd: message",
+        );
+        assert_eq!(
+            entry.timestamp.as_deref(),
+            Some("2026-10-01 12:00:00.123456+0800")
+        );
+        assert!(entry.message.starts_with("0x5f3a"));
+        // Header and wrapped lines keep their full text.
+        let header = compact_log_line("Filtering the log data that is being inferred.");
+        assert_eq!(header.timestamp, None);
+        assert_eq!(
+            header.message,
+            "Filtering the log data that is being inferred."
+        );
+    }
+
+    #[test]
+    fn log_predicate_values_are_injected_safely() {
+        let service = MacosService::new();
+        let err = service
+            .logs("evil\" or 1=1", None)
+            .expect_err("must be rejected");
+        assert_eq!(err.kind(), x_core::error::ErrorKind::InvalidInput);
+        assert!(service.logs("", None).is_err());
+    }
+
+    #[test]
+    fn native_refuses_an_empty_argument_list() {
+        let err = MacosService::new().native(&[]).expect_err("must reject");
+        assert_eq!(err.kind(), x_core::error::ErrorKind::InvalidInput);
     }
 }

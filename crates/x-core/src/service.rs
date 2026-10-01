@@ -131,6 +131,59 @@ pub struct ServiceInfo {
     pub manager: ServiceManagerType,
 }
 
+/// How many log lines a manager returns when the caller did not ask for a
+/// specific count.
+pub const DEFAULT_LOG_LINES: usize = 50;
+
+/// One line of a service's recent log output.
+///
+/// The fields are deliberately loose: journal entries, macOS unified-log
+/// records and Windows events do not share a level vocabulary or a timestamp
+/// format, and inventing a lossy normalization would be worse than passing the
+/// platform's own text through.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ServiceLogEntry {
+    /// Timestamp as the platform printed it, when it printed one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<String>,
+    /// Level as the platform named it ("error", "warning", "info", a number),
+    /// when the record carried one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub level: Option<String>,
+    /// The message text.
+    pub message: String,
+}
+
+/// The logs fetched for one service.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ServiceLogPage {
+    /// Service the entries were requested for.
+    pub service: String,
+    /// Where the entries came from, e.g. `journalctl` or `wevtutil`.
+    pub source: String,
+    /// Newest first, capped at the requested line count.
+    pub entries: Vec<ServiceLogEntry>,
+}
+
+/// What running the platform manager's own command line produced.
+///
+/// This is the documented escape hatch: when `x` has no normalized operation
+/// for something, the adapter can hand the arguments to `systemctl`,
+/// `launchctl` or `sc` verbatim and show the raw answer.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NativeOutput {
+    /// Program that was executed.
+    pub program: String,
+    /// Arguments it received.
+    pub args: Vec<String>,
+    /// Its exit code, `0` on success.
+    pub exit_code: i32,
+    /// Everything it wrote to stdout.
+    pub stdout: String,
+    /// Everything it wrote to stderr.
+    pub stderr: String,
+}
+
 /// Filter for [`crate::service::ServiceManager::list`].
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ServiceListOptions {
@@ -184,6 +237,27 @@ pub trait ServiceManager: Send + Sync {
     fn restart(&self, name: &str) -> crate::error::Result<()> {
         self.action(name, ServiceAction::Restart)
     }
+
+    /// Recent log lines for one service, newest first.
+    ///
+    /// Adapters implement this only where the platform has a real log source;
+    /// the default reports that honestly instead of returning an empty page
+    /// that looks like "no logs".
+    fn logs(&self, _name: &str, _limit: Option<usize>) -> crate::error::Result<ServiceLogPage> {
+        Err(crate::error::Error::unsupported(
+            "this service manager has no log source x can read",
+        ))
+    }
+
+    /// Run the platform manager's own command line with these arguments.
+    ///
+    /// Escape hatch for operations `x` does not model. Adapters that have a
+    /// native manager command override this.
+    fn native(&self, _args: &[String]) -> crate::error::Result<NativeOutput> {
+        Err(crate::error::Error::unsupported(
+            "no native service command is available on this platform",
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -209,5 +283,48 @@ mod tests {
     fn manager_type_serde_is_snake_case() {
         let json = serde_json::to_string(&ServiceManagerType::OpenRc).unwrap();
         assert_eq!(json, "\"openrc\"");
+    }
+
+    #[test]
+    fn unset_logs_and_native_report_unsupported() {
+        struct Bare;
+        impl ServiceManager for Bare {
+            fn manager_type(&self) -> ServiceManagerType {
+                ServiceManagerType::Unknown
+            }
+            fn list(
+                &self,
+                _options: &ServiceListOptions,
+            ) -> crate::error::Result<Vec<ServiceInfo>> {
+                Ok(Vec::new())
+            }
+            fn action(&self, _name: &str, _action: ServiceAction) -> crate::error::Result<()> {
+                Ok(())
+            }
+        }
+        let bare = Bare;
+        assert_eq!(
+            bare.logs("ssh", None)
+                .expect_err("default must be unsupported")
+                .kind(),
+            crate::error::ErrorKind::Unsupported
+        );
+        assert_eq!(
+            bare.native(&["status".into()])
+                .expect_err("default must be unsupported")
+                .kind(),
+            crate::error::ErrorKind::Unsupported
+        );
+    }
+
+    #[test]
+    fn log_entries_drop_absent_fields_in_json() {
+        let entry = ServiceLogEntry {
+            timestamp: None,
+            level: None,
+            message: "plain".into(),
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        assert_eq!(json, r#"{"message":"plain"}"#);
     }
 }

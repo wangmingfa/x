@@ -388,6 +388,60 @@ fn service_actions_go_through_the_manager() {
 }
 
 #[test]
+fn service_logs_renders_the_page_from_the_manager() {
+    let stubs = populated();
+    stubs.service.set_logs(x_core::service::ServiceLogPage {
+        service: "sshd".into(),
+        source: "journalctl".into(),
+        entries: vec![
+            x_core::service::ServiceLogEntry {
+                timestamp: Some("Oct 05 10:23:41".into()),
+                level: Some("error".into()),
+                message: "bad auth".into(),
+            },
+            x_core::service::ServiceLogEntry {
+                timestamp: None,
+                level: None,
+                message: "plain line".into(),
+            },
+        ],
+    });
+
+    let out = x(&stubs, &["service", "logs", "sshd", "--lines", "2"], true);
+    assert_eq!(out.code, 0);
+    assert!(out.stdout.contains("bad auth"), "missing: {}", out.stdout);
+    assert!(out.stdout.contains("plain line"));
+    assert!(out.stdout.contains("timestamp"));
+
+    let json = x(&stubs, &["--json", "service", "logs", "sshd"], true);
+    assert_eq!(json.code, 0);
+    let start = json.stdout.find('{').expect("json object");
+    let value: serde_json::Value = serde_json::from_str(&json.stdout[start..]).expect("valid json");
+    assert_eq!(value["service"], "sshd");
+    assert_eq!(value["entries"][0]["level"], "error");
+    assert!(value["entries"][1].get("level").is_none());
+}
+
+#[test]
+fn service_logs_without_a_log_source_is_unsupported() {
+    let stubs = populated();
+    let out = x(&stubs, &["service", "logs", "sshd"], true);
+    assert_eq!(out.code, ErrorKind::Unsupported.exit_code());
+}
+
+#[test]
+fn service_native_passes_arguments_through() {
+    let stubs = populated();
+    let out = x(&stubs, &["service", "native", "query", "sshd"], true);
+    assert_eq!(out.code, 0);
+    assert_eq!(
+        stubs.service.native_calls(),
+        vec![vec!["query".to_string(), "sshd".to_string()]]
+    );
+    assert!(out.stdout.contains("$ stub query sshd"));
+}
+
+#[test]
 fn system_commands_render_the_stub_facts() {
     let stubs = populated();
 

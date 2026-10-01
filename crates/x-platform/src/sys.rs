@@ -49,6 +49,48 @@ pub fn run_command(program: &str, args: &[&str]) -> std::io::Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+/// Run a command and keep its exit code and both streams, for the native
+/// escape hatches: the child's failure is data to show, not an error to raise.
+///
+/// Only a spawn failure is an `io::Error`; a non-zero exit is reported as the
+/// child's own answer. Streams stay raw bytes because Windows console programs
+/// speak the OEM code page while everything else is UTF-8.
+pub fn run_command_capture(
+    program: &str,
+    args: &[&str],
+) -> std::io::Result<(i32, Vec<u8>, Vec<u8>)> {
+    let output = std::process::Command::new(program).args(args).output()?;
+    Ok((
+        output.status.code().unwrap_or(-1),
+        output.stdout,
+        output.stderr,
+    ))
+}
+
+/// Lossy UTF-8 decoding, the correct answer everywhere except the Windows
+/// console programs covered by the OEM code page.
+pub fn decode_bytes_lossy(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
+/// Run one service manager's own command line and package the raw answer.
+///
+/// A non-zero exit is part of the answer; only a failed spawn is an error.
+pub fn run_native_lossy(
+    program: &str,
+    args: &[String],
+) -> std::io::Result<x_core::service::NativeOutput> {
+    let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
+    let (exit_code, stdout, stderr) = run_command_capture(program, &borrowed)?;
+    Ok(x_core::service::NativeOutput {
+        program: program.to_string(),
+        args: args.to_vec(),
+        exit_code,
+        stdout: decode_bytes_lossy(&stdout),
+        stderr: decode_bytes_lossy(&stderr),
+    })
+}
+
 /// `true` when an executable is reachable through `PATH` or an absolute path.
 pub fn command_exists(program: &str) -> bool {
     if program.contains('/') || program.contains('\\') {

@@ -1,7 +1,7 @@
 //! `x service`: list, inspect and drive the platform service manager.
 
 use clap::Subcommand;
-use x_core::error::Result;
+use x_core::error::{Error, Result};
 use x_core::service::{ServiceAction, ServiceInfo, ServiceListOptions, ServiceState};
 use x_core::SystemContext;
 
@@ -49,6 +49,24 @@ pub enum ServiceCommand {
 
     /// Disable at boot.
     Disable(ActionArgs),
+
+    /// Recent log lines for one service, newest first.
+    Logs {
+        /// Service name.
+        name: String,
+        /// Maximum number of lines.
+        #[arg(long, value_name = "N")]
+        lines: Option<usize>,
+    },
+
+    /// Run the platform manager's own command line verbatim (`sc`, `systemctl`
+    /// or `launchctl`). Escape hatch: executes without confirmation, the raw
+    /// output is shown, and a non-zero child exit fails the command.
+    Native {
+        /// Manager arguments, e.g. `query Spooler` or `status sshd.service`.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
+        args: Vec<String>,
+    },
 }
 
 /// Arguments shared by every action.
@@ -118,6 +136,8 @@ pub fn dispatch(
         ServiceCommand::Disable(args) => {
             apply(context, renderer, confirmer, args, ServiceAction::Disable)
         }
+        ServiceCommand::Logs { name, lines } => logs(context, renderer, name, *lines),
+        ServiceCommand::Native { args } => native(context, renderer, args),
     }
 }
 
@@ -201,6 +221,57 @@ fn apply(
         let mut table = service_table();
         table.push(service_row(&after));
         renderer.table(&table)?;
+    }
+    Ok(0)
+}
+
+/// Recent log lines for one service.
+pub fn logs(
+    context: &SystemContext,
+    renderer: &mut Renderer,
+    name: &str,
+    lines: Option<usize>,
+) -> Result<i32> {
+    let page = context.service.logs(name, lines)?;
+    if renderer.format() == OutputFormat::Json {
+        renderer.always_json(&page)?;
+        return Ok(0);
+    }
+    if page.entries.is_empty() {
+        renderer.line(format!("no log entries for `{}`", page.service))?;
+        return Ok(0);
+    }
+    let mut table = Table::new(["timestamp", "level", "message"]);
+    for entry in &page.entries {
+        table.push(row![
+            entry.timestamp.clone().unwrap_or_else(|| "-".into()),
+            entry.level.clone().unwrap_or_else(|| "-".into()),
+            entry.message.clone(),
+        ]);
+    }
+    renderer.table(&table)?;
+    Ok(0)
+}
+
+/// Pass the arguments to the manager's own command line and show the answer.
+pub fn native(context: &SystemContext, renderer: &mut Renderer, args: &[String]) -> Result<i32> {
+    let out = context.service.native(args)?;
+    if renderer.format() == OutputFormat::Json {
+        renderer.always_json(&out)?;
+    } else {
+        renderer.line(format!("$ {} {}", out.program, out.args.join(" ")))?;
+        for line in out.stdout.lines().filter(|l| !l.trim().is_empty()) {
+            renderer.line(line)?;
+        }
+        for line in out.stderr.lines().filter(|l| !l.trim().is_empty()) {
+            renderer.line(line)?;
+        }
+    }
+    if out.exit_code != 0 {
+        return Err(Error::system(format!(
+            "{} exited with code {}",
+            out.program, out.exit_code
+        )));
     }
     Ok(0)
 }

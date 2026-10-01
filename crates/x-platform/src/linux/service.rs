@@ -8,8 +8,8 @@
 use crate::sys;
 use x_core::error::{Error, PermissionRequirement, Result};
 use x_core::service::{
-    ServiceAction, ServiceInfo, ServiceListOptions, ServiceManager, ServiceManagerType,
-    ServiceState,
+    NativeOutput, ServiceAction, ServiceInfo, ServiceListOptions, ServiceLogEntry, ServiceLogPage,
+    ServiceManager, ServiceManagerType, ServiceState, DEFAULT_LOG_LINES,
 };
 
 /// Reads and drives Linux services.
@@ -85,10 +85,7 @@ impl ServiceManager for LinuxService {
         }
         // A unit name is the only thing that reaches the shell, and it is
         // restricted to the characters systemd and OpenRC actually accept.
-        if !name
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"@._-:\\".contains(&b))
-        {
+        if !valid_unit(name) {
             return Err(Error::invalid_input(format!(
                 "`{name}` is not a valid service name"
             )));
@@ -126,6 +123,112 @@ impl ServiceManager for LinuxService {
         };
 
         run(&command, name, &action)
+    }
+
+    fn logs(&self, name: &str, limit: Option<usize>) -> Result<ServiceLogPage> {
+        if self.manager_type() != ServiceManagerType::Systemd {
+            return Err(Error::unsupported(
+                "OpenRC and SysV keep service logs in files with no stable schema; only systemd's journal is supported here",
+            ));
+        }
+        let name = name.trim();
+        if !valid_unit(name) {
+            return Err(Error::invalid_input(format!(
+                "`{name}` is not a valid service name"
+            )));
+        }
+        if !sys::command_exists("journalctl") {
+            return Err(Error::unsupported("journalctl is not installed"));
+        }
+        // journalctl matches unit names exactly; a bare `sshd` means the unit
+        // `sshd.service`.
+        let unit = if name.contains('.') {
+            name.to_string()
+        } else {
+            format!("{name}.service")
+        };
+        let lines = limit.unwrap_or(DEFAULT_LOG_LINES);
+        let output = sys::run_command(
+            "journalctl",
+            &["-u", &unit, "-n", &lines.to_string(), "--no-pager"],
+        )
+        .map_err(|err| Error::system(format!("journalctl -u {unit}: {err}")))?;
+
+        // The short format is `Mon DD HH:MM:SS host prog[pid]: message`; the
+        // three leading tokens are the timestamp and everything else stays as
+        // the platform wrote it.
+        let mut entries: Vec<ServiceLogEntry> = output.lines().map(journal_line).collect();
+        entries.reverse();
+        Ok(ServiceLogPage {
+            service: name.to_string(),
+            source: "journalctl".to_string(),
+            entries,
+        })
+    }
+
+    fn native(&self, args: &[String]) -> Result<NativeOutput> {
+        if args.is_empty() {
+            return Err(Error::invalid_input(
+                "x service native needs at least one manager argument",
+            ));
+        }
+        let program = match self.manager_type() {
+            ServiceManagerType::Systemd => "systemctl",
+            ServiceManagerType::OpenRc => "rc-service",
+            ServiceManagerType::SysV => "service",
+            other => {
+                return Err(Error::unsupported(format!(
+                    "no service manager to hand `{other:?}` commands to"
+                )))
+            }
+        };
+        run_native(program, args)
+    }
+}
+
+/// Characters systemd and OpenRC accept in a unit or script name.
+fn valid_unit(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"@._-:\\".contains(&b))
+}
+
+/// Run the manager's own command line and hand the raw answer back.
+fn run_native(program: &str, args: &[String]) -> Result<NativeOutput> {
+    sys::run_native_lossy(program, args)
+        .map_err(|err| Error::system(format!("cannot run `{program}`: {err}")))
+}
+
+/// One journal line in short format, timestamp separated from the body.
+fn journal_line(line: &str) -> ServiceLogEntry {
+    let mut rest = line;
+    let mut stamp: Vec<&str> = Vec::new();
+    for _ in 0..3 {
+        let trimmed = rest.trim_start();
+        let end = trimmed.find(char::is_whitespace).unwrap_or(trimmed.len());
+        if end == 0 {
+            break;
+        }
+        stamp.push(&trimmed[..end]);
+        rest = &trimmed[end..];
+    }
+    // A line that is not a journal record (continuation of a multi-line
+    // message) has no timestamp to claim; keep it as the message.
+    let looks_like_timestamp = stamp
+        .first()
+        .is_some_and(|token| token.len() == 3 && token.as_bytes()[0].is_ascii_alphabetic());
+    if !looks_like_timestamp {
+        return ServiceLogEntry {
+            timestamp: None,
+            level: None,
+            message: line.to_string(),
+        };
+    }
+    ServiceLogEntry {
+        timestamp: (!stamp.is_empty()).then(|| stamp.join(" ")),
+        level: None,
+        message: rest.trim_start().to_string(),
     }
 }
 
@@ -309,6 +412,33 @@ mod tests {
             .expect_err("must be rejected");
         assert!(matches!(err.kind(), x_core::error::ErrorKind::InvalidInput));
         assert!(service.action("  ", ServiceAction::Start).is_err());
+    }
+
+    #[test]
+    fn journal_lines_split_the_timestamp_from_the_body() {
+        let entry = journal_line("Oct 05 10:23:41 host sshd[1234]: Accepted publickey for u");
+        assert_eq!(entry.timestamp.as_deref(), Some("Oct 05 10:23:41"));
+        assert_eq!(entry.message, "host sshd[1234]: Accepted publickey for u");
+        // Multi-line message continuations must not claim a timestamp.
+        let continuation = journal_line("    still the same message body");
+        assert_eq!(continuation.timestamp, None);
+        assert_eq!(continuation.message, "    still the same message body");
+    }
+
+    #[test]
+    fn unit_validation_accepts_what_the_managers_do() {
+        assert!(valid_unit("ssh"));
+        assert!(valid_unit("nginx.service"));
+        assert!(valid_unit("getty@tty1"));
+        assert!(!valid_unit(""));
+        assert!(!valid_unit("evil; rm -rf /"));
+    }
+
+    #[test]
+    fn native_refuses_an_empty_argument_list() {
+        let service = LinuxService::new();
+        let err = service.native(&[]).expect_err("must reject");
+        assert_eq!(err.kind(), x_core::error::ErrorKind::InvalidInput);
     }
 
     #[test]
