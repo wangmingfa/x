@@ -6,7 +6,7 @@
 //! scrolling back.
 
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, Borders, Cell, Clear, Gauge, List, ListItem, ListState, Paragraph, Row, Scrollbar,
@@ -51,7 +51,7 @@ fn sidebar(frame: &mut Frame, app: &App, area: Rect) {
     let selected = View::ALL.iter().position(|view| *view == app.view());
     let list = List::new(items)
         .block(Block::default().borders(Borders::ALL).title(" x "))
-        .highlight_style(Style::default().fg(Color::Cyan).bold())
+        .highlight_style(crate::theme::current().accent(false).bold())
         .highlight_symbol("> ");
     let mut state = ListState::default().with_selected(selected);
     frame.render_stateful_widget(list, area, &mut state);
@@ -75,7 +75,7 @@ fn table<'a>(headers: &[(&'a str, usize)], title: &str) -> Table<'a> {
         .map(|(_, width)| Constraint::Length(*width as u16))
         .collect();
     let header = Row::new(headers.iter().map(|(label, _)| Cell::from(*label)))
-        .style(Style::default().fg(Color::Yellow).bold());
+        .style(crate::theme::current().warning());
     Table::new(Vec::<Row<'a>>::new(), widths)
         .header(header)
         .block(
@@ -95,7 +95,7 @@ fn inner_rows(app: &mut App, area: Rect) -> usize {
 
 fn selected_row(index: usize, selected: usize) -> Style {
     if index == selected {
-        Style::default().bg(Color::Blue).fg(Color::White)
+        crate::theme::current().header()
     } else {
         Style::default()
     }
@@ -169,7 +169,7 @@ fn dashboard(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_widget(
         Gauge::default()
             .block(Block::default().borders(Borders::ALL).title(" cpu "))
-            .gauge_style(Style::default().fg(Color::Cyan))
+            .gauge_style(crate::theme::current().accent(false))
             .ratio(f64::from(cpu) / 100.0)
             .label(format!("{cpu:.1}%")),
         top[1],
@@ -188,7 +188,7 @@ fn dashboard(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_widget(
         Gauge::default()
             .block(Block::default().borders(Borders::ALL).title(" memory "))
-            .gauge_style(Style::default().fg(Color::Magenta))
+            .gauge_style(ratatui::style::Style::default().fg(crate::theme::current().warning))
             .ratio(
                 memory
                     .map(|usage| f64::from(usage.percent.clamp(0.0, 100.0)) / 100.0)
@@ -405,7 +405,7 @@ fn network(frame: &mut Frame, app: &mut App, area: Rect) {
     let mut text: Vec<Line> = Vec::new();
     text.push(Line::styled(
         "default routes",
-        Style::default().fg(Color::Yellow).bold(),
+        crate::theme::current().warning(),
     ));
     for route in app.routes().iter().filter(|route| is_default_route(route)) {
         text.push(Line::from(vec![Span::raw(format!(
@@ -418,10 +418,7 @@ fn network(frame: &mut Frame, app: &mut App, area: Rect) {
         ))]));
     }
     text.push(Line::from(""));
-    text.push(Line::styled(
-        "resolvers",
-        Style::default().fg(Color::Yellow).bold(),
-    ));
+    text.push(Line::styled("resolvers", crate::theme::current().warning()));
     for server in &app.dns().servers {
         text.push(Line::raw(format!("  {}", server.address)));
     }
@@ -432,10 +429,7 @@ fn network(frame: &mut Frame, app: &mut App, area: Rect) {
         )));
     }
     text.push(Line::from(""));
-    text.push(Line::styled(
-        "addresses",
-        Style::default().fg(Color::Yellow).bold(),
-    ));
+    text.push(Line::styled("addresses", crate::theme::current().warning()));
     for address in app.addresses().iter().take(8) {
         text.push(Line::raw(format!(
             "  {:<12} {}/{}",
@@ -675,7 +669,7 @@ fn status(frame: &mut Frame, app: &App, area: Rect) {
         app.status().to_string()
     };
     frame.render_widget(
-        Paragraph::new(text).style(Style::default().fg(Color::Cyan)),
+        Paragraph::new(text).style(crate::theme::current().accent(false)),
         area,
     );
 }
@@ -697,7 +691,7 @@ fn footer(frame: &mut Frame, app: &App, area: Rect) {
         View::Disks => "enter fold   / search   ctrl+p commands   r refresh   q quit",
     };
     frame.render_widget(
-        Paragraph::new(keys).style(Style::default().fg(Color::DarkGray)),
+        Paragraph::new(keys).style(crate::theme::current().dim()),
         area,
     );
 }
@@ -733,7 +727,7 @@ fn dialog(frame: &mut Frame, app: &App, area: Rect) {
         Modal::None => {}
         Modal::Prompt { label, input } => {
             let text = vec![
-                Line::styled(label.to_string(), Style::default().fg(Color::Yellow).bold()),
+                Line::styled(label.to_string(), crate::theme::current().warning()),
                 Line::raw(input.clone()),
             ];
             frame.render_widget(
@@ -745,7 +739,7 @@ fn dialog(frame: &mut Frame, app: &App, area: Rect) {
         Modal::Confirm { title, target, .. } => {
             let mut lines: Vec<Line> = vec![Line::styled(
                 title.clone(),
-                Style::default().fg(Color::Yellow).bold(),
+                crate::theme::current().warning(),
             )];
             match target {
                 Target::Sockets(plan) => {
@@ -773,7 +767,7 @@ fn dialog(frame: &mut Frame, app: &App, area: Rect) {
             lines.push(Line::from(""));
             lines.push(Line::styled(
                 "y confirm    any other key cancels",
-                Style::default().fg(Color::Cyan),
+                crate::theme::current().accent(false),
             ));
             frame.render_widget(
                 Paragraph::new(lines)
@@ -787,11 +781,11 @@ fn dialog(frame: &mut Frame, app: &App, area: Rect) {
             let start = selected.saturating_sub(visible.saturating_sub(1));
             let mut lines: Vec<Line> = vec![Line::styled(
                 format!("> {input}_"),
-                Style::default().fg(Color::Cyan),
+                crate::theme::current().accent(false),
             )];
             for (index, command) in matches.iter().enumerate().skip(start).take(visible) {
                 let style = if index == *selected {
-                    Style::default().bg(Color::Blue).fg(Color::White)
+                    crate::theme::current().header()
                 } else {
                     Style::default()
                 };
@@ -811,7 +805,7 @@ fn dialog(frame: &mut Frame, app: &App, area: Rect) {
             let start = selected.saturating_sub(visible.saturating_sub(1));
             let mut lines: Vec<Line> = vec![Line::styled(
                 format!("> {input}_"),
-                Style::default().fg(Color::Cyan),
+                crate::theme::current().accent(false),
             )];
             let mut family = "";
             for (index, hit) in hits.iter().enumerate().skip(start).take(visible) {
@@ -819,11 +813,11 @@ fn dialog(frame: &mut Frame, app: &App, area: Rect) {
                     family = hit.family;
                     lines.push(Line::styled(
                         format!(" {family}"),
-                        Style::default().fg(Color::Yellow).bold(),
+                        crate::theme::current().warning(),
                     ));
                 }
                 let style = if index == *selected {
-                    Style::default().bg(Color::Blue).fg(Color::White)
+                    crate::theme::current().header()
                 } else {
                     Style::default()
                 };
@@ -832,7 +826,7 @@ fn dialog(frame: &mut Frame, app: &App, area: Rect) {
             for note in app.search_notes() {
                 lines.push(Line::styled(
                     format!("! {note}"),
-                    Style::default().fg(Color::Red),
+                    crate::theme::current().danger(),
                 ));
             }
             frame.render_widget(
@@ -857,7 +851,7 @@ fn dialog(frame: &mut Frame, app: &App, area: Rect) {
                 } else {
                     "any key closes"
                 },
-                Style::default().fg(Color::Cyan),
+                crate::theme::current().accent(false),
             ));
             frame.render_widget(
                 Paragraph::new(lines).block(

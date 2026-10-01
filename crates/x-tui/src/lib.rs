@@ -16,6 +16,7 @@
 pub mod app;
 pub mod event;
 pub mod palette;
+pub mod theme;
 pub mod ui;
 
 use std::time::Duration;
@@ -27,7 +28,13 @@ use x_core::SystemContext;
 ///
 /// Watching is polling on purpose: the adapters expose snapshot reads only, so
 /// the TUI, the CLI and any future HTTP API observe the exact same values.
-pub const REFRESH: Duration = Duration::from_millis(1500);
+/// `config.toml` 的 `refresh_ms`（>= 100）可以覆盖它。
+pub fn refresh_interval() -> Duration {
+    let (config, _) = x_core::config::load(&x_core::config::default_path());
+    Duration::from_millis(config.refresh_ms.unwrap_or(REFRESH_MS))
+}
+
+const REFRESH_MS: u64 = 1500;
 
 /// How long a key press waits before the loop redraws on its own.
 pub const INPUT_TIMEOUT: Duration = Duration::from_millis(250);
@@ -39,6 +46,10 @@ pub fn run(context: SystemContext) -> Result<()> {
             "x-tui needs an interactive terminal; use `x` for one shot output",
         ));
     }
+
+    // Theme (and refresh cadence) come from config.toml before any drawing.
+    let (config, _) = x_core::config::load(&x_core::config::default_path());
+    theme::init(config.theme.as_deref(), &config.theme_overrides);
 
     let mut app = app::App::new(context);
     let mut terminal = ratatui::init();

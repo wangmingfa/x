@@ -21,6 +21,10 @@ pub struct Config {
     pub theme: Option<String>,
     /// Default sort for process listings (`cpu`, `memory`, `pid`, `name`).
     pub sort: Option<String>,
+    /// Custom theme overrides (`theme_accent = "green"`, …); see the docs in
+    /// x-tui. Keys: `theme_fg`, `theme_accent`, `theme_warning`,
+    /// `theme_danger`, `theme_dim`, `theme_header_bg`, `theme_header_fg`.
+    pub theme_overrides: Vec<(String, String)>,
 }
 
 /// Where the config file lives: `$XDG_CONFIG_HOME/x/config.toml`, else
@@ -110,6 +114,11 @@ pub fn load(path: &std::path::Path) -> (Config, Vec<String>) {
                     index + 1
                 )),
             },
+            other if other.starts_with("theme_") => {
+                config
+                    .theme_overrides
+                    .push((other.to_string(), value.to_string()));
+            }
             other => warnings.push(format!(
                 "{}:{}: unknown key `{other}` (default_format, refresh_ms, theme, sort)",
                 path.display(),

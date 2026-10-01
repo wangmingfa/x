@@ -409,7 +409,7 @@ GitHub Actions CI 在 Ubuntu / macOS / Windows 三平台上跑格式、clippy
 - [ ] MCP Server：暴露 find_port / find_process / list_services 等工具给 AI Agent，危险操作保留明确确认
 - [ ] Agent 模式：`x explain <命令>` 解释输出；自然语言输入放最后，核心不依赖 AI
 - [x] 配置（`~/.config/x/config.toml`）：主题、刷新率、默认输出格式、默认排序
-- [ ] 主题：TUI 内置 Default / Dark / Light / Monochrome + 自定义
+- [x] 主题：TUI 内置 Default / Dark / Light / Monochrome + 自定义
 - [x] 输出：`--jsonl`、`--csv`（human / json 已有）
 - [x] shell 补全：`x completion bash|zsh|fish|powershell|elvish`
 - [x] man 页与帮助生成

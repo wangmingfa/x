@@ -734,7 +734,7 @@ impl App {
                 self.run_search(&query);
             }
         }
-        if self.last_refresh.elapsed() >= crate::REFRESH {
+        if self.last_refresh.elapsed() >= crate::refresh_interval() {
             self.refresh();
         }
     }
