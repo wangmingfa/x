@@ -215,6 +215,10 @@ pub enum Command {
     #[command(subcommand)]
     Remote(commands::remote::RemoteCommand),
 
+    /// Serve an MCP (Model Context Protocol) server over stdio for AI agents.
+    #[command(subcommand)]
+    Mcp(commands::mcp::McpCommand),
+
     /// Firewall state and port rules.
     #[command(subcommand)]
     Firewall(commands::firewall::FirewallCommand),
@@ -438,6 +442,7 @@ fn dispatch(
             commands::plugins::run_external(renderer, name, rest)
         }
         Some(Command::Remote(cmd)) => commands::remote::dispatch(context, renderer, cmd),
+        Some(Command::Mcp(cmd)) => commands::mcp::dispatch(context, renderer, cmd),
         Some(Command::Firewall(cmd)) => {
             commands::firewall::dispatch(context, renderer, confirmer, cmd)
         }

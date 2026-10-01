@@ -18,6 +18,7 @@ pub mod gitcmd;
 pub mod hosts;
 pub mod logs;
 pub mod manpage;
+pub mod mcp;
 pub mod mount;
 pub mod net;
 pub mod netdiag;
