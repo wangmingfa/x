@@ -40,6 +40,7 @@ pub mod audit;
 pub mod bluetooth;
 pub mod capability;
 pub mod clipboard;
+pub mod config;
 pub mod context;
 pub mod devcheck;
 pub mod devenv;

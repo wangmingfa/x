@@ -4,6 +4,7 @@ pub mod bluetooth;
 pub mod capability;
 pub mod clipboard;
 pub mod completion;
+pub mod configcmd;
 pub mod device;
 pub mod devtools;
 pub mod disk;

@@ -196,6 +196,10 @@ pub enum Command {
     /// Generate roff man pages from the CLI grammar.
     Man(commands::manpage::ManArgs),
 
+    /// Show the config file location and the values x honours.
+    #[command(subcommand)]
+    Config(commands::configcmd::ConfigCommand),
+
     /// Firewall state and port rules.
     #[command(subcommand)]
     Firewall(commands::firewall::FirewallCommand),
@@ -273,6 +277,7 @@ pub fn run_with(context: &x_core::SystemContext, cli: Cli) -> i32 {
     } else {
         None
     });
+    let config = load_config();
     let format = if cli.json {
         OutputFormat::Json
     } else if cli.jsonl {
@@ -282,7 +287,13 @@ pub fn run_with(context: &x_core::SystemContext, cli: Cli) -> i32 {
     } else if cli.plain {
         OutputFormat::Plain
     } else {
-        OutputFormat::Table
+        match config.default_format.as_deref() {
+            Some("json") => OutputFormat::Json,
+            Some("jsonl") => OutputFormat::Jsonl,
+            Some("csv") => OutputFormat::Csv,
+            Some("plain") => OutputFormat::Plain,
+            _ => OutputFormat::Table,
+        }
     };
 
     let mut renderer = Renderer::stdout(format, color);
@@ -339,6 +350,16 @@ pub fn main_with(cli: Cli) -> ExitCode {
     ExitCode::from(u8::try_from(run(cli)).unwrap_or(1))
 }
 
+/// Load the user config, surfacing malformed lines on stderr without
+/// aborting: a bad config must not break every command.
+fn load_config() -> x_core::config::Config {
+    let (config, warnings) = x_core::config::load(&x_core::config::default_path());
+    for warning in warnings {
+        eprintln!("x config: {warning}");
+    }
+    config
+}
+
 fn dispatch(
     context: &x_core::SystemContext,
     cli: &Cli,
@@ -392,6 +413,7 @@ fn dispatch(
         }
         Some(Command::Completion(args)) => commands::completion::dispatch(context, renderer, args),
         Some(Command::Man(args)) => commands::manpage::dispatch(context, renderer, args),
+        Some(Command::Config(cmd)) => commands::configcmd::dispatch(context, renderer, cmd),
         Some(Command::Firewall(cmd)) => {
             commands::firewall::dispatch(context, renderer, confirmer, cmd)
         }
