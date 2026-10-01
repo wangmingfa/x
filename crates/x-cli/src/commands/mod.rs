@@ -11,6 +11,7 @@ pub mod disk;
 pub mod display;
 pub mod envpath;
 pub mod events;
+pub mod explain;
 pub mod file;
 pub mod firewall;
 pub mod gitcmd;

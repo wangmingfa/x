@@ -200,6 +200,9 @@ pub enum Command {
     #[command(subcommand)]
     Config(commands::configcmd::ConfigCommand),
 
+    /// Explain what a command would do, offline (no AI).
+    Explain(commands::explain::ExplainArgs),
+
     /// Firewall state and port rules.
     #[command(subcommand)]
     Firewall(commands::firewall::FirewallCommand),
@@ -414,6 +417,7 @@ fn dispatch(
         Some(Command::Completion(args)) => commands::completion::dispatch(context, renderer, args),
         Some(Command::Man(args)) => commands::manpage::dispatch(context, renderer, args),
         Some(Command::Config(cmd)) => commands::configcmd::dispatch(context, renderer, cmd),
+        Some(Command::Explain(args)) => commands::explain::dispatch(context, renderer, args),
         Some(Command::Firewall(cmd)) => {
             commands::firewall::dispatch(context, renderer, confirmer, cmd)
         }
