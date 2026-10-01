@@ -22,6 +22,7 @@ pub mod mount;
 pub mod net;
 pub mod netdiag;
 pub mod permission;
+pub mod plugins;
 pub mod port;
 pub mod powertime;
 pub mod proxy;

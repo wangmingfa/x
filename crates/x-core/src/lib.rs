@@ -59,6 +59,7 @@ pub mod mount;
 pub mod netdiag;
 pub mod network;
 pub mod pathperm;
+pub mod plugins;
 pub mod port;
 pub mod power;
 pub mod process;

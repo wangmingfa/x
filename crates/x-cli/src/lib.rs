@@ -203,6 +203,14 @@ pub enum Command {
     /// Explain what a command would do, offline (no AI).
     Explain(commands::explain::ExplainArgs),
 
+    /// Manage plugins: external `x-<name>` executables.
+    #[command(subcommand)]
+    Plugins(commands::plugins::PluginsCommand),
+
+    /// An unknown subcommand: dispatched to an installed plugin, if any.
+    #[command(external_subcommand)]
+    External(Vec<String>),
+
     /// Firewall state and port rules.
     #[command(subcommand)]
     Firewall(commands::firewall::FirewallCommand),
@@ -418,6 +426,13 @@ fn dispatch(
         Some(Command::Man(args)) => commands::manpage::dispatch(context, renderer, args),
         Some(Command::Config(cmd)) => commands::configcmd::dispatch(context, renderer, cmd),
         Some(Command::Explain(args)) => commands::explain::dispatch(context, renderer, args),
+        Some(Command::Plugins(cmd)) => {
+            commands::plugins::dispatch(context, renderer, confirmer, cmd)
+        }
+        Some(Command::External(words)) => {
+            let (name, rest) = words.split_first().expect("clap guarantees one token");
+            commands::plugins::run_external(renderer, name, rest)
+        }
         Some(Command::Firewall(cmd)) => {
             commands::firewall::dispatch(context, renderer, confirmer, cmd)
         }
