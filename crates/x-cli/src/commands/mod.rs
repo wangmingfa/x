@@ -8,6 +8,7 @@ pub mod devtools;
 pub mod disk;
 pub mod display;
 pub mod envpath;
+pub mod events;
 pub mod file;
 pub mod firewall;
 pub mod gitcmd;

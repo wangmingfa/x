@@ -1426,6 +1426,168 @@ fn window_without_the_capability_is_unsupported() {
     assert_eq!(out.code, ErrorKind::Unsupported.exit_code());
 }
 
+// ---------------------------------------------------------------------------
+// x events
+// ---------------------------------------------------------------------------
+
+#[test]
+fn events_baseline_lists_the_default_families() {
+    let stubs = Stubs::new()
+        .with_processes(vec![stub_process(1, None, "init")])
+        .with_ports(vec![stub_socket(80, 1, "web"), stub_socket(443, 1, "web")])
+        .with_services(vec![stub_service("cups", 2)]);
+
+    let out = x(&stubs, &["events", "--count", "1"], false);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert!(out.stdout.contains("watching"), "{}", out.stdout);
+    assert!(out.stdout.contains("process 1"), "{}", out.stdout);
+    assert!(out.stdout.contains("connection 2"), "{}", out.stdout);
+    assert!(out.stdout.contains("mount 0"), "{}", out.stdout);
+    assert!(out.stdout.contains("service 1"), "{}", out.stdout);
+    assert!(
+        !out.stdout.contains("usb"),
+        "usb is opt-in and must not be sampled by default: {}",
+        out.stdout
+    );
+}
+
+#[test]
+fn events_json_stays_silent_until_something_changes() {
+    let stubs = Stubs::new().with_processes(vec![stub_process(1, None, "init")]);
+    let out = x(
+        &stubs,
+        &["events", "--json", "--count", "2", "--interval", "0.05"],
+        false,
+    );
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert!(
+        out.stdout.trim().is_empty(),
+        "a quiet stream prints nothing: {}",
+        out.stdout
+    );
+}
+
+#[test]
+fn events_print_the_difference_between_polls() {
+    let stubs = Stubs::new().with_processes(vec![
+        stub_process(1, None, "init"),
+        stub_process(2, None, "worker"),
+    ]);
+    let processes = Arc::clone(&stubs.process);
+    let mutator = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(60));
+        processes.set_rows(vec![
+            stub_process(1, None, "init"),
+            stub_process(3, None, "builder"),
+        ]);
+    });
+
+    let out = x(
+        &stubs,
+        &[
+            "events",
+            "--types",
+            "process",
+            "--interval",
+            "0.15",
+            "--count",
+            "3",
+        ],
+        false,
+    );
+    mutator.join().expect("mutator thread");
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert!(out.stdout.contains("watching process 2"), "{}", out.stdout);
+    assert!(
+        out.stdout.contains("- stopped worker (pid 2)"),
+        "{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("+ started builder (pid 3)"),
+        "{}",
+        out.stdout
+    );
+    assert_eq!(
+        out.stdout.matches("stopped worker").count(),
+        1,
+        "the change is reported once, not on every later poll: {}",
+        out.stdout
+    );
+}
+
+#[test]
+fn events_types_narrow_and_extend_the_stream() {
+    let stubs = Stubs::new()
+        .with_processes(vec![stub_process(1, None, "init")])
+        .with_devices(vec![device_row(
+            "USB Root Hub",
+            x_core::device::DeviceClass::Usb,
+            Some("OK"),
+        )]);
+
+    let usb_only = x(&stubs, &["events", "--types", "usb", "--count", "1"], false);
+    assert_eq!(usb_only.code, 0, "{}", usb_only.stderr);
+    assert!(
+        usb_only.stdout.contains("watching usb 1"),
+        "{}",
+        usb_only.stdout
+    );
+    assert!(
+        !usb_only.stdout.contains("process"),
+        "only the asked-for family is watched: {}",
+        usb_only.stdout
+    );
+
+    let all = x(&stubs, &["events", "--types", "all", "--count", "1"], false);
+    assert_eq!(all.code, 0, "{}", all.stderr);
+    assert!(all.stdout.contains("usb 1"), "{}", all.stdout);
+    assert!(all.stdout.contains("process 1"), "{}", all.stdout);
+}
+
+#[test]
+fn events_report_a_family_that_cannot_be_read() {
+    let stubs = Stubs::new().with_ports(vec![stub_socket(80, 1, "web")]);
+    stubs
+        .port
+        .fail_with(StubFailure::new(ErrorKind::System, "socket table exploded"));
+
+    let out = x(&stubs, &["events", "--count", "1"], false);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert!(
+        out.stdout
+            .contains("! connection sampling failed: socket table exploded"),
+        "{}",
+        out.stdout
+    );
+    assert!(
+        !out.stdout.contains("connection 1"),
+        "a failed read is absent from the baseline counts: {}",
+        out.stdout
+    );
+}
+
+#[test]
+fn events_reject_unknown_or_empty_types() {
+    let stubs = Stubs::new();
+
+    let unknown = x(&stubs, &["events", "--types", "flurb"], false);
+    assert_eq!(unknown.code, ErrorKind::InvalidInput.exit_code());
+    assert!(
+        unknown.stderr.contains("unknown event type"),
+        "{}",
+        unknown.stderr
+    );
+
+    let empty = x(&stubs, &["events", "--types", ""], false);
+    assert_eq!(empty.code, ErrorKind::InvalidInput.exit_code());
+    assert!(
+        empty.stderr.contains("no event types selected"),
+        "{}",
+        empty.stderr
+    );
+}
+
 /// A TLS stub that answers like a verified handshake.
 fn stub_tls() -> x_core::netdiag::TlsInfo {
     x_core::netdiag::TlsInfo {

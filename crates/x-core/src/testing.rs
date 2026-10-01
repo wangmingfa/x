@@ -413,6 +413,12 @@ impl StubProcess {
         }
     }
 
+    /// Replace the rows after the fact — for watch-style tests that must
+    /// change the world between two polls.
+    pub fn set_rows(&self, rows: Vec<ProcessInfo>) {
+        *self.rows.lock().expect("stub mutex") = rows;
+    }
+
     /// Pids the frontend asked to kill, in order.
     pub fn killed(&self) -> Vec<u32> {
         self.killed.lock().expect("stub mutex").clone()

@@ -188,6 +188,24 @@ Windows 走 user32 原生（`EnumWindows` + `GetWindowTextW` 列窗口，
 `list` / `active` 是读，不留痕。平台没报的状态显示 `-`，JSON 里整字段
 缺席，不拿「未知」冒充「否」。
 
+### 事件（`x events`）
+
+| 命令 | 说明 |
+| --- | --- |
+| `x events [--interval 2.0] [--count N] [--types LIST]` | 轮询采样五个家族并只打印两轮之间的差异：进程启停、连接开闭、USB 插拔、挂载增删、服务出现 / 消失 / 状态迁移 |
+
+`--types` 取值 `process,connection,usb,mount,service,all`；缺省是除
+usb 外的全部（`all` 显式包含 usb）。usb 缺省关掉不是偷懒：Windows
+侧采样要 shell 出 `Get-PnpDevice`，实测每次约 1.6 秒，轮询太重，
+要盯 USB 就显式写 `--types usb` 或 `all`。
+
+事件不是内核订阅，而是「快照对拍」：x-core 每次轮询调各管理器取一份
+快照，和上一轮做差。行前缀 `+` 出现 / `-` 消失 / `~` 状态迁移；某一家
+族本轮读失败（如连接表权限不足）时如实打 `! 家族 采样失败: 原因`，
+该家族这一轮不参与对拍，恢复后以新一轮为基线，绝不把「读不到」渲染成
+「全没了」的假事件潮。JSON 模式每轮一份文档，且只在有差异或失败时
+输出。Ctrl-C 前持续轮询，`--count` 限轮数。只读，不落审计。
+
 ### 证书与网络诊断（`x cert` / `x tls` / `x http` / `x net check`）
 
 | 命令 | 说明 |
@@ -358,7 +376,7 @@ GitHub Actions CI 在 Ubuntu / macOS / Windows 三平台上跑格式、clippy
 - [x] 蓝牙（`x bluetooth devices/scan/connect/disconnect`）：读三平台原文透传，动词 Linux 全量、Windows/macOS 如实不支持；确认 + 审计
 - [x] 显示（`x display list/info`）：分辨率、刷新率、缩放、主显示器、位置；HDR 未提供（Windows 需再过 QueryDisplayConfig，macOS/Linux 口径不一，留待后续如实读取）
 - [x] 窗口（`x window list/active/focus/minimize/maximize`）：Windows user32 原生全量；Linux 借 wmctrl/xprop；macOS 免权限列窗口 + System Events 动词（屏幕录制 / 辅助功能按需索取，拒绝原样透出）；动词确认 + 审计
-- [ ] 事件（`x events`）：进程启停、网络连接、USB 插拔、磁盘挂载、服务状态变化，适合 TUI 实时展示
+- [x] 事件（`x events`）：进程启停、网络连接、USB 插拔、磁盘挂载、服务状态变化；快照对拍而非内核订阅（x-core 零平台 cfg），家族采样失败如实报告并重置基线，USB 因 Windows 采样约 1.6s 缺省按需开启
 - [ ] TUI 增强：Dashboard 首页（CPU / 内存 / 磁盘 / 端口概览 + 侧边导航）
 - [ ] TUI 增强：命令面板（Ctrl+P，可搜索功能而非仅输入命令）
 - [ ] TUI 增强：全局搜索（`/` 覆盖 process / port / service / network / file）

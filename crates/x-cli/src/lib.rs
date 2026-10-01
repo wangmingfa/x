@@ -200,6 +200,9 @@ pub enum Command {
     #[command(subcommand)]
     Window(commands::window::WindowCommand),
 
+    /// A live stream of system changes: processes, sockets, USB, mounts, services.
+    Events(commands::events::EventsArgs),
+
     /// Certificate facts for a host (TLS handshake through platform tools).
     #[command(subcommand)]
     Cert(commands::netdiag::CertCommand),
@@ -372,6 +375,7 @@ fn dispatch(
         }
         Some(Command::Display(cmd)) => commands::display::dispatch(context, renderer, cmd),
         Some(Command::Window(cmd)) => commands::window::dispatch(context, renderer, confirmer, cmd),
+        Some(Command::Events(args)) => commands::events::dispatch(context, renderer, args),
         Some(Command::Cert(cmd)) => commands::netdiag::dispatch_cert(context, renderer, cmd),
         Some(Command::Tls(args)) => commands::netdiag::dispatch_tls(context, renderer, args),
         Some(Command::Http(args)) => commands::netdiag::dispatch_http(context, renderer, args),

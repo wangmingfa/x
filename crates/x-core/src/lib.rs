@@ -48,6 +48,7 @@ pub mod disk;
 pub mod display;
 pub mod dockerinfo;
 pub mod error;
+pub mod events;
 pub mod file;
 pub mod firewall;
 pub mod gitcmd;
@@ -77,6 +78,7 @@ pub use capability::{probe as probe_capabilities, Capability, CapabilityStatus};
 pub use context::{SystemContext, SystemContextBuilder};
 pub use disk::{walk_directory, DirUsage, DiskInfo, DiskManager, MediaType};
 pub use error::{Error, ErrorKind, PermissionRequirement, Result, ResultExt};
+pub use events::{EventOp, EventType, SystemEvent, SystemSnapshot};
 pub use network::{
     AddressInfo, DnsConfig, DnsServer, InterfaceInfo, InterfaceState, NetworkManager, RouteInfo,
 };
