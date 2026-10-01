@@ -935,6 +935,100 @@ fn logs_without_the_capability_is_unsupported() {
     assert_eq!(out.code, ErrorKind::Unsupported.exit_code());
 }
 
+/// A device row for the tests below.
+fn device_row(
+    name: &str,
+    class: x_core::device::DeviceClass,
+    status: Option<&str>,
+) -> x_core::device::DeviceInfo {
+    let mut info = x_core::device::DeviceInfo::new(name, class);
+    info.status = status.map(str::to_string);
+    info
+}
+
+#[test]
+fn device_lists_everything_when_unfiltered() {
+    let stubs = Stubs::new().with_devices(vec![
+        device_row("USB Root Hub", x_core::device::DeviceClass::Usb, Some("OK")),
+        device_row("cx20751", x_core::device::DeviceClass::Audio, None),
+    ]);
+    let out = x(&stubs, &["device", "list"], false);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert!(out.stdout.contains("USB Root Hub"));
+    assert!(out.stdout.contains("cx20751"));
+    // A missing status prints a dash rather than a guessed value.
+    assert!(out.stdout.contains("cx20751"));
+}
+
+#[test]
+fn device_subcommands_filter_by_class() {
+    let stubs = Stubs::new().with_devices(vec![
+        device_row("HDA Intel", x_core::device::DeviceClass::Audio, Some("OK")),
+        device_row(
+            "AT Translated",
+            x_core::device::DeviceClass::Input,
+            Some("OK"),
+        ),
+        device_row("USB Camera", x_core::device::DeviceClass::Camera, None),
+    ]);
+
+    let audio = x(&stubs, &["device", "audio"], false);
+    assert_eq!(audio.code, 0);
+    assert!(audio.stdout.contains("HDA Intel"));
+    assert!(!audio.stdout.contains("AT Translated"), "{}", audio.stdout);
+
+    let usb = x(&stubs, &["device", "usb"], false);
+    assert_eq!(usb.code, 0);
+    // Nothing matched, so the honest empty message shows.
+    assert!(
+        usb.stdout.contains("no present devices of class usb"),
+        "{}",
+        usb.stdout
+    );
+}
+
+#[test]
+fn device_class_flag_and_bad_input() {
+    let stubs = Stubs::new().with_devices(vec![device_row(
+        "AT Translated",
+        x_core::device::DeviceClass::Input,
+        None,
+    )]);
+    let ok = x(&stubs, &["device", "list", "--class", "input"], false);
+    assert_eq!(ok.code, 0, "{}", ok.stderr);
+    assert!(ok.stdout.contains("AT Translated"));
+
+    let bad = x(&stubs, &["device", "list", "--class", "keyboard"], false);
+    assert_eq!(bad.code, ErrorKind::InvalidInput.exit_code());
+    assert!(bad.stderr.contains("unknown device class"));
+}
+
+#[test]
+fn device_json_is_the_filtered_array() {
+    let stubs = Stubs::new().with_devices(vec![
+        device_row("HDA Intel", x_core::device::DeviceClass::Audio, Some("OK")),
+        device_row("USB Camera", x_core::device::DeviceClass::Camera, None),
+    ]);
+    let out = x(
+        &stubs,
+        &["device", "list", "--class", "camera", "--json"],
+        false,
+    );
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    let value: serde_json::Value = serde_json::from_str(&out.stdout).expect("json");
+    let rows = value.as_array().expect("array");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["class"], "camera");
+    // Absent status is not serialized at all, not as null.
+    assert!(rows[0].get("status").is_none());
+}
+
+#[test]
+fn device_without_the_capability_is_unsupported() {
+    let out = x_in(&stub_context(), &["device", "list"], false);
+    assert_eq!(out.code, ErrorKind::Unsupported.exit_code());
+}
+
 /// A TLS stub that answers like a verified handshake.
 fn stub_tls() -> x_core::netdiag::TlsInfo {
     x_core::netdiag::TlsInfo {

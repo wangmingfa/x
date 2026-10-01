@@ -365,6 +365,8 @@ pub fn attach(context: SystemContext) -> SystemContext {
         }),
         // Log reads are never audited: the doctrine records changes, not reads.
         logs: context.logs,
+        // Device enumeration is a read too; it passes straight through.
+        device: context.device,
     }
 }
 

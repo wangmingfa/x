@@ -50,6 +50,8 @@ pub struct SystemContext {
     pub firewall: Option<Arc<dyn crate::firewall::FirewallManager>>,
     /// System log reads.
     pub logs: Option<Arc<dyn crate::logs::LogReader>>,
+    /// Hardware device inventory.
+    pub device: Option<Arc<dyn crate::device::DeviceManager>>,
 }
 
 impl std::fmt::Debug for SystemContext {
@@ -100,6 +102,7 @@ pub struct SystemContextBuilder {
     schedule: Option<Arc<dyn crate::schedule::ScheduleManager>>,
     firewall: Option<Arc<dyn crate::firewall::FirewallManager>>,
     logs: Option<Arc<dyn crate::logs::LogReader>>,
+    device: Option<Arc<dyn crate::device::DeviceManager>>,
 }
 
 impl SystemContextBuilder {
@@ -205,6 +208,12 @@ impl SystemContextBuilder {
         self
     }
 
+    /// Provide the device capability (optional).
+    pub fn device(mut self, mgr: Arc<dyn crate::device::DeviceManager>) -> Self {
+        self.device = Some(mgr);
+        self
+    }
+
     /// Finish, failing if a mandatory capability is missing.
     pub fn build(self) -> Result<SystemContext> {
         Ok(SystemContext {
@@ -237,6 +246,7 @@ impl SystemContextBuilder {
             schedule: self.schedule,
             firewall: self.firewall,
             logs: self.logs,
+            device: self.device,
         })
     }
 }

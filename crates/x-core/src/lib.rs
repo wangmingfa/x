@@ -42,6 +42,7 @@ pub mod clipboard;
 pub mod context;
 pub mod devcheck;
 pub mod devenv;
+pub mod device;
 pub mod disk;
 pub mod dockerinfo;
 pub mod error;

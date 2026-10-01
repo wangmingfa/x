@@ -2,6 +2,7 @@
 
 pub mod capability;
 pub mod clipboard;
+pub mod device;
 pub mod devtools;
 pub mod disk;
 pub mod envpath;

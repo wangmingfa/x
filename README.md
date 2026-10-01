@@ -110,6 +110,21 @@ cargo build -p x-app
 `Get-WinEvent` + `ConvertTo-Json` / `log show --style json`），不做文本
 刮取；新→旧排序，默认 50 条。
 
+### 设备清单（`x device`）
+
+| 命令 | 说明 |
+| --- | --- |
+| `x device list [--class usb]` | 全部在场设备，可按类别过滤 |
+| `x device usb / bluetooth / audio / display / camera / input / network` | 对应类别的快捷方式 |
+| `x device list --json` | 整份清单的 JSON 数组 |
+
+数据源为平台原生枚举：Windows `Get-PnpDevice -PresentOnly`（JSON 投影）、
+Linux sysfs（`/sys/bus/usb/devices`、`/sys/class/*`、`/proc/asound/cards`）、
+macOS `system_profiler -json`。平台自己的类别/状态原文保留在
+`class_raw` / `status`（中文 Windows 的「蓝牙枚举器」原样透传），归一化
+类别只归明确认识的 token，归不了的进 `other`，不做猜测；字段没报就整列
+缺席。全部只读，不落审计。
+
 ### 证书与网络诊断（`x cert` / `x tls` / `x http` / `x net check`）
 
 | 命令 | 说明 |
@@ -149,8 +164,8 @@ PowerShell SslStream、类 Unix 用 openssl s_client），x 负责参数校验�
 | `service.native` | 原生命令完整参数与退出码（`x capability` 的空参数探测不记录） |
 | `firewall.allow` / `firewall.deny` | 端口、协议与规则名（如 `port 8080/tcp as "web"`） |
 
-读操作不留痕：`x logs` 读系统日志本身不写审计行，审计只覆盖改变机器的
-动作。
+读操作不留痕：`x logs` 读系统日志、`x device` 枚举设备本身都不写审计行，
+审计只覆盖改变机器的动作。
 
 日志位置：Windows `%LOCALAPPDATA%\x\audit.log`；Linux
 `$XDG_STATE_HOME`（缺省 `~/.local/state`）`/x/audit.log`；macOS
@@ -276,7 +291,7 @@ GitHub Actions CI 在 Ubuntu / macOS / Windows 三平台上跑格式、clippy
 
 ### P3 高级系统能力
 
-- [ ] 设备（`x device list/usb/audio/display/…`）：USB、蓝牙、音频、显示、摄像头、键鼠
+- [x] 设备（`x device list/usb/audio/display/…`）：USB、蓝牙、音频、显示、摄像头、键鼠（HID）、网卡；三平台原文透传 + 保守归类
 - [ ] 蓝牙（`x bluetooth devices/scan/connect/disconnect`）
 - [ ] 显示（`x display list/info`）：分辨率、刷新率、缩放、主显示器、位置、HDR
 - [ ] 窗口（`x window list/active/focus/minimize/maximize`）

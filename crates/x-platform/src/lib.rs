@@ -91,6 +91,7 @@ pub fn create_context() -> Result<SystemContext> {
             .schedule(std::sync::Arc::new(common::schedule_os::PlatformSchedule))
             .firewall(std::sync::Arc::new(common::firewall_os::PlatformFirewall))
             .logs(std::sync::Arc::new(common::logs_os::PlatformLogs))
+            .device(std::sync::Arc::new(common::device_os::PlatformDevices))
             .build()
     }
 
@@ -116,6 +117,7 @@ pub fn create_context() -> Result<SystemContext> {
             .schedule(std::sync::Arc::new(common::schedule_os::PlatformSchedule))
             .firewall(std::sync::Arc::new(common::firewall_os::PlatformFirewall))
             .logs(std::sync::Arc::new(common::logs_os::PlatformLogs))
+            .device(std::sync::Arc::new(common::device_os::PlatformDevices))
             .build()
     }
 
@@ -141,6 +143,7 @@ pub fn create_context() -> Result<SystemContext> {
             .schedule(std::sync::Arc::new(common::schedule_os::PlatformSchedule))
             .firewall(std::sync::Arc::new(common::firewall_os::PlatformFirewall))
             .logs(std::sync::Arc::new(common::logs_os::PlatformLogs))
+            .device(std::sync::Arc::new(common::device_os::PlatformDevices))
             .build()
     }
 

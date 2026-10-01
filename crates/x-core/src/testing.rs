@@ -797,6 +797,31 @@ impl crate::logs::LogReader for StubLogs {
     }
 }
 
+/// Device inventory stub serving a fixed list, or an honest "cannot list"
+/// when no list was configured.
+#[derive(Debug, Default)]
+pub struct StubDevices {
+    devices: Option<Vec<crate::device::DeviceInfo>>,
+}
+
+impl StubDevices {
+    /// Fixed inventory.
+    pub fn new(devices: Vec<crate::device::DeviceInfo>) -> Self {
+        Self {
+            devices: Some(devices),
+        }
+    }
+}
+
+impl crate::device::DeviceManager for StubDevices {
+    fn devices(&self) -> crate::error::Result<Vec<crate::device::DeviceInfo>> {
+        match &self.devices {
+            Some(rows) => Ok(rows.clone()),
+            None => Err(crate::Error::unsupported("stub cannot list devices")),
+        }
+    }
+}
+
 /// A context assembled from configurable stubs.
 ///
 /// ```no_run
@@ -824,6 +849,8 @@ pub struct Stubs {
     pub firewall: std::sync::Arc<StubFirewall>,
     /// Log reader capability.
     pub logs: std::sync::Arc<StubLogs>,
+    /// Device inventory capability.
+    pub device: std::sync::Arc<StubDevices>,
 }
 
 impl Default for Stubs {
@@ -844,6 +871,7 @@ impl Stubs {
             disk: std::sync::Arc::new(StubDisk::default()),
             firewall: std::sync::Arc::new(StubFirewall::default()),
             logs: std::sync::Arc::new(StubLogs::default()),
+            device: std::sync::Arc::new(StubDevices::default()),
         }
     }
 
@@ -917,6 +945,14 @@ impl Stubs {
         }
     }
 
+    /// Serve `rows` as the device inventory.
+    pub fn with_devices(self, rows: Vec<crate::device::DeviceInfo>) -> Self {
+        Self {
+            device: std::sync::Arc::new(StubDevices::new(rows)),
+            ..self
+        }
+    }
+
     /// Canned DNS / TLS / HTTP probe answers on the network capability.
     pub fn with_net_probes(
         self,
@@ -944,6 +980,7 @@ impl Stubs {
             .disk(Arc::clone(&self.disk) as Arc<dyn DiskManager>)
             .firewall(Arc::clone(&self.firewall) as Arc<dyn crate::firewall::FirewallManager>)
             .logs(Arc::clone(&self.logs) as Arc<dyn crate::logs::LogReader>)
+            .device(Arc::clone(&self.device) as Arc<dyn crate::device::DeviceManager>)
             .build()
             .expect("stub capabilities are always complete")
     }
