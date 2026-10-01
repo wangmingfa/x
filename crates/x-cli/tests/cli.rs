@@ -1790,3 +1790,250 @@ fn netdiag_without_the_probes_is_unsupported() {
     // dns warn, tcp skipped, ... still a report, exit 1 because stages failed.
     assert_eq!(out.code, 1);
 }
+
+// ---------------------------------------------------------------------------
+// P4-12 native runtime regression
+//
+// These reproduce the real failures a native runtime throws at `x` — a
+// permission-denied kill, a target that vanished, a service manager that is
+// present but unreachable, an unreadable disk/network stack — and assert the
+// CLI degrades instead of panicking. The same table, the same JSON, the same
+// refusals, just on stub capabilities that have been told to misbehave.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn regression_permission_denied_port_kill_reports_and_aborts() {
+    let stubs = populated();
+    stubs.port.fail_with(StubFailure::denied(
+        PermissionRequirement::Root,
+        "operation not permitted (raw sockets require root)",
+    ));
+
+    // The plan is built from `list`, which now refuses: the kill never runs.
+    let out = x(&stubs, &["port", "kill", "8080", "--yes"], true);
+    assert_eq!(out.code, ErrorKind::PermissionDenied.exit_code());
+    assert!(
+        out.stdout.is_empty(),
+        "nothing should print before the error: {}",
+        out.stdout
+    );
+    assert!(
+        out.stderr.contains("operation not permitted"),
+        "{}",
+        out.stderr
+    );
+    assert!(
+        out.stderr.contains("hint:"),
+        "privilege guidance missing: {}",
+        out.stderr
+    );
+    assert!(
+        stubs.port.killed().is_empty(),
+        "no socket may be killed when the plan is denied"
+    );
+}
+
+#[test]
+fn regression_permission_denied_process_kill_reports_failure() {
+    let stubs = populated();
+    // The process is found, but terminating it is refused at the adapter.
+    stubs.process.fail_kill_with(StubFailure::denied(
+        PermissionRequirement::Root,
+        "Operation not permitted",
+    ));
+
+    let out = x(&stubs, &["ps", "kill", "42", "--yes"], true);
+    // `kill_many` records the failure rather than killing; exit 1, not 0.
+    assert_eq!(out.code, 1, "{}", out.stderr);
+    assert!(
+        out.stdout.contains("failed: Operation not permitted"),
+        "{}",
+        out.stdout
+    );
+    assert!(out.stdout.contains("killed 0 of 1"), "{}", out.stdout);
+    assert!(
+        stubs.process.killed().is_empty(),
+        "the denied kill must not record a victim"
+    );
+}
+
+#[test]
+fn regression_killing_a_dead_pid_surfaces_not_found() {
+    let stubs = populated();
+    // The pid existed at list time but the adapter reports it gone on kill.
+    stubs
+        .process
+        .fail_kill_with(StubFailure::new(ErrorKind::NotFound, "no such process"));
+
+    let out = x(&stubs, &["ps", "kill", "42", "--yes"], true);
+    assert_eq!(out.code, 1, "{}", out.stderr);
+    assert!(
+        out.stdout.contains("failed: no such process"),
+        "{}",
+        out.stdout
+    );
+    assert!(stubs.process.killed().is_empty());
+}
+
+#[test]
+fn regression_service_action_failure_surfaces_cleanly() {
+    let stubs = populated();
+    // A service manager that is present but unreachable (systemd down).
+    stubs.service.fail_with(StubFailure::new(
+        ErrorKind::System,
+        "failed to reach systemd: connection refused",
+    ));
+
+    let out = x(&stubs, &["service", "restart", "sshd", "--yes"], true);
+    assert_eq!(out.code, ErrorKind::System.exit_code());
+    assert!(out.stderr.contains("connection refused"), "{}", out.stderr);
+    assert!(
+        stubs.service.actions().is_empty(),
+        "the failing action must not be recorded"
+    );
+}
+
+#[test]
+fn regression_disk_read_failure_does_not_panic() {
+    let stubs = Stubs::new();
+    stubs.disk.fail_with(StubFailure::new(
+        ErrorKind::System,
+        "mount table unreadable in this sandbox",
+    ));
+
+    let out = x(&stubs, &["disk", "list"], false);
+    assert_eq!(out.code, ErrorKind::System.exit_code());
+    assert!(
+        out.stderr.contains("mount table unreadable"),
+        "{}",
+        out.stderr
+    );
+    assert!(out.stdout.is_empty());
+}
+
+#[test]
+fn regression_network_failure_degrades_gracefully() {
+    let stubs = Stubs::new();
+    stubs.network.fail_with(StubFailure::new(
+        ErrorKind::System,
+        "no network interfaces reported",
+    ));
+
+    let out = x(&stubs, &["net", "dns"], false);
+    assert_eq!(out.code, ErrorKind::System.exit_code());
+    assert!(
+        out.stderr.contains("no network interfaces"),
+        "{}",
+        out.stderr
+    );
+}
+
+#[test]
+fn regression_partial_manager_failure_keeps_capability_alive() {
+    // Simulate a stripped-down host (container, unprivileged): system + process
+    // still answer, but the port/disk/network adapters are failing. `capability`
+    // must still report every domain and exit 0 — it must never panic.
+    let stubs = Stubs::new().with_system(
+        SystemInfo {
+            os_name: "containerOS".into(),
+            ..SystemInfo::default()
+        },
+        CpuUsage::default(),
+        MemoryUsage::default(),
+    );
+    stubs
+        .port
+        .fail_with(StubFailure::new(ErrorKind::System, "port read failed"));
+    stubs
+        .disk
+        .fail_with(StubFailure::new(ErrorKind::System, "disk read failed"));
+    stubs
+        .network
+        .fail_with(StubFailure::new(ErrorKind::System, "net read failed"));
+
+    let out = x(&stubs, &["capability"], false);
+    assert_eq!(
+        out.code, 0,
+        "capability must not fail when a manager errors: {}",
+        out.stderr
+    );
+    // Surviving domains are still present.
+    for domain in ["system", "process", "port", "disk", "net"] {
+        assert!(
+            out.stdout.contains(domain),
+            "missing {domain}: {}",
+            out.stdout
+        );
+    }
+
+    let json = x(&stubs, &["--json", "capability"], false);
+    assert_eq!(json.code, 0);
+    let value: serde_json::Value = serde_json::from_str(&json.stdout).expect("valid json");
+    let rows = value.as_array().expect("array");
+    // Every domain must be represented even though three managers failed.
+    let domains: std::collections::HashSet<&str> = rows
+        .iter()
+        .map(|r| r["domain"].as_str().expect("domain"))
+        .collect();
+    for expected in ["system", "process", "port", "net", "disk", "service"] {
+        assert!(
+            domains.contains(expected),
+            "missing domain {expected} in {domains:?}"
+        );
+    }
+    // At least one row is explicitly degraded because a manager errored.
+    assert!(
+        rows.iter().any(|r| r["status"] == "degraded"),
+        "expected a degraded row: {value}"
+    );
+}
+
+#[test]
+fn regression_every_read_command_survives_its_manager_erroring() {
+    // A manager that errors on every read must not take down the command that
+    // uses it; each reports its own failure and exits non-zero, no panic.
+    let port = {
+        let stubs = Stubs::new();
+        stubs
+            .port
+            .fail_with(StubFailure::new(ErrorKind::System, "p1"));
+        x(&stubs, &["port", "list"], false)
+    };
+    assert_eq!(port.code, ErrorKind::System.exit_code());
+
+    let ps = {
+        let stubs = Stubs::new();
+        stubs
+            .process
+            .fail_with(StubFailure::new(ErrorKind::System, "p2"));
+        x(&stubs, &["ps", "list"], false)
+    };
+    assert_eq!(ps.code, ErrorKind::System.exit_code());
+
+    let net = {
+        let stubs = Stubs::new();
+        stubs
+            .network
+            .fail_with(StubFailure::new(ErrorKind::System, "p3"));
+        x(&stubs, &["net", "dns"], false)
+    };
+    assert_eq!(net.code, ErrorKind::System.exit_code());
+
+    let svc = {
+        let stubs = Stubs::new();
+        stubs
+            .service
+            .fail_with(StubFailure::new(ErrorKind::System, "p4"));
+        x(&stubs, &["service", "list"], false)
+    };
+    assert_eq!(svc.code, ErrorKind::System.exit_code());
+
+    let disk = {
+        let stubs = Stubs::new();
+        stubs
+            .disk
+            .fail_with(StubFailure::new(ErrorKind::System, "p5"));
+        x(&stubs, &["disk", "list"], false)
+    };
+    assert_eq!(disk.code, ErrorKind::System.exit_code());
+}

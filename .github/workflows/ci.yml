@@ -40,3 +40,34 @@ jobs:
         run: |
           rustup target add x86_64-pc-windows-msvc
           cargo check --target x86_64-pc-windows-msvc -p x-platform --all-targets
+
+  # P4-12: keep exercising the native runtime on every platform. The unit
+  # regression group reproduces real failures (permission denied, a target that
+  # vanished, an unreachable service manager, an unreadable disk/network stack)
+  # on stubs; the smoke step then runs the real binary against the actual host
+  # so a panicking or regressed native adapter is caught on every OS.
+  native-regression:
+    name: native regression ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build x binary
+        run: cargo build -p x-app
+
+      - name: Regression tests (real-failure reproduction)
+        run: cargo test -p x-cli --test cli regression
+
+      - name: Real-native smoke (must not panic)
+        shell: bash
+        run: |
+          cargo run -p x-app -- capability
+          cargo run -p x-app -- sys info
+

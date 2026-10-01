@@ -404,6 +404,10 @@ pub fn stub_service(name: &str, pid: u32) -> crate::service::ServiceInfo {
 pub struct StubProcess {
     rows: Mutex<Vec<ProcessInfo>>,
     killed: Mutex<Vec<u32>>,
+    /// Failure injected into the read paths (`list` / `get` / `tree`).
+    failure: Mutex<Option<StubFailure>>,
+    /// Failure injected into the destructive `kill` path only.
+    kill_failure: Mutex<Option<StubFailure>>,
 }
 
 impl StubProcess {
@@ -412,7 +416,21 @@ impl StubProcess {
         Self {
             rows: Mutex::new(rows),
             killed: Mutex::new(Vec::new()),
+            failure: Mutex::new(None),
+            kill_failure: Mutex::new(None),
         }
+    }
+
+    /// Make every read call fail, to exercise the error paths of a frontend
+    /// whose process manager has become unavailable (container, permissions).
+    pub fn fail_with(&self, failure: StubFailure) {
+        *self.failure.lock().expect("stub mutex") = Some(failure);
+    }
+
+    /// Make only `kill` fail — the process is found, but terminating it is
+    /// refused (permission denied / already gone). Mirrors a real adapter.
+    pub fn fail_kill_with(&self, failure: StubFailure) {
+        *self.kill_failure.lock().expect("stub mutex") = Some(failure);
     }
 
     /// Replace the rows after the fact — for watch-style tests that must
@@ -429,6 +447,9 @@ impl StubProcess {
 
 impl ProcessManager for StubProcess {
     fn list(&self, options: &ProcessListOptions) -> Result<Vec<ProcessInfo>> {
+        if let Some(failure) = self.failure.lock().expect("stub mutex").clone() {
+            return Err(failure.error());
+        }
         let mut rows = self.rows.lock().expect("stub mutex").clone();
         if let Some(term) = options.search.as_deref() {
             let term = term.to_ascii_lowercase();
@@ -442,6 +463,9 @@ impl ProcessManager for StubProcess {
     }
 
     fn get(&self, pid: u32) -> Result<ProcessInfo> {
+        if let Some(failure) = self.failure.lock().expect("stub mutex").clone() {
+            return Err(failure.error());
+        }
         self.rows
             .lock()
             .expect("stub mutex")
@@ -456,6 +480,9 @@ impl ProcessManager for StubProcess {
     }
 
     fn kill(&self, pid: u32, _signal: KillSignal) -> Result<()> {
+        if let Some(failure) = self.kill_failure.lock().expect("stub mutex").clone() {
+            return Err(failure.error());
+        }
         self.killed.lock().expect("stub mutex").push(pid);
         Ok(())
     }
@@ -471,6 +498,9 @@ pub struct StubNetwork {
     resolved: Option<Vec<std::net::IpAddr>>,
     tls: Option<crate::netdiag::TlsInfo>,
     response: Option<crate::netdiag::HttpResponse>,
+    /// Failure injected into every read to simulate a host with no usable
+    /// network stack (no interfaces, DNS unreachable, adapters down).
+    failure: Mutex<Option<StubFailure>>,
 }
 
 impl StubNetwork {
@@ -489,6 +519,7 @@ impl StubNetwork {
             resolved: None,
             tls: None,
             response: None,
+            failure: Mutex::new(None),
         }
     }
 
@@ -504,26 +535,47 @@ impl StubNetwork {
         self.response = response;
         self
     }
+
+    /// Make every read fail, to exercise the error paths of a frontend when
+    /// the network manager reports nothing usable.
+    pub fn fail_with(&self, failure: StubFailure) {
+        *self.failure.lock().expect("stub mutex") = Some(failure);
+    }
 }
 
 impl NetworkManager for StubNetwork {
     fn interfaces(&self) -> Result<Vec<InterfaceInfo>> {
+        if let Some(failure) = self.failure.lock().expect("stub mutex").clone() {
+            return Err(failure.error());
+        }
         Ok(self.interfaces.clone())
     }
 
     fn addresses(&self) -> Result<Vec<AddressInfo>> {
+        if let Some(failure) = self.failure.lock().expect("stub mutex").clone() {
+            return Err(failure.error());
+        }
         Ok(self.addresses.clone())
     }
 
     fn routes(&self) -> Result<Vec<RouteInfo>> {
+        if let Some(failure) = self.failure.lock().expect("stub mutex").clone() {
+            return Err(failure.error());
+        }
         Ok(self.routes.clone())
     }
 
     fn dns(&self) -> Result<DnsConfig> {
+        if let Some(failure) = self.failure.lock().expect("stub mutex").clone() {
+            return Err(failure.error());
+        }
         Ok(self.dns.clone())
     }
 
     fn resolve(&self, _host: &str) -> Result<Vec<std::net::IpAddr>> {
+        if let Some(failure) = self.failure.lock().expect("stub mutex").clone() {
+            return Err(failure.error());
+        }
         match &self.resolved {
             Some(rows) => Ok(rows.clone()),
             None => Err(crate::Error::unsupported("stub cannot resolve")),
@@ -531,6 +583,9 @@ impl NetworkManager for StubNetwork {
     }
 
     fn tls_info(&self, host: &str, port: u16, _timeout_ms: u64) -> Result<crate::netdiag::TlsInfo> {
+        if let Some(failure) = self.failure.lock().expect("stub mutex").clone() {
+            return Err(failure.error());
+        }
         match &self.tls {
             Some(info) => {
                 let mut info = info.clone();
@@ -548,6 +603,9 @@ impl NetworkManager for StubNetwork {
         _method: &str,
         _timeout_ms: u64,
     ) -> Result<crate::netdiag::HttpResponse> {
+        if let Some(failure) = self.failure.lock().expect("stub mutex").clone() {
+            return Err(failure.error());
+        }
         match &self.response {
             Some(response) => {
                 let mut response = response.clone();
@@ -566,6 +624,9 @@ pub struct StubService {
     actions: Mutex<Vec<(String, ServiceAction)>>,
     logs: Mutex<Option<ServiceLogPage>>,
     native_calls: Mutex<Vec<Vec<String>>>,
+    /// Failure injected into `list` / `action` to simulate a service manager
+    /// that is present but unreachable (systemd down, no privileges).
+    failure: Mutex<Option<StubFailure>>,
 }
 
 impl StubService {
@@ -574,8 +635,15 @@ impl StubService {
         Self {
             rows: Mutex::new(rows),
             actions: Mutex::new(Vec::new()),
+            failure: Mutex::new(None),
             ..Default::default()
         }
+    }
+
+    /// Make `list` and `action` fail, to exercise the error paths of a
+    /// frontend when the service manager cannot be reached.
+    pub fn fail_with(&self, failure: StubFailure) {
+        *self.failure.lock().expect("stub mutex") = Some(failure);
     }
 
     /// Actions the frontend requested, in order.
@@ -600,6 +668,9 @@ impl ServiceManager for StubService {
     }
 
     fn list(&self, options: &ServiceListOptions) -> Result<Vec<ServiceInfo>> {
+        if let Some(failure) = self.failure.lock().expect("stub mutex").clone() {
+            return Err(failure.error());
+        }
         let mut rows = self.rows.lock().expect("stub mutex").clone();
         if let Some(term) = options.search.as_deref() {
             let term = term.to_ascii_lowercase();
@@ -613,6 +684,9 @@ impl ServiceManager for StubService {
     }
 
     fn action(&self, name: &str, action: ServiceAction) -> Result<()> {
+        if let Some(failure) = self.failure.lock().expect("stub mutex").clone() {
+            return Err(failure.error());
+        }
         self.actions
             .lock()
             .expect("stub mutex")
@@ -680,6 +754,8 @@ impl SystemManager for StubSystem {
 #[derive(Debug, Default)]
 pub struct StubDisk {
     rows: Mutex<Vec<DiskInfo>>,
+    /// Failure injected into `list` to simulate an unreadable mount table.
+    failure: Mutex<Option<StubFailure>>,
 }
 
 impl StubDisk {
@@ -687,12 +763,22 @@ impl StubDisk {
     pub fn new(rows: Vec<DiskInfo>) -> Self {
         Self {
             rows: Mutex::new(rows),
+            failure: Mutex::new(None),
         }
+    }
+
+    /// Make `list` fail, to exercise the error path when the disk manager
+    /// cannot read the mount table (sandboxed / unprivileged host).
+    pub fn fail_with(&self, failure: StubFailure) {
+        *self.failure.lock().expect("stub mutex") = Some(failure);
     }
 }
 
 impl DiskManager for StubDisk {
     fn list(&self) -> Result<Vec<DiskInfo>> {
+        if let Some(failure) = self.failure.lock().expect("stub mutex").clone() {
+            return Err(failure.error());
+        }
         Ok(self.rows.lock().expect("stub mutex").clone())
     }
 }

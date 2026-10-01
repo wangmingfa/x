@@ -437,4 +437,4 @@ GitHub Actions CI 在 Ubuntu / macOS / Windows 三平台上跑格式、clippy
 - [x] man 页与帮助生成
 - [x] Dry run：`--dry-run` 先说明将执行的操作（与确认机制互补）
 - [x] 打包分发：install 脚本 / Homebrew tap / Windows 安装包
-- [ ] 各平台原生运行时的持续回归（CI 已覆盖，需结合真实故障复现）
+- [x] 各平台原生运行时的持续回归（CI 已覆盖，新增 `regression` 测试组 + 真实原生冒烟：覆盖权限拒绝、目标消失、服务管理器不可达、磁盘/网络读失败等真实故障，确认优雅降级而非崩溃）
