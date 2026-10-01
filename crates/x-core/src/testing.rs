@@ -258,6 +258,8 @@ pub fn stub_socket(port: u16, pid: u32, process: &str) -> PortInfo {
         process_name: Some(process.to_string()),
         user: None,
         path: None,
+        send_queue_bytes: None,
+        recv_queue_bytes: None,
     }
 }
 

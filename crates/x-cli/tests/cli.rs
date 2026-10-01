@@ -315,6 +315,55 @@ fn socket_rows_show_remote_endpoints() {
 }
 
 #[test]
+fn port_stats_counts_states_protocols_and_queues() {
+    let mut established = stub_socket(51000, 77, "curl");
+    established.state = x_core::ConnectionState::Established;
+    established.protocol = x_core::port::Protocol::Udp;
+    established.recv_queue_bytes = Some(2048);
+    let stubs = Stubs::new().with_ports(vec![
+        stub_socket(8080, 42, "node"),
+        stub_socket(9090, 43, "python"),
+        established,
+    ]);
+
+    let out = x(&stubs, &["port", "stats"], false);
+    assert_eq!(out.code, 0);
+    for needle in ["listen", "established", "total", "tcp", "udp"] {
+        assert!(
+            out.stdout.contains(needle),
+            "missing {needle}:\n{}",
+            out.stdout
+        );
+    }
+
+    let json = x(&stubs, &["--json", "port", "stats"], false);
+    let value: serde_json::Value = serde_json::from_str(&json.stdout).expect("valid json");
+    assert_eq!(value["total"], 3);
+    assert_eq!(value["by_state"]["listen"], 2);
+    assert_eq!(value["by_state"]["established"], 1);
+    assert_eq!(value["by_protocol"]["tcp"], 2);
+    assert_eq!(value["by_protocol"]["udp"], 1);
+    assert_eq!(value["queues"]["recv_reporting"], 1);
+    assert_eq!(value["queues"]["recv_bytes"], 2048);
+    assert_eq!(value["queues"]["send_reporting"], 0);
+}
+
+#[test]
+fn port_stats_says_when_queues_are_unreported() {
+    let stubs = populated();
+    let out = x(&stubs, &["port", "stats"], false);
+
+    assert_eq!(out.code, 0);
+    assert!(
+        out.stdout
+            .contains("queue lengths: not reported by this platform"),
+        "unreported queues must not be dressed up as zeros:\n{}",
+        out.stdout
+    );
+    assert!(!out.stdout.contains("send queued"), "{}", out.stdout);
+}
+
+#[test]
 fn killing_without_yes_asks_first_and_does_nothing_when_refused() {
     let stubs = populated();
 

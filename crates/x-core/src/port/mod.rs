@@ -5,6 +5,6 @@ pub mod model;
 
 pub use manager::{group_by_owner, is_releasable, PortManager};
 pub use model::{
-    diff_sockets, ConnectionState, KillPlan, PortInfo, PortListOptions, PortOwner, PortQuery,
-    PortSort, Protocol, SocketDiff,
+    diff_sockets, summarize, ConnectionState, KillPlan, PortInfo, PortListOptions, PortOwner,
+    PortQuery, PortSort, PortStats, Protocol, QueueStats, SocketDiff,
 };

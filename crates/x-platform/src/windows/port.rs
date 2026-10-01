@@ -307,6 +307,10 @@ impl PortManager for WindowsPort {
                 process_name: names.get(&socket.pid).cloned(),
                 user: users.get(&socket.pid).cloned(),
                 path: None,
+                // The IP helper API reports no queue occupancy: none of the MIB
+                // tables carry a queue length, unlike Linux and macOS.
+                send_queue_bytes: None,
+                recv_queue_bytes: None,
             })
             .collect();
 
@@ -384,6 +388,10 @@ mod tests {
         assert_eq!(ours.protocol, Protocol::Tcp);
         assert_eq!(ours.pid, Some(std::process::id()));
         assert!(ours.state.is_listening());
+        assert!(
+            ours.send_queue_bytes.is_none() && ours.recv_queue_bytes.is_none(),
+            "the IP helper API exposes no queue occupancy"
+        );
     }
 
     #[test]

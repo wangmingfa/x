@@ -68,6 +68,8 @@ fn established_socket(port: u16, remote_port: u16) -> PortInfo {
         process_name: Some("node".into()),
         user: None,
         path: None,
+        send_queue_bytes: None,
+        recv_queue_bytes: None,
     }
 }
 

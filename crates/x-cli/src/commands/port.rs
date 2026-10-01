@@ -2,9 +2,10 @@
 
 use clap::Subcommand;
 use x_core::error::{Error, Result};
+use x_core::format_bytes;
 use x_core::port::{
-    diff_sockets, ConnectionState, KillPlan, PortInfo, PortListOptions, PortOwner, PortQuery,
-    PortSort, Protocol,
+    diff_sockets, summarize, ConnectionState, KillPlan, PortInfo, PortListOptions, PortOwner,
+    PortQuery, PortSort, Protocol,
 };
 use x_core::SystemContext;
 
@@ -40,6 +41,9 @@ pub enum PortCommand {
 
     /// Group sockets by the process owning them.
     Owners(PortListArgs),
+
+    /// Count sockets by state and protocol, plus kernel queue occupancy.
+    Stats(PortListArgs),
 
     /// Exit 0 when something holds the port, 1 when it is free.
     Check {
@@ -188,6 +192,7 @@ pub fn dispatch(
         PortCommand::List(args) => list(context, renderer, &args.options(true)),
         PortCommand::All(args) => list(context, renderer, &args.options(false)),
         PortCommand::Owners(args) => owners(context, renderer, &args.options(true)),
+        PortCommand::Stats(args) => stats(context, renderer, &args.options(false)),
         PortCommand::Check { port } => check(context, renderer, *port),
         PortCommand::Kill { port, signal, yes } => kill(
             context,
@@ -299,6 +304,61 @@ pub fn check(context: &SystemContext, renderer: &mut Renderer, port: u16) -> Res
     // Probe semantics: success means "something holds this port", the way
     // `pgrep` and `nc -z` behave, so `if x port check 3000` reads naturally.
     Ok(if in_use { 0 } else { 1 })
+}
+
+/// Connection state counts, protocol split and kernel queue occupancy.
+///
+/// Counts are a pure reduction over the same snapshot every other command
+/// renders, so the numbers always add up to what `x port all` would show.
+pub fn stats(
+    context: &SystemContext,
+    renderer: &mut Renderer,
+    options: &PortListOptions,
+) -> Result<i32> {
+    let rows = context.port.list(options)?;
+    let stats = summarize(&rows);
+
+    if renderer.format() == OutputFormat::Json {
+        renderer.always_json(&stats)?;
+        return Ok(0);
+    }
+
+    let mut states = Table::new(["state", "sockets"]);
+    for (state, count) in &stats.by_state {
+        states.push(row![state_label(*state), count.to_string()]);
+    }
+    states.push(row!["total", stats.total.to_string()]);
+    renderer.table(&states)?;
+
+    let mut protocols = Table::new(["proto", "sockets"]);
+    for (protocol, count) in &stats.by_protocol {
+        protocols.push(row![protocol.clone(), count.to_string()]);
+    }
+    renderer.table(&protocols)?;
+
+    if stats.queues.is_empty() {
+        renderer.line("queue lengths: not reported by this platform")?;
+    } else {
+        let mut queues = Table::new(["queues", "value"]);
+        if stats.queues.send_reporting > 0 {
+            queues.push(row![
+                format!("send queued ({} sockets)", stats.queues.send_reporting),
+                format_bytes(stats.queues.send_bytes),
+            ]);
+        }
+        if stats.queues.recv_reporting > 0 {
+            queues.push(row![
+                format!("recv queued ({} sockets)", stats.queues.recv_reporting),
+                format_bytes(stats.queues.recv_bytes),
+            ]);
+        }
+        queues.push(row![
+            "backed up".to_string(),
+            format!("{} sockets", stats.queues.backed_up),
+        ]);
+        renderer.table(&queues)?;
+    }
+    Ok(0)
 }
 
 /// Result of `x port check`.

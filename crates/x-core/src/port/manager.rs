@@ -162,6 +162,8 @@ mod tests {
             process_name: name.map(str::to_string),
             user: None,
             path: None,
+            send_queue_bytes: None,
+            recv_queue_bytes: None,
         }
     }
 

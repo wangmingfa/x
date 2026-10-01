@@ -93,7 +93,17 @@ fn established_socket(port: u16, remote_port: u16) -> PortInfo {
         process_name: Some("node".into()),
         user: None,
         path: None,
+        send_queue_bytes: None,
+        recv_queue_bytes: None,
     }
+}
+
+/// A stub socket that also reports kernel queue lengths (Linux shape).
+fn queue_socket(port: u16, pid: u32, name: &str, send: u64, recv: u64) -> PortInfo {
+    let mut row = stub_socket(port, pid, name);
+    row.send_queue_bytes = Some(send);
+    row.recv_queue_bytes = Some(recv);
+    row
 }
 
 fn disk_row(mount: &str, percent: f32) -> DiskInfo {
@@ -334,6 +344,23 @@ fn the_socket_detail_is_drawn_with_a_kill_hint() {
         screen.contains("k kill    any other key closes"),
         "kill hint missing:\n{screen}"
     );
+}
+
+#[test]
+fn the_socket_detail_shows_reported_queue_lengths() {
+    let stubs = Stubs::new()
+        .with_ports(vec![queue_socket(8080, 42, "node", 1536, 0)])
+        .with_processes(vec![stub_process(42, None, "node")]);
+    let mut app = App::new(stubs.context());
+
+    press(&mut app, KeyCode::Char('2'));
+    press(&mut app, KeyCode::Enter);
+    let screen = render(&mut app, 100, 30);
+
+    assert!(screen.contains("send queue"), "send queue:\n{screen}");
+    assert!(screen.contains("1.5 KB"), "send value:\n{screen}");
+    assert!(screen.contains("recv queue"), "recv queue:\n{screen}");
+    assert!(screen.contains("0 B"), "recv value:\n{screen}");
 }
 
 #[test]

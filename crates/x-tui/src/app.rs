@@ -1368,6 +1368,12 @@ impl App {
                 row.user.clone().unwrap_or_else(|| "-".into()),
             ),
         ];
+        if let Some(bytes) = row.send_queue_bytes {
+            rows.push(("send queue".into(), format_bytes(bytes)));
+        }
+        if let Some(bytes) = row.recv_queue_bytes {
+            rows.push(("recv queue".into(), format_bytes(bytes)));
+        }
         if let Some(pid) = row.pid {
             match self.context.process.get(pid) {
                 Ok(info) => append_process_detail(&mut rows, &info),

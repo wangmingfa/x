@@ -86,6 +86,14 @@ pub const OFF_INI_FADDR: usize = OFF_PROTO + 32;
 pub const OFF_INI_LADDR: usize = OFF_PROTO + 48;
 /// `offsetof(struct tcp_sockinfo, tcpsi_state)`.
 pub const OFF_TCP_STATE: usize = OFF_PROTO + 80;
+/// `offsetof(struct tcp_connection_info, tcpi_snd_sbbytes)`, relative to
+/// `socket_fdinfo`.
+///
+/// `tcpsi_tcbc` opens with the four one-byte fields (`tcpi_state`,
+/// `tcpi_snd_wscale`, `tcpi_rcv_wscale`, `__pad1`), then seven `u32`s
+/// (`options`, `flags`, `rto`, `maxseg`, `snd_ssthresh`, `snd_cwnd`,
+/// `snd_wnd`), so the byte count riding on `tcpi_state` sits 32 bytes in.
+pub const OFF_TCP_SND_SBBYTES: usize = OFF_TCP_STATE + 32;
 
 /// `sizeof(struct vnode_fdinfowithpath)` on the installed SDK.
 pub const VNODE_PATH_FDINFO_SIZE: usize = 1200;
@@ -113,6 +121,15 @@ fn i32_at(buffer: &[u8], offset: usize) -> i32 {
         .and_then(|slice| slice.try_into().ok())
         .unwrap_or([0; 4]);
     i32::from_ne_bytes(bytes)
+}
+
+/// Read a little endian `u32` out of a kernel buffer.
+fn u32_at(buffer: &[u8], offset: usize) -> u32 {
+    let bytes: [u8; 4] = buffer
+        .get(offset..offset + 4)
+        .and_then(|slice| slice.try_into().ok())
+        .unwrap_or([0; 4]);
+    u32::from_ne_bytes(bytes)
 }
 
 /// Ports are stored as network byte order inside an `int`.
@@ -259,6 +276,9 @@ pub fn socket_info(pid: i32, fd: i32) -> Option<SocketDetails> {
         remote_address: read_address(&buffer, OFF_INI_FADDR, vflag),
         ip_version: vflag,
         tcp_state: i32_at(&buffer, OFF_TCP_STATE),
+        // The send buffer counter only exists in the TCP arm of the union;
+        // reading it for other socket kinds would decode a different field.
+        send_queue_bytes: (kind == SOCKINFO_TCP).then(|| u32_at(&buffer, OFF_TCP_SND_SBBYTES)),
     })
 }
 
@@ -279,6 +299,11 @@ pub struct SocketDetails {
     pub ip_version: u8,
     /// `TCPS_*` state, meaningful for TCP only.
     pub tcp_state: i32,
+    /// Bytes in the TCP send buffer (`tcpi_snd_sbbytes`), TCP sockets only.
+    ///
+    /// The kernel exposes no receive-queue occupancy through `libproc`, so
+    /// there is no matching field for the other direction.
+    pub send_queue_bytes: Option<u32>,
 }
 
 /// Read one of the two address unions.

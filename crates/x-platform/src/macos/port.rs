@@ -64,6 +64,8 @@ pub struct RawSocket {
     pub remote_port: Option<u16>,
     /// Connection state.
     pub state: ConnectionState,
+    /// Bytes in the TCP send buffer; `None` for datagram sockets.
+    pub send_queue_bytes: Option<u64>,
 }
 
 impl RawSocket {
@@ -101,6 +103,7 @@ impl RawSocket {
             remote_address: (details.remote_port != 0).then_some(remote_address),
             remote_port: (details.remote_port != 0).then_some(details.remote_port),
             state,
+            send_queue_bytes: details.send_queue_bytes.map(u64::from),
         })
     }
 }
@@ -170,6 +173,10 @@ impl PortManager for MacosPortManager {
                 process_name: names.get(&socket.pid).cloned(),
                 user: users.get(&socket.pid).cloned(),
                 path: None,
+                send_queue_bytes: socket.send_queue_bytes,
+                // `libproc` exposes no receive-queue occupancy, so the field
+                // stays absent rather than claiming a zero.
+                recv_queue_bytes: None,
             })
             .collect();
 
@@ -252,6 +259,15 @@ mod tests {
         assert_eq!(ours.local_address, IpAddr::V4(Ipv4Addr::LOCALHOST));
         assert!(ours.process_name.is_some(), "process name must be resolved");
         assert_eq!(ours.endpoint(), format!("127.0.0.1:{port}"));
+        assert_eq!(
+            ours.send_queue_bytes,
+            Some(0),
+            "an idle listener has an empty send buffer"
+        );
+        assert!(
+            ours.recv_queue_bytes.is_none(),
+            "libproc exposes no receive queue occupancy"
+        );
     }
 
     #[test]

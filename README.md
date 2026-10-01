@@ -26,6 +26,7 @@ cargo build -p x-app
 | `x port` | 监听中的 socket 及其属主进程 |
 | `x port all` | 全部 socket（不只监听），含远程地址列 |
 | `x port owners` | 按进程分组 |
+| `x port stats` | 按状态 / 协议统计 socket 数，并给出内核队列占用（平台提供时） |
 | `x port find <name>` | 按进程名反查其持有的 socket |
 | `x port watch` | 持续轮询，只在 socket 增删时输出（`--interval`、`--count`） |
 | `x port check <port>` | 占用返回 0，空闲返回 1 |
@@ -267,8 +268,8 @@ System、Disks；侧边栏列页，数字 `1`–`7` 直达，`Tab`/左右键循�
   对应页面并带上过滤；某家族采样失败会在结果里就地注明
 - 进程页：`t` 树形（父进程缩进），`Space` 折叠/展开，`s` 轮换排序键
 - 端口页与进程页：`Enter` 详情（端口给持有进程 / PID / 用户 / 对端，
-  进程给命令行与资源占用），`k` 杀掉（先出计划确认），`p` 直接看
-  选中进程持有的端口
+  内核报告队列长度时一并给出；进程给命令行与资源占用），`k` 杀掉
+  （先出计划确认），`p` 直接看选中进程持有的端口
 - Disks：挂载表 + 启动目录的用量树，后台扫描、`Enter` 折叠
 - `f` 过滤当前页；`r` 手动刷新；`q` 退出
 
@@ -399,7 +400,7 @@ GitHub Actions CI 在 Ubuntu / macOS / Windows 三平台上跑格式、clippy
 - [x] TUI 增强：端口管理器（Enter 展示 进程/PID/CWD/启动命令 + [Kill]）
 - [x] TUI 增强：网络页（网卡状态/IP/MAC/速度 + 实时连接表）
 - [x] TUI 增强：树形展开/折叠、Disks 与 Services 页签、跨页签联动（选中进程直接看它持有的端口）
-- [ ] 更多内核级数据：连接状态统计、socket 队列长度等
+- [x] 更多内核级数据：`x port stats` 按状态 / 协议统计连接；socket 队列长度（Linux 读写两侧、macOS 仅 TCP 发送侧、Windows 如实无此数据，None 不入统计）
 
 ### P4 平台化
 

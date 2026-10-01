@@ -80,6 +80,10 @@ pub struct RawSocket {
     pub state: ConnectionState,
     /// Kernel socket inode, the join key against `/proc/<pid>/fd`.
     pub inode: u64,
+    /// `tx_queue` as printed, in bytes for connected sockets.
+    pub send_queue_bytes: Option<u64>,
+    /// `rx_queue` as printed, in bytes for connected sockets.
+    pub recv_queue_bytes: Option<u64>,
 }
 
 /// Parse one `/proc/net/{tcp,udp}{,6}` table.
@@ -107,6 +111,7 @@ fn parse_row(line: &str, protocol: Protocol) -> Option<RawSocket> {
     let remote = parse_endpoint(cols[2], protocol);
     let raw_state = u8::from_str_radix(cols[3], 16).ok()?;
     let inode = cols[9].parse().ok()?;
+    let (send_queue_bytes, recv_queue_bytes) = parse_queues(cols[4]);
 
     // Datagram sockets have no state field of their own; a zero peer means the
     // socket is only bound.
@@ -127,7 +132,25 @@ fn parse_row(line: &str, protocol: Protocol) -> Option<RawSocket> {
         remote_port: remote.filter(|(_, port)| *port != 0).map(|(_, port)| port),
         state,
         inode,
+        send_queue_bytes,
+        recv_queue_bytes,
     })
+}
+
+/// Split the `tx_queue:rx_queue` column, both hexadecimal.
+///
+/// For connected sockets these are the bytes waiting in the kernel send and
+/// receive queues. On listening sockets the kernel prints the accept-queue
+/// counters in the same fields, so the raw values are passed through as read
+/// rather than dressed up as byte counts.
+fn parse_queues(raw: &str) -> (Option<u64>, Option<u64>) {
+    let Some((tx, rx)) = raw.split_once(':') else {
+        return (None, None);
+    };
+    (
+        u64::from_str_radix(tx, 16).ok(),
+        u64::from_str_radix(rx, 16).ok(),
+    )
 }
 
 /// Split an `ADDRESS:PORT` column into an address and a port.
@@ -245,6 +268,8 @@ impl PortManager for LinuxPort {
                 process_name: socket.pid.and_then(|pid| names.get(&pid).cloned()),
                 user: None,
                 path: None,
+                send_queue_bytes: socket.send_queue_bytes,
+                recv_queue_bytes: socket.recv_queue_bytes,
             })
             .collect();
 
@@ -281,7 +306,7 @@ mod tests {
 
     const SAMPLE: &str = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n\
          0: 0100007F:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 12345 1 0000000000000000 0 0 0 0 -1\n\
-         1: 0100007F:C350 0100007F:1F90 01 00000000:00000000 00:00000000 00000000  1000        0 54321 1 0000000000000000 20 4 30 10 -1\n\
+         1: 0100007F:C350 0100007F:1F90 01 000003E8:00000064 00:00000000 00000000  1000        0 54321 1 0000000000000000 20 4 30 10 -1\n\
          2: 00000000:0BB8 00000000:0000 07 00000000:00000000 00:00000000 00000000     0        0 12346 1 0000000000000000 0 0 0 0 -1\n";
 
     const SAMPLE6: &str = "  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n\
@@ -301,9 +326,27 @@ mod tests {
         assert_eq!(rows[1].local_port, 50000);
         assert_eq!(rows[1].remote_port, Some(8080));
         assert_eq!(rows[1].state, ConnectionState::Established);
+        // `000003E8:00000064` is 1000 send-side and 100 receive-side bytes.
+        assert_eq!(rows[1].send_queue_bytes, Some(1000));
+        assert_eq!(rows[1].recv_queue_bytes, Some(100));
 
         assert_eq!(rows[2].local_port, 3000);
         assert_eq!(rows[2].state, ConnectionState::Closed);
+    }
+
+    #[test]
+    fn queue_columns_are_parsed_as_hex_and_degrade_per_field() {
+        let rows = parse_proc_net(SAMPLE, Protocol::Tcp);
+        assert_eq!(
+            rows[0].send_queue_bytes,
+            Some(0),
+            "an idle listener reads 0"
+        );
+        assert_eq!(rows[0].recv_queue_bytes, Some(0));
+
+        assert_eq!(parse_queues("0000000A:14"), (Some(10), Some(20)));
+        assert_eq!(parse_queues("no-colon"), (None, None));
+        assert_eq!(parse_queues("zz:1F"), (None, Some(31)));
     }
 
     #[test]

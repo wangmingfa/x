@@ -1,6 +1,7 @@
 //! Unified port / socket model.
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 /// Transport protocol of a socket.
@@ -134,6 +135,12 @@ pub struct PortInfo {
     /// Unix domain socket path.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+    /// Bytes sitting in the kernel send queue, when the platform reports it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub send_queue_bytes: Option<u64>,
+    /// Bytes sitting in the kernel receive queue, when the platform reports it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recv_queue_bytes: Option<u64>,
 }
 
 impl PortInfo {
@@ -187,6 +194,74 @@ impl SocketDiff {
     pub fn is_empty(&self) -> bool {
         self.added.is_empty() && self.removed.is_empty()
     }
+}
+
+/// Counts over one socket snapshot: by state, by protocol and queue
+/// occupancy.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PortStats {
+    /// Every socket in the snapshot.
+    pub total: usize,
+    /// Sockets per connection state, in the state enum's order.
+    pub by_state: BTreeMap<ConnectionState, usize>,
+    /// Sockets per protocol name (`tcp`, `udp`, `unix`, `other`).
+    pub by_protocol: BTreeMap<String, usize>,
+    /// Queue occupancy over the sockets whose platform reports it.
+    pub queues: QueueStats,
+}
+
+/// Queue occupancy, counted per direction.
+///
+/// Platforms differ in what they expose: Linux prints both queues for every
+/// socket, macOS only the TCP send buffer, Windows neither. Keeping the two
+/// directions apart means "0 B" is never claimed for a queue no platform
+/// reported.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QueueStats {
+    /// Sockets that reported a send queue length.
+    pub send_reporting: usize,
+    /// Sockets that reported a receive queue length.
+    pub recv_reporting: usize,
+    /// Sum of reported send queue bytes.
+    pub send_bytes: u64,
+    /// Sum of reported receive queue bytes.
+    pub recv_bytes: u64,
+    /// Sockets with a non-empty queue in either reported direction.
+    pub backed_up: usize,
+}
+
+impl QueueStats {
+    /// `true` when no socket reported a queue length.
+    pub fn is_empty(&self) -> bool {
+        self.send_reporting == 0 && self.recv_reporting == 0
+    }
+}
+
+/// Reduce a socket snapshot into [`PortStats`].
+pub fn summarize(rows: &[PortInfo]) -> PortStats {
+    let mut stats = PortStats {
+        total: rows.len(),
+        ..Default::default()
+    };
+    for row in rows {
+        *stats.by_state.entry(row.state).or_default() += 1;
+        *stats
+            .by_protocol
+            .entry(row.protocol.name().to_string())
+            .or_default() += 1;
+        if let Some(bytes) = row.send_queue_bytes {
+            stats.queues.send_reporting += 1;
+            stats.queues.send_bytes += bytes;
+        }
+        if let Some(bytes) = row.recv_queue_bytes {
+            stats.queues.recv_reporting += 1;
+            stats.queues.recv_bytes += bytes;
+        }
+        if row.send_queue_bytes.unwrap_or(0) > 0 || row.recv_queue_bytes.unwrap_or(0) > 0 {
+            stats.queues.backed_up += 1;
+        }
+    }
+    stats
 }
 
 /// Socket identity between snapshots: a state change or an ownership change is
@@ -462,6 +537,8 @@ mod tests {
             process_name: name.map(str::to_string),
             user: None,
             path: None,
+            send_queue_bytes: None,
+            recv_queue_bytes: None,
         }
     }
 
@@ -554,5 +631,58 @@ mod tests {
     fn diff_of_identical_snapshots_is_empty() {
         let rows = vec![info(80, ConnectionState::Listen, None)];
         assert!(diff_sockets(&rows, &rows).is_empty());
+    }
+
+    #[test]
+    fn summarize_counts_states_protocols_and_queues() {
+        let mut idle = info(80, ConnectionState::Listen, None);
+        idle.send_queue_bytes = Some(0);
+        idle.recv_queue_bytes = Some(0);
+        let mut sending = info(443, ConnectionState::Established, None);
+        sending.protocol = Protocol::Udp;
+        sending.send_queue_bytes = Some(2_000);
+        let mut stale = info(8080, ConnectionState::TimeWait, None);
+        stale.recv_queue_bytes = Some(500);
+
+        let stats = summarize(&[idle, sending, stale]);
+        assert_eq!(stats.total, 3);
+        assert_eq!(stats.by_state.get(&ConnectionState::Listen), Some(&1));
+        assert_eq!(stats.by_state.get(&ConnectionState::Established), Some(&1));
+        assert_eq!(stats.by_state.get(&ConnectionState::TimeWait), Some(&1));
+        assert_eq!(stats.by_protocol.get("tcp"), Some(&2));
+        assert_eq!(stats.by_protocol.get("udp"), Some(&1));
+        assert_eq!(stats.queues.send_reporting, 2);
+        assert_eq!(stats.queues.recv_reporting, 2);
+        assert_eq!(stats.queues.send_bytes, 2_000);
+        assert_eq!(stats.queues.recv_bytes, 500);
+        assert_eq!(stats.queues.backed_up, 2, "idle socket is not backed up");
+    }
+
+    #[test]
+    fn summarize_without_queue_reporting_is_empty_not_zero() {
+        let stats = summarize(&[info(80, ConnectionState::Listen, None)]);
+        assert!(
+            stats.queues.is_empty(),
+            "no platform reported a queue, so nothing may claim 0 bytes"
+        );
+        assert_eq!(stats.queues.send_bytes, 0);
+    }
+
+    #[test]
+    fn summarize_of_nothing_is_all_empty() {
+        let stats = summarize(&[]);
+        assert_eq!(stats.total, 0);
+        assert!(stats.by_state.is_empty());
+        assert!(stats.by_protocol.is_empty());
+        assert!(stats.queues.is_empty());
+    }
+
+    #[test]
+    fn stats_json_uses_readable_keys() {
+        let stats = summarize(&[info(22, ConnectionState::TimeWait, None)]);
+        let value: serde_json::Value = serde_json::to_value(&stats).expect("json");
+        assert_eq!(value["by_state"]["time_wait"], 1);
+        assert_eq!(value["by_protocol"]["tcp"], 1);
+        assert_eq!(value["queues"]["send_reporting"], 0);
     }
 }
