@@ -26,6 +26,7 @@
 //! 3. OS commands (`launchctl`, `systemctl`, `scutil`) — only where the platform
 //!    exposes no usable native API, never as the primary path.
 
+pub mod audit;
 pub mod common;
 pub mod sys;
 

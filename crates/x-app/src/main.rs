@@ -25,6 +25,9 @@ fn main() -> ExitCode {
         Ok(context) => context,
         Err(error) => return fail(if interactive { "x tui" } else { "x" }, &error),
     };
+    // Destructive operations (kills, port reclaiming, service actions) leave
+    // an audit trail from here on, in both frontends.
+    let context = x_platform::audit::attach(context);
 
     if interactive {
         return match x_tui::run(context) {

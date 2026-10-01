@@ -91,6 +91,23 @@ cargo build -p x-app
 探测只跑读操作与安全的环回操作（ping/trace 打向 127.0.0.1）；kill、服务
 动作等破坏性项只报告"已实现、未实测、受权限约束"，不会在探测中执行。
 
+### 审计日志
+
+破坏性操作在真实运行时（CLI 与 TUI 共用同一条路径）逐条追加写本地日志，
+一行一个 JSON（UTC 时间、用户、动作、目标、结果），被拒绝的操作同样留痕：
+
+| 动作 | 记录内容 |
+| --- | --- |
+| `process.kill` / `process.kill_many` | pid 与信号；批量 kill 记一条 |
+| `port.kill_plan` | 查询目标（`port 8080` / `process node`）、杀掉进程数 |
+| `service.action` | 服务名与动词（start / stop / …） |
+| `service.native` | 原生命令完整参数与退出码（`x capability` 的空参数探测不记录） |
+
+日志位置：Windows `%LOCALAPPDATA%\x\audit.log`；Linux
+`$XDG_STATE_HOME`（缺省 `~/.local/state`）`/x/audit.log`；macOS
+`~/Library/Application Support/x/audit.log`。环境变量 `X_AUDIT_PATH`
+指定完整路径，`X_AUDIT=off` 关闭审计。写入失败绝不影响被审计的操作。
+
 ### 交互式 TUI（`x tui` / `x ui`）
 
 - 四个页签：Ports、Processes、Network、System，1.5 秒自动刷新
@@ -167,7 +184,7 @@ GitHub Actions CI 在 Ubuntu / macOS / Windows 三平台上跑格式、clippy
 - [x] `x net addresses` 的 DHCP 标记（Windows/macOS 已接入；Linux 内核不记录地址来源，诚实留空）
 - [x] 服务：`x service logs <name> [--lines N]`（journalctl / macOS 统一日志 / Windows 事件日志）；平台原生操作逃生舱 `x service native <args>…`（systemctl / launchctl / sc 直通）
 - [x] 能力探测（`x capability`）：按平台报告各能力 支持/降级/不支持（实测环回 + 只读探测，破坏性项不执行）
-- [ ] 审计：破坏性操作（kill、服务、防火墙…）写入本地日志，便于回溯
+- [x] 审计：破坏性操作（进程 kill、端口回收、服务动作、原生逃生舱）逐条写入本地 JSON-lines 日志；`X_AUDIT_PATH` 改路径、`X_AUDIT=off` 关闭
 
 ### P1 开发者日常
 

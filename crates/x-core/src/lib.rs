@@ -36,6 +36,7 @@
 //! # }
 //! ```
 
+pub mod audit;
 pub mod capability;
 pub mod context;
 pub mod disk;
@@ -47,6 +48,7 @@ pub mod service;
 pub mod system;
 pub mod testing;
 
+pub use audit::{now_utc_rfc3339, rfc3339_utc, AuditEntry};
 pub use capability::{probe as probe_capabilities, Capability, CapabilityStatus};
 pub use context::{SystemContext, SystemContextBuilder};
 pub use disk::{walk_directory, DirUsage, DiskInfo, DiskManager, MediaType};
