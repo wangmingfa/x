@@ -154,7 +154,8 @@ fn x_in(context: &SystemContext, args: &[&str], answer: bool) -> Output {
         (Err(error), _) => {
             let mut text = format!("error: {}", error.message());
             if let Some(permission) = error.permission() {
-                text.push_str(&format!("\nhint: {}", permission.guidance()));
+                let hint = permission.platform_guidance(context.os());
+                text.push_str(&format!("\nhint: {hint}"));
             }
             let mut sink = stderr.clone();
             sink.write_all(text.as_bytes()).ok();
@@ -654,6 +655,41 @@ fn permission_errors_explain_themselves() {
     assert!(out.stdout.is_empty());
     assert!(out.stderr.contains("operation not permitted"));
     assert!(out.stderr.contains("hint:"), "no guidance offered");
+}
+
+#[test]
+fn privilege_hints_are_worded_for_the_reported_os() {
+    // One root refusal, three hosts, three different next steps.
+    let one_os = |os: x_core::system::OsFamily| {
+        let stubs = Stubs::new().with_system(
+            SystemInfo {
+                os,
+                ..SystemInfo::default()
+            },
+            CpuUsage::default(),
+            MemoryUsage::default(),
+        );
+        stubs.port.fail_with(StubFailure::denied(
+            PermissionRequirement::Root,
+            "operation not permitted",
+        ));
+        x(&stubs, &["port", "list"], false)
+    };
+
+    let linux = one_os(x_core::system::OsFamily::Linux);
+    assert!(linux.stderr.contains("sudoers"), "{}", linux.stderr);
+
+    let macos = one_os(x_core::system::OsFamily::MacOs);
+    assert!(
+        macos.stderr.contains("Privacy & Security"),
+        "{}",
+        macos.stderr
+    );
+
+    // Windows never hears "sudo" from a Unix-shaped requirement.
+    let windows = one_os(x_core::system::OsFamily::Windows);
+    assert!(windows.stderr.contains("elevated administrator console"));
+    assert!(!windows.stderr.contains("sudo"), "{}", windows.stderr);
 }
 
 #[test]

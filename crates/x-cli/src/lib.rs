@@ -257,7 +257,7 @@ pub fn run_with(context: &x_core::SystemContext, cli: Cli) -> i32 {
             code
         }
         Err(e) => {
-            report(&e, color);
+            report(&e, color, Some(context.os()));
             e.exit_code()
         }
     }
@@ -271,7 +271,7 @@ pub fn run(cli: Cli) -> i32 {
     match x_platform::create_context() {
         Ok(context) => run_with(&context, cli),
         Err(error) => {
-            report(&error, false);
+            report(&error, false, None);
             error.exit_code()
         }
     }
@@ -373,8 +373,9 @@ pub fn execute(
     dispatch(context, cli, renderer, confirmer)
 }
 
-/// Print an error the way a user can act on it, including privilege guidance.
-fn report(error: &Error, color: bool) {
+/// Print an error the way a user can act on it, including privilege guidance
+/// worded for the OS the command actually ran on.
+fn report(error: &Error, color: bool, os: Option<x_core::system::OsFamily>) {
     let mut stderr = std::io::stderr();
     let label = if color {
         "\x1b[1;31merror\x1b[0m"
@@ -383,7 +384,11 @@ fn report(error: &Error, color: bool) {
     };
     let _ = writeln!(stderr, "{label}: {}", error.message());
     if let Some(permission) = error.permission() {
-        let _ = writeln!(stderr, "hint: {}", permission.guidance());
+        let hint = match os {
+            Some(os) => permission.platform_guidance(os),
+            None => permission.guidance(),
+        };
+        let _ = writeln!(stderr, "hint: {hint}");
     }
     if let Some(source) = error.source_error() {
         let _ = writeln!(stderr, "cause: {source}");

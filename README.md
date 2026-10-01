@@ -172,6 +172,12 @@ PowerShell SslStream、类 Unix 用 openssl s_client），x 负责参数校验�
   （`port check`：端口空闲）、3 未找到、4 权限不足、5 参数错误、
   130 用户拒绝确认
 - 破坏性操作（kill、服务操作）一律先展示计划并确认
+- 提权建议按真实主机措辞：权限错误除退出码外还打印 `hint:` 一行，
+  Windows 给控制台提权路径（Win+X → Terminal (Admin)、
+  `net localgroup Administrators`），Linux 给 sudoers 补救
+  （`usermod -aG sudo $USER`），macOS 在 sudo 之外提示隐私与安全
+  （完全磁盘访问）；Unix 形状的 Root 要求在 Windows 上不会让用户
+  去敲 `sudo`
 - `--version-info` 打印适配器与契约版本
 
 ## 脚本示例
@@ -266,7 +272,7 @@ GitHub Actions CI 在 Ubuntu / macOS / Windows 三平台上跑格式、clippy
 - [x] 电源与时间：`x power battery/sleep/shutdown/reboot`、`x time / timezone / sync`
 - [x] 日志（`x logs [service|process]`）：journalctl / Event Viewer / log stream（三套体系差异大，需谨慎设计）
 - [x] 证书与网络诊断：`x cert check <host>`（Issuer/Subject/有效期/SAN/TLS）、`x http / tls / headers`；综合诊断 `x net check <host>`（DNS → TCP → TLS → 证书 → HTTP；`x doctor` 已被开发者体检占用，链式诊断改挂 net 域）
-- [ ] 权限提升细化：统一 PermissionRequired / PermissionDenied / ElevationFailed，按平台给出更具体的提权/排障建议
+- [x] 权限提升细化：统一 PermissionRequired / PermissionDenied / ElevationFailed，按平台给出更具体的提权/排障建议
 
 ### P3 高级系统能力
 

@@ -46,6 +46,52 @@ impl PermissionRequirement {
             }
         }
     }
+
+    /// Concrete next step, worded for the OS the command actually ran on.
+    ///
+    /// Adapters report the requirement *they* know about — a shared Unix
+    /// path says `Root` even when it executed on Windows through a
+    /// compatibility layer — so frontends cross-check the requirement
+    /// against the real host and fix the mismatch instead of telling a
+    /// Windows user to reach for `sudo`.
+    pub const fn platform_guidance(self, os: crate::system::OsFamily) -> &'static str {
+        use crate::system::OsFamily as Os;
+        match (self, os) {
+            (Self::None, _) => "This operation is available to all users.",
+            (Self::Administrator, Os::Windows) => {
+                "Open an elevated console (Win+X, then \"Terminal (Admin)\" or \"Windows PowerShell (Admin)\") and re-run this command. If elevation is refused, check group membership with `net localgroup Administrators`."
+            }
+            (Self::Administrator, _) => {
+                "This needs the platform's most privileged account: re-run with sudo or doas."
+            }
+            (Self::Root, Os::Windows) => {
+                "This needs an elevated administrator console (Win+X, then \"Terminal (Admin)\"); there is no root account on Windows."
+            }
+            (Self::Root, Os::Linux) => {
+                "Re-run with sudo (`sudo x ...`). If sudo says you are not in the sudoers file, an administrator must add you, e.g. `usermod -aG sudo $USER`."
+            }
+            (Self::Root, Os::MacOs) => {
+                "Re-run with sudo (`sudo x ...`). If sudo succeeds yet access is still refused, check System Settings -> Privacy & Security (e.g. Full Disk Access)."
+            }
+            (Self::Root, Os::Bsd) => {
+                "Re-run as the super user (`su -c 'x ...'`), or through doas when configured."
+            }
+            (Self::Root, Os::Other) => "Re-run as the super user (sudo, doas, or su).",
+            (Self::Elevated, Os::Windows) => {
+                "The current token lacks a privilege this operation needs: re-run from an elevated console (Win+X, then \"Terminal (Admin)\"). Controlling other users' processes requires that Administrators token."
+            }
+            (Self::Elevated, Os::Linux) => {
+                "Re-run with sudo. For a permanent fix a single capability can be granted instead (e.g. `setcap` for raw sockets or low ports)."
+            }
+            (Self::Elevated, Os::MacOs) => {
+                "Re-run with sudo; network or device operations may also need the app in System Settings -> Privacy & Security."
+            }
+            (Self::Elevated, Os::Bsd) => {
+                "Re-run as root or through doas; a sysctl or capability change may be the real fix."
+            }
+            (Self::Elevated, Os::Other) => "This operation requires elevated privileges.",
+        }
+    }
 }
 
 /// Coarse error categories used for both human output and exit codes.
@@ -248,6 +294,41 @@ mod tests {
         assert_eq!(err.kind(), ErrorKind::PermissionDenied);
         assert_eq!(err.exit_code(), 4);
         assert!(err.to_string().contains("administrator privileges"));
+    }
+
+    #[test]
+    fn platform_guidance_matches_the_real_host() {
+        use crate::system::OsFamily;
+        // A Unix-shaped requirement on Windows must not tell the user sudo.
+        let hint = PermissionRequirement::Root.platform_guidance(OsFamily::Windows);
+        assert!(!hint.contains("sudo"), "{hint}");
+        assert!(hint.contains("elevated administrator console"));
+        // The same host asked for an administrator reads as console steps.
+        let hint = PermissionRequirement::Administrator.platform_guidance(OsFamily::Windows);
+        assert!(hint.contains("net localgroup Administrators"));
+        // Linux gets the sudoers recovery path.
+        let hint = PermissionRequirement::Root.platform_guidance(OsFamily::Linux);
+        assert!(hint.contains("sudoers"));
+        // macOS adds the Privacy & Security dead end people actually hit.
+        let hint = PermissionRequirement::Root.platform_guidance(OsFamily::MacOs);
+        assert!(hint.contains("Privacy & Security"));
+        // Every cell is a real sentence, never an empty fallback.
+        for os in [
+            OsFamily::Windows,
+            OsFamily::Linux,
+            OsFamily::MacOs,
+            OsFamily::Bsd,
+            OsFamily::Other,
+        ] {
+            for req in [
+                PermissionRequirement::None,
+                PermissionRequirement::Elevated,
+                PermissionRequirement::Root,
+                PermissionRequirement::Administrator,
+            ] {
+                assert!(req.platform_guidance(os).len() > 20);
+            }
+        }
     }
 
     #[test]
