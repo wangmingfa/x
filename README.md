@@ -156,6 +156,9 @@ cargo clippy --all-targets --all-features
 cargo test --workspace
 ```
 
+提交前跑本地 CI 检查（Format / Clippy / Test，对应 `ci.yml`）：
+`scripts/check.sh`（bash）或 `scripts/check.ps1`（Windows PowerShell）。
+
 交叉编译检查：
 
 ```sh
