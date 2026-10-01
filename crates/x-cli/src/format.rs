@@ -339,6 +339,11 @@ impl Renderer {
         writeln!(self.out, "{}", text.as_ref())
     }
 
+    /// Write raw bytes verbatim, bypassing format handling (completion scripts).
+    pub fn raw(&mut self, bytes: &[u8]) -> io::Result<()> {
+        self.out.write_all(bytes)
+    }
+
     /// Flush the underlying sink.
     pub fn flush(&mut self) -> io::Result<()> {
         self.out.flush()

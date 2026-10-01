@@ -12,6 +12,7 @@ authors.workspace = true
 x-core = { workspace = true }
 x-platform = { workspace = true }
 clap = { workspace = true }
+clap_complete = "4"
 serde = { workspace = true }
 serde_json = { workspace = true }
 unicode-width = { workspace = true }
