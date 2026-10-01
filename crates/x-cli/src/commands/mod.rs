@@ -15,6 +15,7 @@ pub mod firewall;
 pub mod gitcmd;
 pub mod hosts;
 pub mod logs;
+pub mod manpage;
 pub mod mount;
 pub mod net;
 pub mod netdiag;

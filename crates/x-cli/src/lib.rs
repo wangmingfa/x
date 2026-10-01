@@ -193,6 +193,9 @@ pub enum Command {
     /// Generate a shell completion script (bash/zsh/fish/powershell/elvish).
     Completion(commands::completion::CompletionArgs),
 
+    /// Generate roff man pages from the CLI grammar.
+    Man(commands::manpage::ManArgs),
+
     /// Firewall state and port rules.
     #[command(subcommand)]
     Firewall(commands::firewall::FirewallCommand),
@@ -388,6 +391,7 @@ fn dispatch(
             commands::schedule::dispatch(context, renderer, confirmer, cmd)
         }
         Some(Command::Completion(args)) => commands::completion::dispatch(context, renderer, args),
+        Some(Command::Man(args)) => commands::manpage::dispatch(context, renderer, args),
         Some(Command::Firewall(cmd)) => {
             commands::firewall::dispatch(context, renderer, confirmer, cmd)
         }
