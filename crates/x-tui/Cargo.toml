@@ -12,4 +12,5 @@ authors.workspace = true
 x-core = { workspace = true }
 crossterm = { workspace = true }
 ratatui = { workspace = true }
+serde_json = { workspace = true }
 unicode-width = { workspace = true }

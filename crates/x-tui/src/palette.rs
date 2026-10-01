@@ -115,6 +115,7 @@ fn goto_label(view: View) -> &'static str {
         View::Services => "go to services",
         View::System => "go to system",
         View::Disks => "go to disks",
+        View::Remote => "go to remote hosts",
     }
 }
 
@@ -128,6 +129,7 @@ fn goto_hint(view: View) -> &'static str {
         View::Services => "5",
         View::System => "6",
         View::Disks => "7",
+        View::Remote => "8",
     }
 }
 
@@ -152,7 +154,7 @@ mod tests {
             .map(|command| command.hint)
             .collect();
         hints.sort_unstable();
-        assert_eq!(hints, ["1", "2", "3", "4", "5", "6", "7"]);
+        assert_eq!(hints, ["1", "2", "3", "4", "5", "6", "7", "8"]);
     }
 
     #[test]

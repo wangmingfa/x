@@ -131,7 +131,7 @@ fn view_cycles_and_wraps_in_both_directions() {
     assert_eq!(app.view(), View::Dashboard);
 
     app.on_key(key(KeyCode::Left));
-    assert_eq!(app.view(), View::Disks, "left from the first page wraps");
+    assert_eq!(app.view(), View::Remote, "left from the first page wraps");
     app.on_key(key(KeyCode::Right));
     assert_eq!(app.view(), View::Dashboard, "right from the last wraps");
 }
@@ -369,6 +369,9 @@ fn every_page_refreshes_its_own_capability() {
             View::System => 0,
             // The walker thread has not reported inside the test.
             View::Disks => 0,
+            // The remote page lists whatever hosts ~/.ssh/config exposes; the
+            // count is environment-dependent but must match what was loaded.
+            View::Remote => app.remote_hosts().len(),
         };
         assert_eq!(app.rows(), expected, "{view:?}");
     }

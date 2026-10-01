@@ -2035,6 +2035,7 @@ version = "0.1.0"
 dependencies = [
  "crossterm",
  "ratatui",
+ "serde_json",
  "unicode-width",
  "x-core",
 ]

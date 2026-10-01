@@ -66,6 +66,7 @@ fn body(frame: &mut Frame, app: &mut App, area: Rect) {
         View::Services => services(frame, app, area),
         View::System => system(frame, app, area),
         View::Disks => disks(frame, app, area),
+        View::Remote => remote(frame, app, area),
     }
 }
 
@@ -674,9 +675,71 @@ fn status(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
+/// The remote page: pick an SSH host, then its read-only snapshot.
+fn remote(frame: &mut Frame, app: &App, area: Rect) {
+    let theme = crate::theme::current();
+    let mut lines: Vec<Line> = Vec::new();
+
+    if let Some(host) = app.remote_host() {
+        lines.push(Line::styled(
+            format!("snapshot from {host}"),
+            theme.accent(true),
+        ));
+        if let Some(error) = app.remote_error() {
+            lines.push(Line::styled(error.to_string(), theme.danger()));
+        }
+        for row in app.remote_rows() {
+            lines.push(Line::styled(row.clone(), theme.text()));
+        }
+        lines.push(Line::styled(
+            "esc: back to host list".to_string(),
+            theme.dim(),
+        ));
+    } else {
+        lines.push(Line::styled(
+            "hosts from ~/.ssh/config — enter fetches a read-only snapshot:",
+            theme.warning(),
+        ));
+        if app.remote_hosts().is_empty() {
+            lines.push(Line::styled(
+                "  (none found; add hosts to ~/.ssh/config or use `x remote connect`)",
+                theme.dim(),
+            ));
+        }
+        for (index, host) in app.remote_hosts().iter().enumerate() {
+            let selected = index == app.selected();
+            let marker = if selected { "> " } else { "  " };
+            lines.push(Line::styled(
+                format!("{marker}{host}"),
+                if selected {
+                    theme.accent(true)
+                } else {
+                    theme.text()
+                },
+            ));
+        }
+        if app.remote_fetching() {
+            lines.push(Line::styled("fetching…", theme.dim()));
+        }
+        if let Some(error) = app.remote_error() {
+            lines.push(Line::styled(error.to_string(), theme.danger()));
+        }
+    }
+
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" remote ")
+                .style(theme.text()),
+        ),
+        area,
+    );
+}
+
 fn footer(frame: &mut Frame, app: &App, area: Rect) {
     let keys = match app.view() {
-        View::Dashboard => "1-7 pages   / search   ctrl+p commands   r refresh   q quit",
+        View::Dashboard => "1-8 pages   / search   ctrl+p commands   r refresh   q quit",
         View::Ports => "enter details   k kill   / search   f filter   r refresh   q quit",
         View::Processes => {
             if app.tree_mode() {
@@ -689,6 +752,7 @@ fn footer(frame: &mut Frame, app: &App, area: Rect) {
         View::Services => "enter details   / search   f filter   r refresh   q quit",
         View::System => "/ search   ctrl+p commands   r refresh   q quit",
         View::Disks => "enter fold   / search   ctrl+p commands   r refresh   q quit",
+        View::Remote => "enter fetch snapshot   up/down choose host   r refresh   q quit",
     };
     frame.render_widget(
         Paragraph::new(keys).style(crate::theme::current().dim()),

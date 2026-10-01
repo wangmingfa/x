@@ -27,6 +27,7 @@ pub mod port;
 pub mod powertime;
 pub mod proxy;
 pub mod ps;
+pub mod remote;
 pub mod schedule;
 pub mod service;
 pub mod shell;

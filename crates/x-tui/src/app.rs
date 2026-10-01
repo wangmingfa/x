@@ -50,11 +50,13 @@ pub enum View {
     System,
     /// Mounted filesystems and a usage tree of the launch directory.
     Disks,
+    /// Snapshots from another machine that runs x, over SSH.
+    Remote,
 }
 
 impl View {
     /// Every view, for tab cycling.
-    pub const ALL: [View; 7] = [
+    pub const ALL: [View; 8] = [
         View::Dashboard,
         View::Ports,
         View::Processes,
@@ -62,6 +64,7 @@ impl View {
         View::Services,
         View::System,
         View::Disks,
+        View::Remote,
     ];
 
     /// Sidebar label.
@@ -74,6 +77,7 @@ impl View {
             Self::Services => "services",
             Self::System => "system",
             Self::Disks => "disks",
+            Self::Remote => "remote",
         }
     }
 
@@ -293,6 +297,17 @@ pub struct App {
     cpu: f32,
     /// How many rows the table body currently fits, updated while drawing.
     visible_rows: usize,
+
+    /// SSH hosts the remote page can jump to (from `~/.ssh/config`).
+    remote_hosts: Vec<String>,
+    /// Host whose snapshot is currently displayed, if any.
+    remote_host: Option<String>,
+    /// Snapshot rows, already rendered to text.
+    remote_rows: Vec<String>,
+    /// Error from the last remote fetch, shown in place of data.
+    remote_error: Option<String>,
+    /// Mailbox of the in-flight remote fetch; `None` once collected.
+    remote_fetch: Option<Arc<Mutex<Option<RemoteFetch>>>>,
 }
 
 impl App {
@@ -335,9 +350,54 @@ impl App {
             last_refresh: std::time::Instant::now(),
             cpu: 0.0,
             visible_rows: DEFAULT_VISIBLE_ROWS,
+            remote_hosts: Vec::new(),
+            remote_host: None,
+            remote_rows: Vec::new(),
+            remote_error: None,
+            remote_fetch: None,
         };
+        app.load_remote_hosts();
         app.refresh();
         app
+    }
+
+    /// SSH hosts the remote page offers, from `~/.ssh/config`.
+    fn load_remote_hosts(&mut self) {
+        let home = ["HOME", "USERPROFILE"]
+            .iter()
+            .find_map(|name| std::env::var(name).ok())
+            .unwrap_or_default();
+        let overview = x_core::sshcfg::overview(std::path::Path::new(&home));
+        self.remote_hosts = overview
+            .hosts
+            .iter()
+            .map(|host| host.name.clone())
+            .collect();
+    }
+
+    /// Hosts shown on the remote page.
+    pub fn remote_hosts(&self) -> &[String] {
+        &self.remote_hosts
+    }
+
+    /// Host whose snapshot is currently displayed.
+    pub fn remote_host(&self) -> Option<&str> {
+        self.remote_host.as_deref()
+    }
+
+    /// Snapshot rows, already rendered to text.
+    pub fn remote_rows(&self) -> &[String] {
+        &self.remote_rows
+    }
+
+    /// Error from the last remote fetch, if any.
+    pub fn remote_error(&self) -> Option<&str> {
+        self.remote_error.as_deref()
+    }
+
+    /// Whether a snapshot fetch is in flight.
+    pub fn remote_fetching(&self) -> bool {
+        self.remote_fetch.is_some()
     }
 
     /// Borrow the context, e.g. for tests.
@@ -494,6 +554,7 @@ impl App {
             View::Services => self.refresh_services(),
             View::System => self.refresh_system(),
             View::Disks => self.refresh_disks(),
+            View::Remote => self.refresh_remote(),
         };
         if let Err(error) = result {
             self.status = error.message().to_string();
@@ -595,6 +656,60 @@ impl App {
         self.disks = self.context.disk.list()?;
         self.start_scan();
         Ok(())
+    }
+
+    /// Collect a finished remote fetch, if any. The fetch itself runs on a
+    /// helper thread (ssh blocks), so this only harvests the shared slot.
+    fn refresh_remote(&mut self) -> Result<()> {
+        if let Some(fetch) = &self.remote_fetch {
+            let finished = fetch.lock().ok().and_then(|mut slot| slot.take());
+            if let Some(finished) = finished {
+                self.remote_fetch = None;
+                match finished.outcome {
+                    Ok(rows) => {
+                        self.remote_rows = rows;
+                        self.remote_error = None;
+                        self.remote_host = Some(finished.host);
+                        self.selected = 0;
+                        self.scroll = 0;
+                    }
+                    Err(error) => {
+                        self.remote_error = Some(error);
+                        self.remote_rows.clear();
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Start a snapshot fetch for the selected SSH host on a helper thread.
+    ///
+    /// Read-only by construction: the remote command is `x port list --json`
+    /// plus `x ps list --json` — nothing on the wire can mutate either end.
+    fn start_remote_fetch(&mut self) {
+        if self.remote_fetch.is_some() {
+            return; // one fetch at a time
+        }
+        let Some(host) = self
+            .remote_hosts
+            .get(self.selected.min(self.remote_hosts.len().saturating_sub(1)))
+            .cloned()
+        else {
+            self.remote_error = Some("no SSH hosts found in ~/.ssh/config".to_string());
+            return;
+        };
+        self.remote_error = None;
+        self.remote_rows.clear();
+        self.status = format!("fetching snapshot from {host}…");
+        let slot: Arc<Mutex<Option<RemoteFetch>>> = Arc::new(Mutex::new(None));
+        self.remote_fetch = Some(slot.clone());
+        std::thread::spawn(move || {
+            let outcome = fetch_remote_snapshot(&host);
+            if let Ok(mut guard) = slot.lock() {
+                *guard = Some(RemoteFetch { host, outcome });
+            }
+        });
     }
 
     /// Walk the usage root once per session on a helper thread.
@@ -780,6 +895,16 @@ impl App {
             }
         }
         match key.code {
+            // On the remote page, Esc steps back from a snapshot to the host
+            // list before it quits.
+            KeyCode::Esc if self.view == View::Remote && self.remote_host.is_some() => {
+                self.remote_host = None;
+                self.remote_rows.clear();
+                self.remote_error = None;
+                self.remote_fetch = None;
+                self.selected = 0;
+                self.scroll = 0;
+            }
             KeyCode::Char('q') | KeyCode::Esc => self.quit = true,
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => self.quit = true,
             KeyCode::Char('c') => self.confirm_kill_selection(),
@@ -1240,6 +1365,14 @@ impl App {
             View::Services => self.services.len(),
             View::System => 0,
             View::Disks => self.usage_tree().len(),
+            View::Remote => {
+                // Host list until a snapshot is shown, then the snapshot rows.
+                if self.remote_host.is_some() || self.remote_error.is_some() {
+                    self.remote_rows.len()
+                } else {
+                    self.remote_hosts.len()
+                }
+            }
         }
     }
 
@@ -1332,6 +1465,7 @@ impl App {
             View::Processes => self.open_process_detail(),
             View::Services => self.open_service_detail(),
             View::Disks => self.toggle_collapse(),
+            View::Remote => self.start_remote_fetch(),
             _ => {}
         }
     }
@@ -1552,6 +1686,96 @@ fn append_process_detail(rows: &mut Vec<(String, String)>, info: &ProcessInfo) {
             }
         }
     }
+}
+
+/// Result of an in-flight remote fetch, parked for `on_tick` to collect.
+struct RemoteFetch {
+    /// Host the snapshot came from.
+    host: String,
+    /// Rendered snapshot rows, or why the fetch failed.
+    outcome: std::result::Result<Vec<String>, String>,
+}
+
+/// Pull a read-only snapshot from a remote host over SSH.
+///
+/// Runs the remote x in JSON mode and renders the rows locally, so the page
+/// needs no protocol beyond ssh itself. Everything here is read-only: two
+/// `list` invocations, nothing else.
+fn fetch_remote_snapshot(host: &str) -> std::result::Result<Vec<String>, String> {
+    let mut rows = vec![format!("host: {host}")];
+    rows.extend(remote_list(
+        host,
+        &["port", "list", "--json", "--limit", "30"],
+        "sockets (top 30)",
+        |row| {
+            let port = row.get("local_port").and_then(|v| v.as_u64()).unwrap_or(0);
+            let proto = row
+                .get("protocol")
+                .and_then(|v| v.as_str())
+                .unwrap_or("tcp");
+            let state = row
+                .get("state")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            let process = row
+                .get("process_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("-");
+            format!("  {port:>5} {proto:<4} {state:<12} {process}")
+        },
+    )?);
+    rows.extend(remote_list(
+        host,
+        &["ps", "list", "--json", "--limit", "15"],
+        "processes (top 15 by cpu)",
+        |row| {
+            let pid = row.get("pid").and_then(|v| v.as_u64()).unwrap_or(0);
+            let name = row.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+            let cpu = row.get("cpu_usage").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            format!("  {pid:>7}  {cpu:>5.1}%  {name}")
+        },
+    )?);
+    Ok(rows)
+}
+
+/// Run one read-only `x … --json` on `host` and render each record.
+fn remote_list(
+    host: &str,
+    args: &[&str],
+    title: &str,
+    render: impl Fn(&serde_json::Value) -> String,
+) -> std::result::Result<Vec<String>, String> {
+    let output = std::process::Command::new("ssh")
+        .arg(host)
+        .arg("--")
+        .arg("x")
+        .args(args)
+        .output()
+        .map_err(|e| format!("ssh failed: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(format!(
+            "{title}: remote x failed: {}",
+            if stderr.is_empty() {
+                "non-zero exit"
+            } else {
+                &stderr
+            }
+        ));
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value =
+        serde_json::from_str(text.trim()).map_err(|e| format!("{title}: bad JSON: {e}"))?;
+    let empty = Vec::new();
+    let records = parsed.as_array().unwrap_or(&empty);
+    let mut rows = vec![title.to_string()];
+    if records.is_empty() {
+        rows.push("  (none)".to_string());
+    }
+    for record in records {
+        rows.push(render(record));
+    }
+    Ok(rows)
 }
 
 #[cfg(test)]

@@ -211,6 +211,10 @@ pub enum Command {
     #[command(external_subcommand)]
     External(Vec<String>),
 
+    /// Talk to another machine that runs x.
+    #[command(subcommand)]
+    Remote(commands::remote::RemoteCommand),
+
     /// Firewall state and port rules.
     #[command(subcommand)]
     Firewall(commands::firewall::FirewallCommand),
@@ -433,6 +437,7 @@ fn dispatch(
             let (name, rest) = words.split_first().expect("clap guarantees one token");
             commands::plugins::run_external(renderer, name, rest)
         }
+        Some(Command::Remote(cmd)) => commands::remote::dispatch(context, renderer, cmd),
         Some(Command::Firewall(cmd)) => {
             commands::firewall::dispatch(context, renderer, confirmer, cmd)
         }
