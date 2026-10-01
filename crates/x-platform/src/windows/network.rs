@@ -213,6 +213,19 @@ impl NetworkManager for WindowsNetwork {
     ) -> Result<Vec<x_core::network::TraceHop>> {
         super::netprobe::trace(address, max_hops, timeout_ms)
     }
+
+    fn tls_info(&self, host: &str, port: u16, timeout_ms: u64) -> Result<x_core::netdiag::TlsInfo> {
+        crate::common::netdiag::tls_info(host, port, timeout_ms)
+    }
+
+    fn http_probe(
+        &self,
+        url: &str,
+        method: &str,
+        timeout_ms: u64,
+    ) -> Result<x_core::netdiag::HttpResponse> {
+        crate::common::netdiag::http_probe(url, method, timeout_ms)
+    }
 }
 
 /// Cumulative byte counters for one interface, from `GetIfEntry2`.

@@ -183,6 +183,19 @@ pub enum Command {
     /// The system log: journal / Event Log / unified log, read-only.
     #[command(subcommand)]
     Logs(commands::logs::LogsCommand),
+
+    /// Certificate facts for a host (TLS handshake through platform tools).
+    #[command(subcommand)]
+    Cert(commands::netdiag::CertCommand),
+
+    /// Negotiated TLS protocol and cipher for a host.
+    Tls(commands::netdiag::TlsArgs),
+
+    /// One HTTP request through the platform's HTTP client.
+    Http(commands::netdiag::HttpArgs),
+
+    /// Response headers of one HTTP request.
+    Headers(commands::netdiag::HttpArgs),
 }
 
 /// Signal to deliver to a process.
@@ -337,6 +350,12 @@ fn dispatch(
             commands::firewall::dispatch(context, renderer, confirmer, cmd)
         }
         Some(Command::Logs(cmd)) => commands::logs::dispatch(context, renderer, cmd),
+        Some(Command::Cert(cmd)) => commands::netdiag::dispatch_cert(context, renderer, cmd),
+        Some(Command::Tls(args)) => commands::netdiag::dispatch_tls(context, renderer, args),
+        Some(Command::Http(args)) => commands::netdiag::dispatch_http(context, renderer, args),
+        Some(Command::Headers(args)) => {
+            commands::netdiag::dispatch_headers(context, renderer, args)
+        }
     }
 }
 

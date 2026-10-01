@@ -62,6 +62,7 @@ cargo build -p x-app
 | `x net reverse <ip>` | 反向解析：地址 → 主机名 |
 | `x net ping <host>` | ICMP 连通性（`--count` / `--timeout`），输出 min/avg/max |
 | `x net trace <host>` | 逐跳路径（`--max-hops` / `--timeout`），原生 ICMP，不依赖 tracert |
+| `x net check <host>` | 链式诊断：DNS → TCP → TLS → 证书 → HTTP，任一环失败如实标注 |
 
 ### 磁盘（`x disk`）
 
@@ -108,6 +109,22 @@ cargo build -p x-app
 数据源为各平台原生工具的结构化输出（`journalctl -o json` /
 `Get-WinEvent` + `ConvertTo-Json` / `log show --style json`），不做文本
 刮取；新→旧排序，默认 50 条。
+
+### 证书与网络诊断（`x cert` / `x tls` / `x http` / `x net check`）
+
+| 命令 | 说明 |
+| --- | --- |
+| `x cert check <host> [--port 443] [--timeout N]` | TLS 证书：协议、加密套件、Subject/Issuer、有效期、SAN、链校验结果 |
+| `x tls <host> [--port] [--timeout]` | TLS 会话概况（协议 / 套件 / 信任），不展开证书字段 |
+| `x http <url> [--method GET] [--timeout N]` | HTTP 探测：状态码、版本、总耗时、远端 IP、字节数 |
+| `x headers <url> [--method] [--timeout]` | 响应头逐行展示 + 状态与耗时 |
+| `x net check <host> [--port] [--timeout]` | DNS → TCP → TLS → 证书 → HTTP 逐环诊断，✓/!/✗ 三态，后环拿不到前环结果时如实标 skipped |
+
+不自带 TLS/HTTP 栈：探测交给平台工具（curl 三平台、Windows 用
+PowerShell SslStream、类 Unix 用 openssl s_client），x 负责参数校验、
+输出结构化与退出码归因（如 curl 超时 → 6、拒绝连接 → 3）。全部是网络
+读操作，不写审计。链式诊断取 `x net check` 而非路线图里的
+`x doctor <host>`，因为 `x doctor` 已用于开发者体检。
 
 ### 能力探测（`x capability`）
 
@@ -248,7 +265,7 @@ GitHub Actions CI 在 Ubuntu / macOS / Windows 三平台上跑格式、clippy
 - [x] 主机名（`x hosts list/get/add/remove`）：统一 /etc/hosts 与 Windows hosts
 - [x] 电源与时间：`x power battery/sleep/shutdown/reboot`、`x time / timezone / sync`
 - [x] 日志（`x logs [service|process]`）：journalctl / Event Viewer / log stream（三套体系差异大，需谨慎设计）
-- [ ] 证书与网络诊断：`x cert check/<host>`（Issuer/Subject/有效期/SAN/TLS）、`x http / tls / headers`；综合诊断 `x doctor <host>`（DNS → TCP → TLS → 证书 → HTTP）
+- [x] 证书与网络诊断：`x cert check <host>`（Issuer/Subject/有效期/SAN/TLS）、`x http / tls / headers`；综合诊断 `x net check <host>`（DNS → TCP → TLS → 证书 → HTTP；`x doctor` 已被开发者体检占用，链式诊断改挂 net 域）
 - [ ] 权限提升细化：统一 PermissionRequired / PermissionDenied / ElevationFailed，按平台给出更具体的提权/排障建议
 
 ### P3 高级系统能力

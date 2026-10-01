@@ -898,3 +898,157 @@ fn logs_without_the_capability_is_unsupported() {
     let out = x_in(&stub_context(), &["logs", "system"], false);
     assert_eq!(out.code, ErrorKind::Unsupported.exit_code());
 }
+
+/// A TLS stub that answers like a verified handshake.
+fn stub_tls() -> x_core::netdiag::TlsInfo {
+    x_core::netdiag::TlsInfo {
+        host: String::new(),
+        port: 0,
+        protocol: Some("TLSv1.3".into()),
+        cipher: None,
+        subject: Some("CN=example.com".into()),
+        issuer: Some("CN=Example CA".into()),
+        not_before: Some("2026-01-01T00:00:00Z".into()),
+        not_after: Some("2026-12-31T23:59:59Z".into()),
+        san: vec!["DNS:example.com".into(), "DNS:www.example.com".into()],
+        verified: Some(true),
+        verify_detail: None,
+    }
+}
+
+fn stub_response(status: u16) -> x_core::netdiag::HttpResponse {
+    x_core::netdiag::HttpResponse {
+        url: String::new(),
+        status: Some(status),
+        http_version: Some("HTTP/2".into()),
+        headers: vec![("server".into(), "nginx".into())],
+        time_total_ms: Some(42.0),
+        remote_ip: Some("203.0.113.5".into()),
+        bytes: Some(1234),
+    }
+}
+
+fn stubs_with_probes(status: u16) -> Stubs {
+    Stubs::new().with_net_probes(
+        Some(vec!["203.0.113.5".parse().expect("ip")]),
+        Some(stub_tls()),
+        Some(stub_response(status)),
+    )
+}
+
+#[test]
+fn cert_check_shows_what_the_probe_answered() {
+    let stubs = stubs_with_probes(200);
+
+    let out = x(&stubs, &["cert", "check", "example.com"], false);
+    assert_eq!(out.code, 0);
+    assert!(out.stdout.contains("TLSv1.3"), "{}", out.stdout);
+    assert!(out.stdout.contains("CN=Example CA"));
+    assert!(out.stdout.contains("www.example.com"));
+    assert!(
+        !out.stdout.contains("cipher"),
+        "a field the tool did not print stays out: {}",
+        out.stdout
+    );
+
+    let json = x(
+        &stubs,
+        &["--json", "tls", "example.com", "--port", "8443"],
+        false,
+    );
+    let value: serde_json::Value = serde_json::from_str(&json.stdout).expect("valid json");
+    assert_eq!(value["host"], "example.com");
+    assert_eq!(value["port"], 8443);
+    assert_eq!(value["verified"], true);
+}
+
+#[test]
+fn http_and_headers_share_the_probe() {
+    let stubs = stubs_with_probes(404);
+
+    let http = x(
+        &stubs,
+        &["--json", "http", "https://example.com/missing"],
+        false,
+    );
+    let value: serde_json::Value = serde_json::from_str(&http.stdout).expect("valid json");
+    assert_eq!(value["status"], 404);
+    assert_eq!(value["url"], "https://example.com/missing");
+
+    let headers = x(&stubs, &["headers", "https://example.com"], false);
+    assert!(headers.stdout.contains("server"), "{}", headers.stdout);
+    assert!(headers.stdout.contains("nginx"));
+    assert!(headers.stdout.contains("status 404"));
+
+    let bad = x(&stubs, &["http", "example.com"], false);
+    assert_eq!(bad.code, ErrorKind::InvalidInput.exit_code());
+}
+
+#[test]
+fn net_check_walks_the_chain_and_exits_clean_when_every_stage_passes() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+
+    let out = x(
+        &stubs_with_probes(200),
+        &[
+            "--json",
+            "net",
+            "check",
+            "127.0.0.1",
+            "--port",
+            &port.to_string(),
+        ],
+        false,
+    );
+    assert_eq!(out.code, 0, "stdout={} stderr={}", out.stdout, out.stderr);
+    let value: serde_json::Value = serde_json::from_str(&out.stdout).expect("valid json");
+    let steps = value.as_array().expect("array");
+    let stages: Vec<&str> = steps
+        .iter()
+        .map(|step| step["stage"].as_str().expect("stage"))
+        .collect();
+    assert_eq!(stages, ["dns", "tcp", "tls", "cert", "http"]);
+    assert!(steps
+        .iter()
+        .all(|step| step["verdict"].as_str() == Some("ok")
+            || step["verdict"].as_str() == Some("warn")));
+    // The literal address skipped the resolver and spoke HTTP on the odd port.
+    assert!(steps[0]["detail"].as_str().expect("d").contains("literal"));
+}
+
+#[test]
+fn net_check_reports_a_closed_port_and_skips_dependent_stages() {
+    // Port 1 on 127.0.0.1 is bound by nothing; connect refuses instantly.
+    let out = x(
+        &stubs_with_probes(200),
+        &["--json", "net", "check", "127.0.0.1", "--port", "1"],
+        false,
+    );
+    assert_eq!(out.code, 1);
+    let value: serde_json::Value = serde_json::from_str(&out.stdout).expect("valid json");
+    let steps = value.as_array().expect("array");
+    assert_eq!(steps[1]["stage"], "tcp");
+    assert_eq!(steps[1]["verdict"], "fail");
+    assert_eq!(steps[2]["verdict"], "fail");
+    assert!(steps[2]["detail"]
+        .as_str()
+        .expect("d")
+        .starts_with("skipped:"));
+    assert_eq!(steps.last().expect("last")["stage"], "http");
+}
+
+#[test]
+fn netdiag_without_the_probes_is_unsupported() {
+    let out = x_in(&stub_context(), &["cert", "check", "example.com"], false);
+    assert_eq!(out.code, ErrorKind::Unsupported.exit_code());
+    let out = x_in(&stub_context(), &["http", "https://example.com"], false);
+    assert_eq!(out.code, ErrorKind::Unsupported.exit_code());
+    let out = x_in(
+        &stub_context(),
+        &["net", "check", "127.0.0.1", "--port", "1"],
+        false,
+    );
+    // dns warn, tcp skipped, ... still a report, exit 1 because stages failed.
+    assert_eq!(out.code, 1);
+}

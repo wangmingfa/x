@@ -460,6 +460,9 @@ pub struct StubNetwork {
     addresses: Vec<AddressInfo>,
     routes: Vec<RouteInfo>,
     dns: DnsConfig,
+    resolved: Option<Vec<std::net::IpAddr>>,
+    tls: Option<crate::netdiag::TlsInfo>,
+    response: Option<crate::netdiag::HttpResponse>,
 }
 
 impl StubNetwork {
@@ -475,7 +478,23 @@ impl StubNetwork {
             addresses,
             routes,
             dns,
+            resolved: None,
+            tls: None,
+            response: None,
         }
+    }
+
+    /// Canned answers for the resolve / TLS / HTTP probes.
+    pub fn with_probes(
+        mut self,
+        resolved: Option<Vec<std::net::IpAddr>>,
+        tls: Option<crate::netdiag::TlsInfo>,
+        response: Option<crate::netdiag::HttpResponse>,
+    ) -> Self {
+        self.resolved = resolved;
+        self.tls = tls;
+        self.response = response;
+        self
     }
 }
 
@@ -494,6 +513,41 @@ impl NetworkManager for StubNetwork {
 
     fn dns(&self) -> Result<DnsConfig> {
         Ok(self.dns.clone())
+    }
+
+    fn resolve(&self, _host: &str) -> Result<Vec<std::net::IpAddr>> {
+        match &self.resolved {
+            Some(rows) => Ok(rows.clone()),
+            None => Err(crate::Error::unsupported("stub cannot resolve")),
+        }
+    }
+
+    fn tls_info(&self, host: &str, port: u16, _timeout_ms: u64) -> Result<crate::netdiag::TlsInfo> {
+        match &self.tls {
+            Some(info) => {
+                let mut info = info.clone();
+                info.host = host.to_string();
+                info.port = port;
+                Ok(info)
+            }
+            None => Err(crate::Error::unsupported("stub cannot probe TLS")),
+        }
+    }
+
+    fn http_probe(
+        &self,
+        url: &str,
+        _method: &str,
+        _timeout_ms: u64,
+    ) -> Result<crate::netdiag::HttpResponse> {
+        match &self.response {
+            Some(response) => {
+                let mut response = response.clone();
+                response.url = url.to_string();
+                Ok(response)
+            }
+            None => Err(crate::Error::unsupported("stub cannot probe HTTP")),
+        }
     }
 }
 
@@ -859,6 +913,21 @@ impl Stubs {
     pub fn with_logs(self, source: &str, entries: Vec<crate::logs::LogEntry>) -> Self {
         Self {
             logs: std::sync::Arc::new(StubLogs::new(source, entries)),
+            ..self
+        }
+    }
+
+    /// Canned DNS / TLS / HTTP probe answers on the network capability.
+    pub fn with_net_probes(
+        self,
+        resolved: Option<Vec<std::net::IpAddr>>,
+        tls: Option<crate::netdiag::TlsInfo>,
+        response: Option<crate::netdiag::HttpResponse>,
+    ) -> Self {
+        Self {
+            network: std::sync::Arc::new(
+                StubNetwork::default().with_probes(resolved, tls, response),
+            ),
             ..self
         }
     }

@@ -3,7 +3,7 @@
 //! `/etc/resolv.conf` for the resolver configuration, and the shared POSIX
 //! probes for resolution, ping and traceroute.
 
-use crate::common::{ifaddrs, netprobe};
+use crate::common::{ifaddrs, netdiag, netprobe};
 use std::net::IpAddr;
 use x_core::error::{Error, Result};
 use x_core::network::{
@@ -101,6 +101,19 @@ impl NetworkManager for LinuxNetwork {
 
     fn trace(&self, address: IpAddr, max_hops: u32, timeout_ms: u32) -> Result<Vec<TraceHop>> {
         netprobe::trace(address, max_hops, timeout_ms)
+    }
+
+    fn tls_info(&self, host: &str, port: u16, timeout_ms: u64) -> Result<x_core::netdiag::TlsInfo> {
+        netdiag::tls_info(host, port, timeout_ms)
+    }
+
+    fn http_probe(
+        &self,
+        url: &str,
+        method: &str,
+        timeout_ms: u64,
+    ) -> Result<x_core::netdiag::HttpResponse> {
+        netdiag::http_probe(url, method, timeout_ms)
     }
 }
 

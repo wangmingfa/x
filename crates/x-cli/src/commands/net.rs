@@ -48,6 +48,9 @@ pub enum NetCommand {
         host: String,
     },
 
+    /// End-to-end diagnosis of one host: DNS → TCP → TLS → cert → HTTP.
+    Check(crate::commands::netdiag::CheckArgs),
+
     /// Reverse resolution: address to host name.
     Reverse {
         /// Address to look up.
@@ -93,6 +96,9 @@ pub fn dispatch(
         NetCommand::Flush => flush(context, renderer),
         NetCommand::Connections { process, port } => connections(context, renderer, process, port),
         NetCommand::Resolve { host } => resolve(context, renderer, host),
+        NetCommand::Check(args) => {
+            crate::commands::netdiag::dispatch_check(context, renderer, args)
+        }
         NetCommand::Reverse { address } => reverse(context, renderer, *address),
         NetCommand::Ping {
             host,

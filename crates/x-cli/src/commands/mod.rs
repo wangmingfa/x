@@ -12,6 +12,7 @@ pub mod hosts;
 pub mod logs;
 pub mod mount;
 pub mod net;
+pub mod netdiag;
 pub mod permission;
 pub mod port;
 pub mod powertime;

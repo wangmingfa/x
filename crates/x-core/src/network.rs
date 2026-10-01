@@ -180,6 +180,35 @@ pub trait NetworkManager: Send + Sync {
             "this platform adapter cannot trace routes",
         ))
     }
+
+    /// TLS facts for `host:port`, read from the platform's own TLS client.
+    ///
+    /// Adapters without a usable TLS tool report `unsupported` rather than
+    /// pretending the handshake happened.
+    fn tls_info(
+        &self,
+        host: &str,
+        port: u16,
+        timeout_ms: u64,
+    ) -> crate::error::Result<crate::netdiag::TlsInfo> {
+        let _ = (host, port, timeout_ms);
+        Err(crate::Error::unsupported(
+            "this platform adapter cannot probe TLS",
+        ))
+    }
+
+    /// Perform one HTTP request through the platform's HTTP client.
+    fn http_probe(
+        &self,
+        url: &str,
+        method: &str,
+        timeout_ms: u64,
+    ) -> crate::error::Result<crate::netdiag::HttpResponse> {
+        let _ = (url, method, timeout_ms);
+        Err(crate::Error::unsupported(
+            "this platform adapter cannot probe HTTP",
+        ))
+    }
 }
 
 /// One `x net ping` invocation.

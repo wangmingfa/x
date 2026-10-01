@@ -51,6 +51,7 @@ pub mod gitcmd;
 pub mod hostsfile;
 pub mod logs;
 pub mod mount;
+pub mod netdiag;
 pub mod network;
 pub mod pathperm;
 pub mod port;
