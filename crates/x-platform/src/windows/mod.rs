@@ -11,6 +11,7 @@
 //!    for ping/trace, so no locale-sensitive command output is parsed.
 
 pub(crate) mod buffer;
+pub mod disk;
 pub(crate) mod netprobe;
 pub mod network;
 pub mod port;

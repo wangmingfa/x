@@ -4,10 +4,11 @@
 
 use super::buffer::AlignedBuffer;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use windows_sys::Win32::Foundation::NO_ERROR;
 use windows_sys::Win32::NetworkManagement::IpHelper::{
-    FreeMibTable, GetAdaptersAddresses, GetIpForwardTable2, GAA_FLAG_INCLUDE_GATEWAYS,
+    FreeMibTable, GetAdaptersAddresses, GetIfEntry2, GetIpForwardTable2, GAA_FLAG_INCLUDE_GATEWAYS,
     GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_MULTICAST, IP_ADAPTER_ADDRESSES_LH,
-    IP_ADAPTER_GATEWAY_ADDRESS_LH, MIB_IPFORWARD_ROW2, MIB_IPFORWARD_TABLE2,
+    IP_ADAPTER_GATEWAY_ADDRESS_LH, MIB_IF_ROW2, MIB_IPFORWARD_ROW2, MIB_IPFORWARD_TABLE2,
 };
 use windows_sys::Win32::Networking::WinSock::{SOCKADDR_INET, SOCKET_ADDRESS};
 use x_core::error::{Error, Result};
@@ -79,6 +80,7 @@ impl Adapter {
 
     /// Translate into the unified interface model.
     pub fn interface(&self) -> InterfaceInfo {
+        let traffic = if_index_traffic(self.if_index);
         InterfaceInfo {
             name: if self.friendly_name.is_empty() {
                 self.name.clone()
@@ -94,8 +96,8 @@ impl Adapter {
             },
             mtu: (self.mtu > 0).then_some(self.mtu),
             link_speed_bps: Self::known_link_speed(self.link_speed),
-            received_bytes: None,
-            transmitted_bytes: None,
+            received_bytes: traffic.0,
+            transmitted_bytes: traffic.1,
         }
     }
 
@@ -210,6 +212,30 @@ impl NetworkManager for WindowsNetwork {
         timeout_ms: u32,
     ) -> Result<Vec<x_core::network::TraceHop>> {
         super::netprobe::trace(address, max_hops, timeout_ms)
+    }
+}
+
+/// Cumulative byte counters for one interface, from `GetIfEntry2`.
+///
+/// `GetAdaptersAddresses` does not carry traffic; the MIB row keyed by the
+/// interface index is the native source. Interfaces that vanished between
+/// enumeration and the query answer with an error, which maps to `None`.
+fn if_index_traffic(if_index: u32) -> (Option<u64>, Option<u64>) {
+    // `windows-sys` does not project the anonymous first member holding
+    // `SizeOfRow`, only the `NET_LUID` sharing that slot: leave it zero.
+    // Live `GetIfEntry2` accepts a zeroed LUID with a real index, while
+    // writing the struct size there (which the docs suggest) turns the LUID
+    // into a bogus lookup key and fails.
+    let mut row = MIB_IF_ROW2 {
+        InterfaceIndex: if_index,
+        ..Default::default()
+    };
+    // SAFETY: `row` is a writable, fully zeroed `MIB_IF_ROW2` apart from the
+    // index; the call only fills it in when it succeeds.
+    if unsafe { GetIfEntry2(&mut row) } == NO_ERROR {
+        (Some(row.InOctets), Some(row.OutOctets))
+    } else {
+        (None, None)
     }
 }
 
@@ -521,6 +547,15 @@ mod tests {
                 .iter()
                 .any(|a| a.friendly_name.to_lowercase().contains("loopback")),
             "no loopback adapter in {adapters:?}"
+        );
+    }
+
+    #[test]
+    fn interfaces_carry_traffic_counters() {
+        let rows = WindowsNetwork::new().interfaces().expect("interfaces");
+        assert!(
+            rows.iter().any(|r| r.received_bytes.is_some()),
+            "GetIfEntry2 must answer for at least one interface: {rows:?}"
         );
     }
 

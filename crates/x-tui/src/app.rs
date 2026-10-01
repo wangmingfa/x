@@ -4,6 +4,10 @@
 //! key handling testable without a tty.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use x_core::disk::{DirUsage, DiskInfo};
 use x_core::error::Result;
 use x_core::network::{DnsConfig, InterfaceInfo, RouteInfo};
 use x_core::port::{KillPlan, PortInfo, PortListOptions, PortQuery};
@@ -26,11 +30,19 @@ pub enum View {
     Network,
     /// System health.
     System,
+    /// Mounted filesystems and a usage tree of the launch directory.
+    Disk,
 }
 
 impl View {
     /// Every view, for tab cycling.
-    pub const ALL: [View; 4] = [View::Ports, View::Processes, View::Network, View::System];
+    pub const ALL: [View; 5] = [
+        View::Ports,
+        View::Processes,
+        View::Network,
+        View::System,
+        View::Disk,
+    ];
 
     /// Tab label.
     pub fn title(self) -> &'static str {
@@ -39,6 +51,7 @@ impl View {
             Self::Processes => "processes",
             Self::Network => "network",
             Self::System => "system",
+            Self::Disk => "disk",
         }
     }
 
@@ -111,6 +124,16 @@ pub struct App {
     routes: Vec<RouteInfo>,
     dns: DnsConfig,
     system: Option<SystemInfo>,
+    disks: Vec<DiskInfo>,
+
+    /// Root of the directory-usage scan, fixed at launch like `ncdu`.
+    usage_root: PathBuf,
+    /// Completed scan, empty until the walker thread reports.
+    usage: Vec<DirUsage>,
+    /// Directories whose subtree is currently hidden.
+    collapsed: BTreeSet<PathBuf>,
+    /// Mailbox of the in-flight scan; `None` once collected.
+    scan: Option<Arc<Mutex<Option<Vec<DirUsage>>>>>,
 
     last_refresh: std::time::Instant,
     cpu: f32,
@@ -140,6 +163,11 @@ impl App {
             routes: Vec::new(),
             dns: DnsConfig::default(),
             system: None,
+            disks: Vec::new(),
+            usage_root: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            usage: Vec::new(),
+            collapsed: BTreeSet::new(),
+            scan: None,
             last_refresh: std::time::Instant::now(),
             cpu: 0.0,
             visible_rows: DEFAULT_VISIBLE_ROWS,
@@ -240,6 +268,7 @@ impl App {
             View::Processes => self.refresh_processes(),
             View::Network => self.refresh_network(),
             View::System => self.refresh_system(),
+            View::Disk => self.refresh_disk(),
         };
         if let Err(error) = result {
             self.status = error.message().to_string();
@@ -290,8 +319,116 @@ impl App {
         Ok(())
     }
 
+    fn refresh_disk(&mut self) -> Result<()> {
+        self.disks = self.context.disk.list()?;
+        self.start_scan();
+        Ok(())
+    }
+
+    /// Walk the usage root once per session on a helper thread.
+    ///
+    /// The event loop has no async runtime by design, and a full subtree scan
+    /// of a real working directory can take seconds, so the walker reports
+    /// through a shared slot instead of blocking the draw.
+    fn start_scan(&mut self) {
+        if self.scan.is_some() || !self.usage.is_empty() {
+            return;
+        }
+        let root = self.usage_root.clone();
+        let slot = Arc::new(Mutex::new(None));
+        self.scan = Some(slot.clone());
+        std::thread::spawn(move || {
+            let rows = x_core::walk_directory(&root, None);
+            // A poisoned or dropped mailbox only means the result is never
+            // collected; the walker thread itself cannot fail.
+            if let Ok(mut guard) = slot.lock() {
+                *guard = Some(rows);
+            }
+        });
+    }
+
+    /// Pick up a finished background scan, if one is waiting.
+    fn collect_scan(&mut self) {
+        let rows = self
+            .scan
+            .as_ref()
+            .and_then(|slot| slot.lock().ok())
+            .and_then(|mut guard| guard.take());
+        if let Some(rows) = rows {
+            self.status = format!("usage: {} directories", rows.len().saturating_sub(1));
+            self.usage = rows;
+            self.scan = None;
+        }
+    }
+
+    /// Mounted filesystems of the last disk refresh.
+    pub fn disks(&self) -> &[DiskInfo] {
+        &self.disks
+    }
+
+    /// The directory that the usage scan is rooted at.
+    pub fn usage_root(&self) -> &std::path::Path {
+        &self.usage_root
+    }
+
+    /// `true` while the background walker is still running.
+    pub fn usage_scanning(&self) -> bool {
+        self.scan.is_some()
+    }
+
+    /// The visible usage rows in tree order: the scan regrouped by parent,
+    /// each level sorted by total size, subtrees of collapsed directories
+    /// omitted.
+    pub fn usage_tree(&self) -> Vec<&DirUsage> {
+        let mut children: BTreeMap<Option<&std::path::Path>, Vec<&DirUsage>> = BTreeMap::new();
+        for row in &self.usage {
+            let key = if row.depth == 0 {
+                None
+            } else {
+                row.path.parent()
+            };
+            children.entry(key).or_default().push(row);
+        }
+        for bucket in children.values_mut() {
+            bucket.sort_by(|a, b| {
+                b.total_bytes
+                    .cmp(&a.total_bytes)
+                    .then_with(|| a.path.cmp(&b.path))
+            });
+        }
+        let mut out = Vec::new();
+        let mut pending: Vec<&DirUsage> = children.get(&None).cloned().unwrap_or_default();
+        while let Some(node) = pending.pop() {
+            out.push(node);
+            if self.collapsed.contains(&node.path) {
+                continue;
+            }
+            if let Some(kids) = children.get(&Some(node.path.as_path())) {
+                pending.extend(kids.iter().rev().copied());
+            }
+        }
+        out
+    }
+
+    /// Show or hide the subtree under the selected row.
+    fn toggle_collapse(&mut self) {
+        let Some(path) = self
+            .usage_tree()
+            .get(self.selected)
+            .map(|row| row.path.clone())
+        else {
+            return;
+        };
+        if !self.collapsed.remove(&path) {
+            self.collapsed.insert(path);
+        }
+        self.selected = self.selected.min(self.row_count().saturating_sub(1));
+        self.clamp_scroll();
+    }
+
     /// Called when the refresh interval elapsed.
     pub fn on_tick(&mut self) {
+        self.collect_scan();
         if self.last_refresh.elapsed() >= crate::REFRESH {
             self.refresh();
         }
@@ -399,6 +536,7 @@ impl App {
             View::Processes => self.processes.len(),
             View::Network => self.interfaces.len(),
             View::System => self.services.len(),
+            View::Disk => self.usage_tree().len(),
         }
     }
 
@@ -478,6 +616,7 @@ impl App {
     fn activate_selection(&mut self) {
         match self.view {
             View::Ports | View::Processes => self.confirm_kill_selection(),
+            View::Disk => self.toggle_collapse(),
             _ => {}
         }
     }
@@ -542,7 +681,7 @@ mod tests {
         assert_eq!(app.view(), View::Ports);
 
         app.on_key(key(KeyCode::Left));
-        assert_eq!(app.view(), View::System, "left from the first tab wraps");
+        assert_eq!(app.view(), View::Disk, "left from the first tab wraps");
         app.on_key(key(KeyCode::Right));
         assert_eq!(app.view(), View::Ports, "right from the last tab wraps");
     }
@@ -759,6 +898,8 @@ mod tests {
                     View::Processes => 1,
                     View::Network => 0,
                     View::System => 1,
+                    // The walker thread has not reported inside the test.
+                    View::Disk => 0,
                 }
             );
         }
@@ -787,5 +928,90 @@ mod tests {
         assert!(!app.should_quit(), "a bare c kills the selection instead");
         assert!(matches!(app.modal(), Modal::Confirm { .. }));
         assert!(stubs.port.killed().is_empty());
+    }
+
+    fn dir_usage(path: &str, depth: usize, total_bytes: u64) -> DirUsage {
+        DirUsage {
+            path: PathBuf::from(path),
+            depth,
+            total_bytes,
+            files: 1,
+            dirs: 0,
+            unreadable: 0,
+        }
+    }
+
+    fn sample_usage() -> Vec<DirUsage> {
+        let root = PathBuf::from("r");
+        vec![
+            dir_usage(".", 0, 100),
+            dir_usage("big", 1, 60),
+            dir_usage("small", 1, 30),
+            dir_usage("big/inner", 2, 50),
+        ]
+        .into_iter()
+        .map(|mut row| {
+            row.path = if row.depth == 0 {
+                root.clone()
+            } else {
+                root.join(row.path)
+            };
+            row
+        })
+        .collect()
+    }
+
+    #[test]
+    fn the_usage_tree_orders_children_by_size_then_collapses() {
+        let (_stubs, mut app) = app_with_sockets(1);
+        app.view = View::Disk;
+        app.usage = sample_usage();
+
+        let names: Vec<String> = app
+            .usage_tree()
+            .iter()
+            .map(|row| row.path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["r", "big", "inner", "small"]);
+
+        // Enter on `big` hides its subtree; Enter again brings it back.
+        app.selected = 1;
+        app.on_key(key(KeyCode::Enter));
+        let names: Vec<String> = app
+            .usage_tree()
+            .iter()
+            .map(|row| row.path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["r", "big", "small"]);
+
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.usage_tree().len(), 4);
+    }
+
+    #[test]
+    fn a_finished_background_scan_is_collected_on_the_next_tick() {
+        let (_stubs, mut app) = app_with_sockets(1);
+        app.view = View::Disk;
+        let rows = sample_usage();
+        app.scan = Some(Arc::new(Mutex::new(Some(rows))));
+
+        app.on_tick();
+
+        assert_eq!(app.usage.len(), 4);
+        assert!(app.scan.is_none());
+        assert!(app.status().starts_with("usage:"), "{}", app.status());
+        assert!(!app.usage_scanning());
+    }
+
+    #[test]
+    fn collapsing_a_parent_of_the_selection_keeps_the_selection_in_range() {
+        let (_stubs, mut app) = app_with_sockets(1);
+        app.view = View::Disk;
+        app.usage = sample_usage();
+
+        app.selected = 1;
+        app.on_key(key(KeyCode::Enter)); // collapse `big`, hiding `inner`
+        assert_eq!(app.rows(), 3);
+        assert!(app.selected < app.rows(), "selection stays inside the tree");
     }
 }

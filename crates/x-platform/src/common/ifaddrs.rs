@@ -203,6 +203,7 @@ pub fn interfaces() -> Result<Vec<InterfaceInfo>> {
     // One `ifaddrs` chain lists the same interface once per address family plus
     // one link level entry, so rows are merged by name instead of being emitted
     // per entry.
+    let traffic = traffic_table();
     let mut rows: BTreeMap<String, InterfaceInfo> = BTreeMap::new();
     for entry in list.entries() {
         if entry.name.is_empty() {
@@ -230,23 +231,118 @@ pub fn interfaces() -> Result<Vec<InterfaceInfo>> {
                     row.description = description.clone();
                 }
             })
-            .or_insert_with(|| InterfaceInfo {
-                name: entry.name.clone(),
-                description,
-                mac_address: mac,
-                state: if up {
-                    InterfaceState::Up
-                } else {
-                    InterfaceState::Down
-                },
-                mtu: mtu(&entry.name),
-                link_speed_bps: speed(&entry.name),
-                received_bytes: None,
-                transmitted_bytes: None,
+            .or_insert_with(|| {
+                let (received_bytes, transmitted_bytes) = traffic
+                    .get(entry.name.as_str())
+                    .copied()
+                    .unwrap_or((None, None));
+                InterfaceInfo {
+                    name: entry.name.clone(),
+                    description,
+                    mac_address: mac,
+                    state: if up {
+                        InterfaceState::Up
+                    } else {
+                        InterfaceState::Down
+                    },
+                    mtu: mtu(&entry.name),
+                    link_speed_bps: speed(&entry.name),
+                    received_bytes,
+                    transmitted_bytes,
+                }
             });
     }
 
     Ok(rows.into_values().collect())
+}
+
+/// Per-interface byte counters since boot.
+///
+/// sysfs keeps a file per counter under `/sys/class/net`; interfaces that do
+/// not appear here (deleted between enumeration and read) simply show `None`.
+#[cfg(target_os = "linux")]
+fn traffic_table() -> BTreeMap<String, (Option<u64>, Option<u64>)> {
+    let mut table = BTreeMap::new();
+    let Ok(links) = std::fs::read_dir("/sys/class/net") else {
+        return table;
+    };
+    for link in links.flatten() {
+        let name = link.file_name().to_string_lossy().into_owned();
+        let counter = |file: &str| {
+            std::fs::read_to_string(link.path().join("statistics").join(file))
+                .ok()
+                .and_then(|raw| raw.trim().parse::<u64>().ok())
+        };
+        table.insert(name, (counter("rx_bytes"), counter("tx_bytes")));
+    }
+    table
+}
+
+/// Per-interface byte counters since boot.
+///
+/// Reading `if_data` out of `getifaddrs` would mean hard-coding the struct
+/// field offsets, which differ per macOS release, so the counters come from
+/// `netstat -ib` with columns located by their header positions: BSD netstat
+/// right-aligns every value inside its column, so the token starting at (or
+/// after) a header token always belongs to that column. This is a level-3
+/// source but not a text locale risk: the header tokens are fixed English.
+#[cfg(target_os = "macos")]
+fn traffic_table() -> BTreeMap<String, (Option<u64>, Option<u64>)> {
+    let raw = crate::sys::run_command("netstat", &["-ib"]).unwrap_or_default();
+    parse_netstat_ib(&raw)
+}
+
+/// Parse `netstat -ib` output, keeping one row per interface (the `<Link#N>`
+/// line, which carries the interface-wide counters rather than per-address ones).
+#[cfg(target_os = "macos")]
+fn parse_netstat_ib(raw: &str) -> BTreeMap<String, (Option<u64>, Option<u64>)> {
+    let mut table = BTreeMap::new();
+    let Some(header) = raw
+        .lines()
+        .find(|line| line.contains("Ibytes") && line.contains("Obytes"))
+    else {
+        return table;
+    };
+    let column = |token: &str| header.find(token);
+    let (Some(name_col), Some(network_col), Some(ibytes_col), Some(obytes_col)) = (
+        column("Name"),
+        column("Network"),
+        column("Ibytes"),
+        column("Obytes"),
+    ) else {
+        return table;
+    };
+    let field = |line: &str, start: usize| {
+        line.get(start..)?
+            .split_whitespace()
+            .next()
+            .and_then(|value| value.parse::<u64>().ok())
+    };
+
+    for line in raw.lines().skip_while(|line| *line != header).skip(1) {
+        let Some(name) = line
+            .get(name_col..)
+            .and_then(|rest| rest.split_whitespace().next())
+        else {
+            continue;
+        };
+        // Continuation rows (IPv6 address lines) have no name and no counters.
+        if name.is_empty() || table.contains_key(name) {
+            continue;
+        }
+        let is_link_row = line
+            .get(network_col..)
+            .and_then(|rest| rest.split_whitespace().next())
+            .is_some_and(|network| network.starts_with("<Link"));
+        if !is_link_row {
+            continue;
+        }
+        table.insert(
+            name.to_string(),
+            (field(line, ibytes_col), field(line, obytes_col)),
+        );
+    }
+    table
 }
 
 /// Enumerate configured IP addresses with their prefix lengths.
@@ -609,5 +705,48 @@ mod tests {
         // Wi-Fi reports autoselect; there is no conventional link speed to show.
         assert_eq!(parse_ifconfig_speed("\tmedia: autoselect (none)\n"), None);
         assert_eq!(parse_ifconfig_speed("status: active\n"), None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn netstat_ib_link_rows_become_traffic_counters() {
+        let header =
+            "Name  Mtu   Network       Address            Ipkts Ierrs    Ibytes    Opkts Oerrs    Obytes  Coll";
+        let network_col = header.find("Network").unwrap();
+        let ibytes_col = header.find("Ibytes").unwrap();
+        let obytes_col = header.find("Obytes").unwrap();
+        let row = |name: &str, network: &str, ibytes: &str, obytes: &str| {
+            let mut line = String::new();
+            for (column, token) in [
+                (0usize, name),
+                (network_col, network),
+                (ibytes_col, ibytes),
+                (obytes_col, obytes),
+            ] {
+                while line.len() < column {
+                    line.push(' ');
+                }
+                line.push_str(token);
+            }
+            line
+        };
+        let raw = format!(
+            "{header}\n{}\n{}\n{}\n{}",
+            row("lo0", "<Link#1>", "121504031", "121504031"),
+            // Per-address continuation rows carry dashes and must not win.
+            row("lo0", "127.0.0.1/32", "-", "-"),
+            row("en0", "<Link#13>", "7116283124", "91252487"),
+            row("en0", "fe80:2::1/64", "-", "-"),
+        );
+
+        let table = parse_netstat_ib(&raw);
+        assert_eq!(table.get("lo0"), Some(&(Some(121504031), Some(121504031))));
+        assert_eq!(table.get("en0"), Some(&(Some(7116283124), Some(91252487))));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn netstat_ib_without_the_expected_header_yields_nothing() {
+        assert!(parse_netstat_ib("active internet\nProto Recv-Q").is_empty());
     }
 }

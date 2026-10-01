@@ -7,6 +7,7 @@
 //! 3. `scutil` only for the resolver configuration, which has no stable
 //!    public C API.
 
+pub mod disk;
 pub mod libproc;
 pub mod network;
 pub mod port;

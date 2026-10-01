@@ -28,9 +28,16 @@ impl DiskManager for SysinfoDisk {
                 let available = disk.available_space();
                 DiskInfo {
                     mount_point: disk.mount_point().to_string_lossy().into_owned(),
-                    name: Some(disk.name().to_string_lossy().into_owned()),
+                    name: Some(disk.name().to_string_lossy().into_owned())
+                        .filter(|name| !name.is_empty()),
                     file_system: Some(disk.file_system().to_string_lossy().into_owned()),
                     read_only: Some(disk.is_read_only()),
+                    label: None,
+                    volume_uuid: None,
+                    partition_uuid: None,
+                    device_model: None,
+                    device_serial: None,
+                    media_type: None,
                     total_bytes: total,
                     available_bytes: available,
                     percent: percent(total.saturating_sub(available), total),

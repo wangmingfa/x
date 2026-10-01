@@ -11,6 +11,7 @@
 //! 3. `systemctl`, `rc-service` and `service` only for service lifecycle, which
 //!    has no stable native interface outside the init system itself.
 
+pub mod disk;
 pub mod network;
 pub mod port;
 pub mod process;

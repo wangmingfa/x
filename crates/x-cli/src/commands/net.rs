@@ -140,6 +140,8 @@ pub fn interfaces(context: &SystemContext, renderer: &mut Renderer) -> Result<i3
         "mac",
         "mtu",
         "speed",
+        "rx",
+        "tx",
         "gateway",
         "default",
         "description",
@@ -153,6 +155,12 @@ pub fn interfaces(context: &SystemContext, renderer: &mut Renderer) -> Result<i3
             row.mtu.map(|v| v.to_string()).unwrap_or_else(|| "-".into()),
             row.link_speed_bps
                 .map(format_link_speed)
+                .unwrap_or_else(|| "-".into()),
+            row.received_bytes
+                .map(x_core::format_bytes)
+                .unwrap_or_else(|| "-".into()),
+            row.transmitted_bytes
+                .map(x_core::format_bytes)
                 .unwrap_or_else(|| "-".into()),
             gateways
                 .get(&row.name)

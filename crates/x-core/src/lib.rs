@@ -47,7 +47,7 @@ pub mod system;
 pub mod testing;
 
 pub use context::{SystemContext, SystemContextBuilder};
-pub use disk::{DiskInfo, DiskManager};
+pub use disk::{walk_directory, DirUsage, DiskInfo, DiskManager, MediaType};
 pub use error::{Error, ErrorKind, PermissionRequirement, Result, ResultExt};
 pub use network::{
     AddressInfo, DnsConfig, DnsServer, InterfaceInfo, InterfaceState, NetworkManager, RouteInfo,

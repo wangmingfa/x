@@ -76,7 +76,7 @@ pub fn create_context() -> Result<SystemContext> {
             .port(macos::port::manager())
             .network(macos::network::manager())
             .service(macos::service::manager())
-            .disk(common::disk_sysinfo::manager())
+            .disk(macos::disk::manager())
             .build()
     }
 
@@ -88,7 +88,7 @@ pub fn create_context() -> Result<SystemContext> {
             .port(linux::port::manager())
             .network(linux::network::manager())
             .service(linux::service::manager())
-            .disk(common::disk_sysinfo::manager())
+            .disk(linux::disk::manager())
             .build()
     }
 
@@ -100,7 +100,7 @@ pub fn create_context() -> Result<SystemContext> {
             .port(windows::port::manager())
             .network(windows::network::manager())
             .service(windows::service::manager())
-            .disk(common::disk_sysinfo::manager())
+            .disk(windows::disk::manager())
             .build()
     }
 

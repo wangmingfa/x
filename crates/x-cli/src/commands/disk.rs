@@ -1,7 +1,9 @@
-//! `x disk`: mounted filesystems.
+//! `x disk`: mounted filesystems and directory usage.
+
+use std::path::PathBuf;
 
 use clap::Subcommand;
-use x_core::error::Result;
+use x_core::error::{Error, Result};
 use x_core::SystemContext;
 
 use crate::{
@@ -17,6 +19,16 @@ pub enum DiskCommand {
 
     /// The filesystem holding the current directory.
     Current,
+
+    /// Recursive disk usage of a directory, like `du`.
+    Usage {
+        /// The directory to size up.
+        path: PathBuf,
+
+        /// Only report directories up to this many levels below the root.
+        #[arg(long, value_name = "N")]
+        depth: Option<usize>,
+    },
 }
 
 /// Route a `x disk` invocation.
@@ -28,6 +40,7 @@ pub fn dispatch(
     match command {
         DiskCommand::List => list(context, renderer),
         DiskCommand::Current => current(context, renderer),
+        DiskCommand::Usage { path, depth } => usage(renderer, path, *depth),
     }
 }
 
@@ -39,12 +52,24 @@ pub fn list(context: &SystemContext, renderer: &mut Renderer) -> Result<i32> {
         renderer.always_json(&rows)?;
         return Ok(0);
     }
-    let mut table = Table::new(["mount", "device", "fs", "size", "used", "available", "use%"]);
+    let mut table = Table::new([
+        "mount",
+        "device",
+        "fs",
+        "media",
+        "size",
+        "used",
+        "available",
+        "use%",
+    ]);
     for row in &rows {
         table.push(row![
             row.mount_point.clone(),
             row.name.clone().unwrap_or_else(|| "-".into()),
             row.file_system.clone().unwrap_or_else(|| "-".into()),
+            row.media_type
+                .map(|media| media.to_string())
+                .unwrap_or_else(|| "-".into()),
             x_core::format_bytes(row.total_bytes),
             x_core::format_bytes(row.used_bytes()),
             x_core::format_bytes(row.available_bytes),
@@ -78,6 +103,48 @@ pub fn current(context: &SystemContext, renderer: &mut Renderer) -> Result<i32> 
     table.push(row!["use%", format!("{:.0}%", row.percent)]);
     if row.read_only == Some(true) {
         table.push(row!["read only", "yes"]);
+    }
+    renderer.table(&table)?;
+    Ok(0)
+}
+
+/// Directory usage: every subdirectory with its aggregated size, biggest
+/// first, like `du -a --max-depth`.
+pub fn usage(renderer: &mut Renderer, path: &std::path::Path, depth: Option<usize>) -> Result<i32> {
+    // `walk_directory` reports an unreadable root as an empty tree; `du`
+    // exits non-zero on a missing path, and that is the contract here too.
+    let metadata = std::fs::symlink_metadata(path).map_err(|err| match err.kind() {
+        std::io::ErrorKind::NotFound => {
+            Error::not_found(format!("no such file or directory: {}", path.display()))
+        }
+        _ => Error::from(err),
+    })?;
+    let rows = if metadata.is_dir() {
+        x_core::walk_directory(path, depth)
+    } else {
+        // `du` on a plain file sizes just that file.
+        vec![x_core::DirUsage {
+            path: path.to_path_buf(),
+            depth: 0,
+            total_bytes: metadata.len(),
+            files: 1,
+            dirs: 0,
+            unreadable: 0,
+        }]
+    };
+    if renderer.format() == OutputFormat::Json {
+        renderer.always_json(&rows)?;
+        return Ok(0);
+    }
+    let mut table = Table::new(["path", "size", "files", "dirs", "unreadable"]);
+    for row in &rows {
+        table.push(row![
+            row.path.display().to_string(),
+            x_core::format_bytes(row.total_bytes),
+            row.files.to_string(),
+            row.dirs.to_string(),
+            row.unreadable.to_string(),
+        ]);
     }
     renderer.table(&table)?;
     Ok(0)

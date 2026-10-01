@@ -57,6 +57,7 @@ fn body(frame: &mut Frame, app: &mut App, area: Rect) {
         View::Processes => processes(frame, app, area),
         View::Network => network(frame, app, area),
         View::System => system(frame, app, area),
+        View::Disk => disk(frame, app, area),
     }
 }
 
@@ -344,6 +345,85 @@ fn system(frame: &mut Frame, app: &mut App, area: Rect) {
         .rows(services),
         columns[1],
     );
+}
+
+/// Mounted filesystems on top, the usage tree of the launch directory below.
+fn disk(frame: &mut Frame, app: &mut App, area: Rect) {
+    let panes = Layout::vertical([
+        Constraint::Length((app.disks().len() as u16 + 4).clamp(5, 12)),
+        Constraint::Min(3),
+    ])
+    .split(area);
+
+    let mounts: Vec<Row> = app
+        .disks()
+        .iter()
+        .map(|row| {
+            Row::new(vec![
+                row.mount_point.clone(),
+                row.file_system.clone().unwrap_or_default(),
+                row.media_type
+                    .map(|media| media.to_string())
+                    .unwrap_or_default(),
+                format_bytes(row.total_bytes),
+                format_bytes(row.used_bytes()),
+                format!("{:.0}%", row.percent),
+            ])
+        })
+        .collect();
+    frame.render_widget(
+        table(
+            &[
+                ("mount", 6),
+                ("fs", 8),
+                ("media", 9),
+                ("size", 10),
+                ("used", 10),
+                ("use%", 5),
+            ],
+            "filesystems",
+        )
+        .rows(mounts),
+        panes[0],
+    );
+
+    let inner_height = inner_rows(app, panes[1]);
+    let start = app.scroll();
+    let rows: Vec<Row> = app
+        .usage_tree()
+        .into_iter()
+        .enumerate()
+        .skip(start)
+        .take(inner_height.max(1))
+        .map(|(index, row)| {
+            let name = row
+                .path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| row.path.display().to_string());
+            Row::new(vec![
+                format!("{}{name}", "  ".repeat(row.depth)),
+                format_bytes(row.total_bytes),
+                row.files.to_string(),
+                row.dirs.to_string(),
+            ])
+            .style(selected_row(start + index, app.selected()))
+        })
+        .collect();
+    let title = if app.usage_scanning() {
+        format!("usage {} scanning", app.usage_root().display())
+    } else {
+        format!("usage {} enter toggles", app.usage_root().display())
+    };
+    frame.render_widget(
+        table(
+            &[("directory", 48), ("size", 10), ("files", 7), ("dirs", 6)],
+            &title,
+        )
+        .rows(rows),
+        panes[1],
+    );
+    scrollbar(frame, app, panes[1]);
 }
 
 fn scrollbar(frame: &mut Frame, app: &App, area: Rect) {
