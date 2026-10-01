@@ -1,13 +1,15 @@
 //! Windows network adapter: `GetAdaptersAddresses` for interfaces, addresses
-//! and DNS servers, `route print` for the routing table.
+//! and DNS servers, `GetIpForwardTable2` for the routing table, and the IP
+//! helper ICMP API for reachability probes (see [`super::netprobe`]).
 
 use super::buffer::AlignedBuffer;
-use crate::sys;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use windows_sys::Win32::NetworkManagement::IpHelper::{
-    GetAdaptersAddresses, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_MULTICAST, IP_ADAPTER_ADDRESSES_LH,
+    FreeMibTable, GetAdaptersAddresses, GetIpForwardTable2, GAA_FLAG_INCLUDE_GATEWAYS,
+    GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_MULTICAST, IP_ADAPTER_ADDRESSES_LH,
+    IP_ADAPTER_GATEWAY_ADDRESS_LH, MIB_IPFORWARD_ROW2, MIB_IPFORWARD_TABLE2,
 };
-use windows_sys::Win32::Networking::WinSock::SOCKET_ADDRESS;
+use windows_sys::Win32::Networking::WinSock::{SOCKADDR_INET, SOCKET_ADDRESS};
 use x_core::error::{Error, Result};
 use x_core::network::{
     AddressInfo, DnsConfig, DnsServer, InterfaceInfo, InterfaceState, NetworkManager, RouteInfo,
@@ -15,6 +17,12 @@ use x_core::network::{
 
 const AF_UNSPEC: u32 = 0;
 const IF_OPER_STATUS_UP: i32 = 1;
+/// `IP_ADAPTER_ADDRESSES.Flags`, bit 0: the adapter got its address from DHCP.
+const FLAG_DHCP_ENABLED: u32 = 0x0000_0001;
+/// `MIB_IPFORWARD_ROW2.NextHop` is a `SOCKADDR_INET` union; only the family
+/// tag decides which arm is live.
+const AF_INET_U16: u16 = windows_sys::Win32::Networking::WinSock::AF_INET;
+const AF_INET6_U16: u16 = windows_sys::Win32::Networking::WinSock::AF_INET6;
 
 /// Reads Windows network state.
 #[derive(Debug, Default)]
@@ -48,9 +56,27 @@ pub struct Adapter {
     pub dns_servers: Vec<IpAddr>,
     /// DNS suffix.
     pub dns_suffix: String,
+    /// Link speed in bit/s as reported by the driver, `0` when unknown.
+    pub link_speed: u64,
+    /// DHCP really supplied the current address.
+    pub dhcp_enabled: bool,
+    /// IPv4 interface index, used to join routing table rows to names.
+    pub if_index: u32,
+    /// Next-hop addresses the adapter was configured with.
+    pub gateways: Vec<IpAddr>,
 }
 
 impl Adapter {
+    /// `u64::MAX` and `u64::MAX - 1` are the driver's "no media / speed not
+    /// negotiated" sentinels, not link speeds (observed on disconnected
+    /// Ethernet and Wi-Fi Direct virtual adapters).
+    fn known_link_speed(bits_per_second: u64) -> Option<u64> {
+        if bits_per_second == 0 || bits_per_second >= u64::MAX - 1 {
+            return None;
+        }
+        Some(bits_per_second)
+    }
+
     /// Translate into the unified interface model.
     pub fn interface(&self) -> InterfaceInfo {
         InterfaceInfo {
@@ -67,6 +93,7 @@ impl Adapter {
                 InterfaceState::Down
             },
             mtu: (self.mtu > 0).then_some(self.mtu),
+            link_speed_bps: Self::known_link_speed(self.link_speed),
             received_bytes: None,
             transmitted_bytes: None,
         }
@@ -85,7 +112,19 @@ impl Adapter {
                 interface: name.clone(),
                 address: *address,
                 prefix_len: Some(*prefix_len),
-                dhcp: None,
+                // The DHCP flag describes how the *address* was obtained.
+                // IPv6 link-local addresses come from SLAAC, IPv4 link-local
+                // ones from the autoconfiguration fallback when DHCP did not
+                // answer, and an adapter that is down holds a stale lease at
+                // best; none of those deserve a `yes`.
+                dhcp: match *address {
+                    IpAddr::V4(v4)
+                        if !v4.is_link_local() && self.oper_status == IF_OPER_STATUS_UP =>
+                    {
+                        Some(self.dhcp_enabled)
+                    }
+                    _ => None,
+                },
             })
             .collect()
     }
@@ -101,14 +140,21 @@ impl NetworkManager for WindowsNetwork {
     }
 
     fn routes(&self) -> Result<Vec<RouteInfo>> {
-        // Windows has no route enumeration API for user mode, so `route print`
-        // is the supported interface. It is the documented level 3 fallback.
-        let output = sys::run_command("route", &["print", "-4"])
-            .or_else(|_| sys::run_command("route", &["print"]))
-            .map_err(|err| Error::system(format!("route print: {err}")))?;
-        let routes = parse_route_print(&output);
+        // `GetIpForwardTable2` is the native route enumeration; the `route`
+        // command it replaced writes localized table headers, which no parser
+        // can survive across locales.
+        let names: std::collections::HashMap<u32, String> = adapters()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|adapter| (adapter.if_index, adapter.friendly_name))
+            .collect();
+
+        let mut routes = forward_table(AF_INET_U16, &names)?;
+        routes.extend(forward_table(AF_INET6_U16, &names)?);
         if routes.is_empty() {
-            return Err(Error::system("route print produced no routes"));
+            return Err(Error::system(
+                "the IP helper API returned an empty routing table",
+            ));
         }
         Ok(routes)
     }
@@ -140,13 +186,40 @@ impl NetworkManager for WindowsNetwork {
         }
         .deduped())
     }
+
+    fn resolve(&self, host: &str) -> Result<Vec<IpAddr>> {
+        super::netprobe::resolve(host)
+    }
+
+    fn reverse_dns(&self, address: IpAddr) -> Result<String> {
+        super::netprobe::reverse_dns(address)
+    }
+
+    fn flush_dns_cache(&self) -> Result<()> {
+        super::netprobe::flush_dns_cache()
+    }
+
+    fn ping(&self, request: &x_core::network::PingRequest) -> Result<x_core::network::PingSummary> {
+        super::netprobe::ping(request)
+    }
+
+    fn trace(
+        &self,
+        address: IpAddr,
+        max_hops: u32,
+        timeout_ms: u32,
+    ) -> Result<Vec<x_core::network::TraceHop>> {
+        super::netprobe::trace(address, max_hops, timeout_ms)
+    }
 }
 
 /// Enumerate every adapter with its addresses and DNS servers.
 pub fn adapters() -> Result<Vec<Adapter>> {
-    // DNS servers are part of the answer, so `GAA_FLAG_SKIP_DNS_SERVER` must not be
-    // set here; the flags only drop the address families we never render.
-    let flags = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST;
+    // DNS servers and gateway addresses are part of the answer, so
+    // `GAA_FLAG_SKIP_DNS_SERVER` must not be set and
+    // `GAA_FLAG_INCLUDE_GATEWAYS` must be; the flags only drop the address
+    // families we never render.
+    let flags = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_INCLUDE_GATEWAYS;
     let mut size: u32 = 0;
     // SAFETY: the first call sizes the buffer, the second one fills it.
     let rc = unsafe {
@@ -187,6 +260,10 @@ pub fn adapters() -> Result<Vec<Adapter>> {
     while !node.is_null() {
         // SAFETY: the list is NUL terminated by the API and lives in `buffer`.
         let entry = unsafe { &*node };
+        // `IfIndex` and `Flags` live in leading unions of the versioned struct.
+        // SAFETY: both union arms are the raw `u32` the API wrote.
+        let (if_index, flags) =
+            unsafe { (entry.Anonymous1.Anonymous.IfIndex, entry.Anonymous2.Flags) };
         adapters.push(Adapter {
             name: cstr_to_string(entry.AdapterName),
             friendly_name: wide_to_string(entry.FriendlyName),
@@ -198,6 +275,12 @@ pub fn adapters() -> Result<Vec<Adapter>> {
             addresses: unicast_addresses(entry),
             dns_servers: dns_servers(entry),
             dns_suffix: wide_to_string(entry.DnsSuffix),
+            // The driver reports the same figure for both directions on every
+            // NIC we have seen; the receive side is the one `msinfo32` shows.
+            link_speed: entry.ReceiveLinkSpeed,
+            dhcp_enabled: flags & FLAG_DHCP_ENABLED != 0,
+            if_index,
+            gateways: gateway_addresses(entry),
         });
         node = entry.Next;
     }
@@ -230,6 +313,20 @@ fn dns_servers(entry: &IP_ADAPTER_ADDRESSES_LH) -> Vec<IpAddr> {
         node = server.Next;
     }
     servers
+}
+
+fn gateway_addresses(entry: &IP_ADAPTER_ADDRESSES_LH) -> Vec<IpAddr> {
+    let mut gateways = Vec::new();
+    let mut node = entry.FirstGatewayAddress;
+    while !node.is_null() {
+        // SAFETY: the chain is owned by the adapter buffer.
+        let gateway = unsafe { &*(node as *const IP_ADAPTER_GATEWAY_ADDRESS_LH) };
+        if let Some(address) = socket_address(&gateway.Address) {
+            gateways.push(address);
+        }
+        node = gateway.Next;
+    }
+    gateways
 }
 
 /// Decode a `SOCKET_ADDRESS` into an [`IpAddr`].
@@ -298,72 +395,73 @@ fn cstr_to_string(ptr: *const u8) -> String {
         .into_owned()
 }
 
-/// Parse `route print` into the unified model.
+/// Read one address family of the routing table through `GetIpForwardTable2`.
 ///
-/// ```text
-/// Active Routes:
-/// Network Destination        Netmask          Gateway       Interface  Metric
-///           0.0.0.0          0.0.0.0     192.168.1.1     192.168.1.10     25
-/// ```
-pub fn parse_route_print(raw: &str) -> Vec<RouteInfo> {
-    let mut routes = Vec::new();
-    let mut in_table = false;
-
-    for line in raw.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        if trimmed.starts_with("Active Routes") {
-            in_table = true;
-            continue;
-        }
-        if trimmed.starts_with("Persistent Routes") {
-            in_table = true;
-            continue;
-        }
-        if trimmed.starts_with("Network Destination") {
-            continue;
-        }
-        if !in_table {
-            continue;
-        }
-
-        let cols: Vec<&str> = trimmed.split_whitespace().collect();
-        if cols.len() < 5 {
-            in_table = false;
-            continue;
-        }
-        let (Ok(destination), Ok(mask), Ok(metric)) = (
-            cols[0].parse::<Ipv4Addr>(),
-            cols[1].parse::<Ipv4Addr>(),
-            cols[4].parse::<u64>(),
-        ) else {
-            in_table = false;
-            continue;
-        };
-        // A default route legitimately carries a 0.0.0.0 netmask; only a
-        // zero mask on a non-zero destination means the table has ended.
-        if mask.is_unspecified() && destination != Ipv4Addr::UNSPECIFIED {
-            in_table = false;
-            continue;
-        }
-
-        routes.push(RouteInfo {
-            destination: (destination != Ipv4Addr::UNSPECIFIED)
-                .then(|| format!("{destination}/{}", prefix_length(mask))),
-            gateway: cols[2].parse::<Ipv4Addr>().ok().map(IpAddr::V4),
-            interface: Some(cols[3].to_string()),
-            metric: Some(metric),
-        });
+/// The API hands back a single allocation whose rows point at prefix and
+/// next-hop unions; interface indexes are translated to adapter display names
+/// so the rows join with `x net interfaces` on the same string.
+fn forward_table(
+    family: windows_sys::Win32::Networking::WinSock::ADDRESS_FAMILY,
+    names: &std::collections::HashMap<u32, String>,
+) -> Result<Vec<RouteInfo>> {
+    let mut table: *mut MIB_IPFORWARD_TABLE2 = std::ptr::null_mut();
+    // SAFETY: the API allocates and writes the table pointer we supply.
+    let rc = unsafe { GetIpForwardTable2(family, &mut table) };
+    if rc != 0 || table.is_null() {
+        return Ok(Vec::new());
     }
-    routes
+    // SAFETY: rows are indexed within `NumEntries` while the pointer is live,
+    // and `FreeMibTable` runs after the last read.
+    let routes = unsafe {
+        let header = &*table;
+        // `Table` is a one-element placeholder for a variable length array, so
+        // the rows must be reached through a raw slice of the real count.
+        let rows = std::slice::from_raw_parts(
+            std::ptr::addr_of!((*table).Table) as *const MIB_IPFORWARD_ROW2,
+            header.NumEntries as usize,
+        );
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            let destination = inet_address(&row.DestinationPrefix.Prefix);
+            let prefix_len = row.DestinationPrefix.PrefixLength;
+            let unspecified = destination.is_none_or(|address| match address {
+                IpAddr::V4(ip) => ip.is_unspecified(),
+                IpAddr::V6(ip) => ip.is_unspecified(),
+            });
+            let gateway = inet_address(&row.NextHop).filter(|address| match address {
+                IpAddr::V4(ip) => !ip.is_unspecified(),
+                IpAddr::V6(ip) => !ip.is_unspecified(),
+            });
+            out.push(RouteInfo {
+                destination: (!unspecified)
+                    .then(|| format!("{}", destination.expect("checked above")))
+                    .map(|text| format!("{text}/{prefix_len}")),
+                gateway,
+                interface: names
+                    .get(&row.InterfaceIndex)
+                    .cloned()
+                    .or_else(|| Some(row.InterfaceIndex.to_string())),
+                metric: (row.Metric > 0 && row.Metric != u32::MAX).then_some(row.Metric as u64),
+            });
+        }
+        out
+    };
+    // SAFETY: the table came from GetIpForwardTable2 and is freed exactly once.
+    unsafe { FreeMibTable(table.cast()) };
+    Ok(routes)
 }
 
-fn prefix_length(mask: Ipv4Addr) -> u8 {
-    mask.octets().iter().fold(0u8, |acc, byte| {
-        acc + (0..8).filter(|bit| byte & (0x80 >> bit) != 0).count() as u8
-    })
+fn inet_address(inet: &SOCKADDR_INET) -> Option<IpAddr> {
+    // SAFETY: the family tag selects the live union arm.
+    unsafe {
+        match inet.si_family {
+            AF_INET_U16 => {
+                Some(Ipv4Addr::from(inet.Ipv4.sin_addr.S_un.S_addr.to_ne_bytes()).into())
+            }
+            AF_INET6_U16 => Some(Ipv6Addr::from(inet.Ipv6.sin6_addr.u.Byte).into()),
+            _ => None,
+        }
+    }
 }
 
 /// Trait object helper.
@@ -375,35 +473,33 @@ pub fn manager() -> std::sync::Arc<dyn NetworkManager> {
 mod tests {
     use super::*;
 
-    const SAMPLE: &str =
-        "===========================================================================\n\
-        Interface List\n\
-        12...00 15 5d 3a 4b 21 ......Hyper-V Virtual Ethernet Adapter\n\
-        ===========================================================================\n\
-        IPv4 Route Table\n\
-        ============================================================================\n\
-        Active Routes:\n\
-        Network Destination        Netmask          Gateway       Interface  Metric\n\
-                  0.0.0.0          0.0.0.0     192.168.1.1     192.168.1.10     25\n\
-            127.0.0.0        255.0.0.0         On-link         127.0.0.1    331\n";
+    #[test]
+    fn driver_link_speed_sentinels_are_not_speeds() {
+        assert_eq!(Adapter::known_link_speed(0), None);
+        assert_eq!(Adapter::known_link_speed(u64::MAX), None);
+        assert_eq!(Adapter::known_link_speed(u64::MAX - 1), None);
+        assert_eq!(
+            Adapter::known_link_speed(1_000_000_000),
+            Some(1_000_000_000)
+        );
+    }
 
     #[test]
-    fn route_print_parsing_keeps_the_default_route() {
-        let routes = parse_route_print(SAMPLE);
-        assert_eq!(routes.len(), 2);
-
-        let default = &routes[0];
-        assert!(default.destination.is_none(), "{default:?}");
-        assert_eq!(
-            default.gateway,
-            Some("192.168.1.1".parse::<IpAddr>().unwrap())
-        );
-        assert_eq!(default.interface.as_deref(), Some("192.168.1.10"));
-        assert_eq!(default.metric, Some(25));
-        assert!(x_core::network::is_default_route(default));
-
-        assert_eq!(routes[1].destination.as_deref(), Some("127.0.0.0/8"));
-        assert_eq!(routes[1].gateway, None, "on-link routes have no gateway");
+    fn dhcp_flag_only_labels_live_routable_ipv4_addresses() {
+        let adapter = Adapter {
+            oper_status: IF_OPER_STATUS_UP,
+            dhcp_enabled: true,
+            addresses: vec![
+                ("192.168.3.64".parse().unwrap(), 24),
+                ("169.254.1.2".parse().unwrap(), 16),
+                ("fe80::1".parse().unwrap(), 64),
+            ],
+            ..Adapter::default()
+        };
+        let rows = adapter.address_rows();
+        assert_eq!(rows[0].dhcp, Some(true), "routable IPv4 from DHCP");
+        assert_eq!(rows[1].dhcp, None, "APIPA is not DHCP");
+        assert_eq!(rows[2].dhcp, None, "SLAAC is not DHCP");
     }
 
     #[test]

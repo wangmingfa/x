@@ -1,17 +1,20 @@
 //! macOS network adapter: `getifaddrs` for interfaces and addresses, `sysctl`
-//! for the routing table, `scutil` for the resolver configuration.
+//! for the routing table, `scutil` for the resolver configuration, and the
+//! shared POSIX probes for resolution, ping and traceroute.
 //!
 //! `getifaddrs` is the same API Linux exposes, which is why the enumeration lives
 //! in [`crate::common::ifaddrs`] and the unified
 //! `InterfaceInfo`/`AddressInfo` model maps cleanly onto both.
 
-use crate::common::ifaddrs;
+use crate::common::{ifaddrs, netprobe};
 use crate::sys;
+use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::os::raw::{c_char, c_int};
-use x_core::error::{Error, Result};
+use x_core::error::{Error, PermissionRequirement, Result};
 use x_core::network::{
-    is_default_route, AddressInfo, DnsConfig, DnsServer, InterfaceInfo, NetworkManager, RouteInfo,
+    is_default_route, AddressInfo, DnsConfig, DnsServer, InterfaceInfo, NetworkManager,
+    PingRequest, PingSummary, RouteInfo, TraceHop,
 };
 
 /// Reads macOS network state.
@@ -31,7 +34,29 @@ impl NetworkManager for MacosNetwork {
     }
 
     fn addresses(&self) -> Result<Vec<AddressInfo>> {
-        ifaddrs::addresses()
+        let mut rows = ifaddrs::addresses()?;
+        // The DHCP lease is a property of the interface and lives in the DHCP
+        // client, not in the kernel's address table, so `ipconfig getpacket`
+        // answers per interface. IPv6 addresses are excluded: they come from
+        // SLAAC or DHCPv6, and a DHCPv4 lease says nothing about them.
+        let mut lease: HashMap<String, bool> = HashMap::new();
+        for row in &mut rows {
+            if row.address.is_ipv6() || row.interface.starts_with("lo") {
+                continue;
+            }
+            let has_lease = match lease.get(&row.interface).copied() {
+                Some(seen) => seen,
+                None => {
+                    let seen = sys::run_command("ipconfig", &["getpacket", &row.interface])
+                        .map(|output| output.contains("yiaddr"))
+                        .unwrap_or(false);
+                    lease.insert(row.interface.clone(), seen);
+                    seen
+                }
+            };
+            row.dhcp = Some(has_lease);
+        }
+        Ok(rows)
     }
 
     fn routes(&self) -> Result<Vec<RouteInfo>> {
@@ -53,6 +78,40 @@ impl NetworkManager for MacosNetwork {
             config.servers = default_resolvers();
         }
         Ok(config)
+    }
+
+    fn resolve(&self, host: &str) -> Result<Vec<IpAddr>> {
+        netprobe::resolve(host)
+    }
+
+    fn reverse_dns(&self, address: IpAddr) -> Result<String> {
+        netprobe::reverse_dns(address)
+    }
+
+    /// The system cache is dropped by `dscacheutil`; `mDNSResponder` keeps a
+    /// second copy in memory and is reloaded with `HUP`. Both steps want root
+    /// on a current macOS, so a failure is reported as a permission problem.
+    fn flush_dns_cache(&self) -> Result<()> {
+        for (program, args) in [
+            ("dscacheutil", &["-flushcache"][..]),
+            ("killall", &["-HUP", "mDNSResponder"][..]),
+        ] {
+            if let Err(err) = sys::run_command(program, args) {
+                return Err(Error::permission_denied(
+                    PermissionRequirement::Root,
+                    format!("`{program} {}` failed: {err}", args.join(" ")),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn ping(&self, request: &PingRequest) -> Result<PingSummary> {
+        netprobe::ping(request)
+    }
+
+    fn trace(&self, address: IpAddr, max_hops: u32, timeout_ms: u32) -> Result<Vec<TraceHop>> {
+        netprobe::trace(address, max_hops, timeout_ms)
     }
 }
 

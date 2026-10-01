@@ -240,6 +240,7 @@ pub fn interfaces() -> Result<Vec<InterfaceInfo>> {
                     InterfaceState::Down
                 },
                 mtu: mtu(&entry.name),
+                link_speed_bps: speed(&entry.name),
                 received_bytes: None,
                 transmitted_bytes: None,
             });
@@ -461,6 +462,45 @@ pub fn mtu(name: &str) -> Option<u32> {
         .and_then(|raw| raw.trim().parse().ok())
 }
 
+/// Negotiated link speed in bits per second.
+///
+/// sysfs exposes the current speed in Mbps; a down or virtual interface answers
+/// with an error on the read, which is exactly the "no speed" answer.
+#[cfg(target_os = "linux")]
+pub fn speed(name: &str) -> Option<u64> {
+    std::fs::read_to_string(format!("/sys/class/net/{name}/speed"))
+        .ok()
+        .and_then(|raw| raw.trim().parse::<i64>().ok())
+        .filter(|mbps| *mbps > 0)
+        .map(|mbps| mbps as u64 * 1_000_000)
+}
+
+/// Negotiated link speed in bits per second.
+///
+/// macOS has no sysctl for it, so the `ifconfig` media line is the level-3
+/// source: `media: 1000baseT <full-duplex>` is a gigabit link, while Wi-Fi
+/// reports `media: autoselect` and has no conventional link speed to show.
+#[cfg(target_os = "macos")]
+pub fn speed(name: &str) -> Option<u64> {
+    let raw = crate::sys::run_command("ifconfig", &[name]).ok()?;
+    parse_ifconfig_speed(&raw)
+}
+
+/// Extract the link speed from an `ifconfig` interface dump.
+#[cfg(target_os = "macos")]
+fn parse_ifconfig_speed(raw: &str) -> Option<u64> {
+    let line = raw
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with("media:"))?;
+    let token = line.split_whitespace().nth(1)?;
+    // Media names look like `1000baseT`, `100baseTX`, `10000baseSX`; the
+    // leading number is Mbps. `autoselect` and friends carry no number.
+    let digits: String = token.chars().take_while(char::is_ascii_digit).collect();
+    let mbps: u64 = digits.parse().ok()?;
+    (mbps > 0).then(|| mbps * 1_000_000)
+}
+
 #[cfg(test)]
 mod tests {
     const AF_UNSPEC: u16 = 0;
@@ -553,5 +593,21 @@ mod tests {
         let mut v4 = V4::new([10, 0, 0, 1], Some([255, 0, 0, 0]));
         assert!(decode_address(std::ptr::null_mut(), v4.netmask(), AF_INET).is_none());
         assert!(decode_address(v4.address(), std::ptr::null_mut(), AF_UNSPEC).is_none());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn media_lines_become_link_speeds_or_honest_none() {
+        assert_eq!(
+            parse_ifconfig_speed("	status: active\n\tmedia: 1000baseT <full-duplex>\n"),
+            Some(1_000_000_000)
+        );
+        assert_eq!(
+            parse_ifconfig_speed("\tmedia: 100baseTX <full-duplex>\n"),
+            Some(100_000_000)
+        );
+        // Wi-Fi reports autoselect; there is no conventional link speed to show.
+        assert_eq!(parse_ifconfig_speed("\tmedia: autoselect (none)\n"), None);
+        assert_eq!(parse_ifconfig_speed("status: active\n"), None);
     }
 }

@@ -52,10 +52,16 @@ cargo build -p x-app
 
 | 命令 | 说明 |
 | --- | --- |
-| `x net interfaces` | 网卡：状态、MAC、MTU、默认路由标记、链路类型 |
+| `x net interfaces` | 网卡：状态、MAC、MTU、链路速度、默认网关、默认路由标记、链路类型 |
 | `x net addresses` | IP 地址 + 前缀长度（来自 netmask）+ DHCP 标记 |
 | `x net routes` | 路由表（IPv4/IPv6） |
 | `x net dns` | DNS 解析器配置 |
+| `x net flush` | 刷新系统 DNS 缓存 |
+| `x net connections` | 全部套接字 + 归属进程，`--process` / `--port` 过滤 |
+| `x net resolve <host>` | 正向解析：主机名 → 地址 |
+| `x net reverse <ip>` | 反向解析：地址 → 主机名 |
+| `x net ping <host>` | ICMP 连通性（`--count` / `--timeout`），输出 min/avg/max |
+| `x net trace <host>` | 逐跳路径（`--max-hops` / `--timeout`），原生 ICMP，不依赖 tracert |
 
 ### 磁盘（`x disk`）
 
@@ -143,9 +149,9 @@ GitHub Actions CI 在 Ubuntu / macOS / Windows 三平台上跑格式、clippy
 - [x] 内存：Swap / Pagefile、内存压力（memory pressure）
 - [x] 进程：CWD、线程数、打开的文件、进程级网络连接、环境变量、进程状态；`ps tree` 支持展开/折叠
 - [x] 端口：远程地址展示；按进程反查端口（`x port find <name>`）；`x port watch` 持续监视、只在变化时输出
-- [ ] 网络：网卡链路速度、网关；`x net connections`（统一 netstat / ss / lsof -i，支持按进程/端口过滤）；DNS 解析 / 反查 / 刷缓存；ping / trace / resolve
+- [x] 网络：网卡链路速度、网关；`x net connections`（统一 netstat / ss / lsof -i，支持按进程/端口过滤）；DNS 解析 / 反查 / 刷缓存；ping / trace / resolve
 - [ ] 磁盘：物理盘 / 分区 / UUID / 标签 / 只读标志；目录占用（`x disk usage <path> [--depth N]`，du / ncdu 风格，TUI 树形展示）；网卡收发流量统计（目前为空）
-- [ ] `x net addresses` 的 DHCP 标记（目前恒为空）
+- [x] `x net addresses` 的 DHCP 标记（Windows/macOS 已接入；Linux 内核不记录地址来源，诚实留空）
 - [ ] 服务：`x service logs <name>`；平台原生操作逃生舱
 - [ ] 能力探测（`x capability`）：按平台报告各能力 支持/降级/不支持
 - [ ] 审计：破坏性操作（kill、服务、防火墙…）写入本地日志，便于回溯

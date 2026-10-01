@@ -1,11 +1,14 @@
 //! Linux network adapter: shared `getifaddrs` for interfaces and addresses,
 //! `/proc/net/route` and `/proc/net/ipv6_route` for the routing table,
-//! `/etc/resolv.conf` for the resolver configuration.
+//! `/etc/resolv.conf` for the resolver configuration, and the shared POSIX
+//! probes for resolution, ping and traceroute.
 
-use crate::common::ifaddrs;
+use crate::common::{ifaddrs, netprobe};
+use std::net::IpAddr;
 use x_core::error::{Error, Result};
 use x_core::network::{
-    AddressInfo, DnsConfig, DnsServer, InterfaceInfo, NetworkManager, RouteInfo,
+    AddressInfo, DnsConfig, DnsServer, InterfaceInfo, NetworkManager, PingRequest, PingSummary,
+    RouteInfo, TraceHop,
 };
 
 /// Reads Linux network state.
@@ -55,6 +58,49 @@ impl NetworkManager for LinuxNetwork {
             ));
         }
         Ok(config.deduped())
+    }
+
+    fn resolve(&self, host: &str) -> Result<Vec<IpAddr>> {
+        netprobe::resolve(host)
+    }
+
+    fn reverse_dns(&self, address: IpAddr) -> Result<String> {
+        netprobe::reverse_dns(address)
+    }
+
+    /// Flush through whichever resolver cache the distribution runs:
+    /// `systemd-resolved` answers to `resolvectl`, its predecessor to
+    /// `systemd-resolve`, and glibc-only hosts cache in `nscd`.
+    fn flush_dns_cache(&self) -> Result<()> {
+        use crate::sys;
+        let mut last_failure = None;
+        for (program, args) in [
+            ("resolvectl", &["flush-caches"][..]),
+            ("systemd-resolve", &["--flush-caches"][..]),
+            ("nscd", &["-i", "hosts"][..]),
+        ] {
+            match sys::run_command(program, args) {
+                Ok(_) => return Ok(()),
+                // Not installed: try the next client. Present but failing
+                // (resolved not running): remember why, then try the next.
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(err) => last_failure = Some(format!("{program} failed: {err}")),
+            }
+        }
+        match last_failure {
+            Some(detail) => Err(Error::system(detail)),
+            None => Err(Error::unsupported(
+                "no DNS cache client found (resolvectl, systemd-resolve or nscd)",
+            )),
+        }
+    }
+
+    fn ping(&self, request: &PingRequest) -> Result<PingSummary> {
+        netprobe::ping(request)
+    }
+
+    fn trace(&self, address: IpAddr, max_hops: u32, timeout_ms: u32) -> Result<Vec<TraceHop>> {
+        netprobe::trace(address, max_hops, timeout_ms)
     }
 }
 

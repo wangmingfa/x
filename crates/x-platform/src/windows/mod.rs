@@ -7,10 +7,11 @@
 //! 2. `GetExtendedTcpTable`/`GetExtendedUdpTable` for process/socket attribution
 //!    and `GetAdaptersAddresses` for interfaces, addresses and DNS servers; the
 //!    SCM for services.
-//! 3. `route print` for the routing table, because Windows exposes no route
-//!    enumeration API to user mode.
+//! 3. `GetIpForwardTable2` for the routing table and the `IcmpSendEcho` family
+//!    for ping/trace, so no locale-sensitive command output is parsed.
 
 pub(crate) mod buffer;
+pub(crate) mod netprobe;
 pub mod network;
 pub mod port;
 pub mod process;

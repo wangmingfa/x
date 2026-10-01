@@ -12,3 +12,5 @@ pub mod process_sysinfo;
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub mod ifaddrs;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub mod netprobe;
