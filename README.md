@@ -255,10 +255,25 @@ PowerShell SslStream、类 Unix 用 openssl s_client），x 负责参数校验�
 
 ### 交互式 TUI（`x tui` / `x ui`）
 
-- 四个页签：Ports、Processes、Network、System，1.5 秒自动刷新
-- `Tab` 切换页签；`j/k` 或方向键选择；`g`/`G` 到首尾；`/` 过滤；
-  `r` 手动刷新；`k` 杀掉选中进程（先弹确认框）；`q` 退出
-- 刷新失败时保留旧数据，错误显示在状态栏
+七个页面：Dashboard（首页）、Ports、Processes、Network、Services、
+System、Disks；侧边栏列页，数字 `1`–`7` 直达，`Tab`/左右键循环。
+可见页每 1.5 秒自动刷新，失败保留旧数据、错误进状态栏。
+
+- 首页：CPU / 内存仪表、端口计数（监听 / 已建立 / 全部）、系统事实与
+  文件系统表
+- 命令面板：`Ctrl+P` 打开，输入即过滤命令，`Enter` 执行（覆盖翻页、
+  刷新、过滤、搜索、kill、树形、排序、跳到选中进程的端口等）
+- 全局搜索：`/` 同时命中进程 / 端口 / 服务 / 网络 / 文件，回车跳到
+  对应页面并带上过滤；某家族采样失败会在结果里就地注明
+- 进程页：`t` 树形（父进程缩进），`Space` 折叠/展开，`s` 轮换排序键
+- 端口页与进程页：`Enter` 详情（端口给持有进程 / PID / 用户 / 对端，
+  进程给命令行与资源占用），`k` 杀掉（先出计划确认），`p` 直接看
+  选中进程持有的端口
+- Disks：挂载表 + 启动目录的用量树，后台扫描、`Enter` 折叠
+- `f` 过滤当前页；`r` 手动刷新；`q` 退出
+
+键位行为由终端无关的单元测试钉住（App 状态机 + ratatui TestBackend
+渲染断言），另有 Windows 控制台实机验证（含退出码）。
 
 ### 通用能力
 
@@ -377,13 +392,13 @@ GitHub Actions CI 在 Ubuntu / macOS / Windows 三平台上跑格式、clippy
 - [x] 显示（`x display list/info`）：分辨率、刷新率、缩放、主显示器、位置；HDR 未提供（Windows 需再过 QueryDisplayConfig，macOS/Linux 口径不一，留待后续如实读取）
 - [x] 窗口（`x window list/active/focus/minimize/maximize`）：Windows user32 原生全量；Linux 借 wmctrl/xprop；macOS 免权限列窗口 + System Events 动词（屏幕录制 / 辅助功能按需索取，拒绝原样透出）；动词确认 + 审计
 - [x] 事件（`x events`）：进程启停、网络连接、USB 插拔、磁盘挂载、服务状态变化；快照对拍而非内核订阅（x-core 零平台 cfg），家族采样失败如实报告并重置基线，USB 因 Windows 采样约 1.6s 缺省按需开启
-- [ ] TUI 增强：Dashboard 首页（CPU / 内存 / 磁盘 / 端口概览 + 侧边导航）
-- [ ] TUI 增强：命令面板（Ctrl+P，可搜索功能而非仅输入命令）
-- [ ] TUI 增强：全局搜索（`/` 覆盖 process / port / service / network / file）
-- [ ] TUI 增强：进程管理器（Enter 详情、k 杀掉、t 树形、/ 搜索、s 排序、r 刷新）
-- [ ] TUI 增强：端口管理器（Enter 展示 进程/PID/CWD/启动命令 + [Kill]）
-- [ ] TUI 增强：网络页（网卡状态/IP/MAC/速度 + 实时连接表）
-- [ ] TUI 增强：树形展开/折叠、Disks 与 Services 页签、跨页签联动（选中进程直接看它持有的端口）
+- [x] TUI 增强：Dashboard 首页（CPU / 内存 / 磁盘 / 端口概览 + 侧边导航）
+- [x] TUI 增强：命令面板（Ctrl+P，可搜索功能而非仅输入命令）
+- [x] TUI 增强：全局搜索（`/` 覆盖 process / port / service / network / file）
+- [x] TUI 增强：进程管理器（Enter 详情、k 杀掉、t 树形、/ 搜索、s 排序、r 刷新）
+- [x] TUI 增强：端口管理器（Enter 展示 进程/PID/CWD/启动命令 + [Kill]）
+- [x] TUI 增强：网络页（网卡状态/IP/MAC/速度 + 实时连接表）
+- [x] TUI 增强：树形展开/折叠、Disks 与 Services 页签、跨页签联动（选中进程直接看它持有的端口）
 - [ ] 更多内核级数据：连接状态统计、socket 队列长度等
 
 ### P4 平台化

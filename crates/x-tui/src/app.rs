@@ -9,49 +9,71 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use x_core::disk::{DirUsage, DiskInfo};
 use x_core::error::Result;
-use x_core::network::{DnsConfig, InterfaceInfo, RouteInfo};
-use x_core::port::{KillPlan, PortInfo, PortListOptions, PortQuery};
-use x_core::process::{ProcessInfo, ProcessListOptions, ProcessSort};
-use x_core::service::{ServiceInfo, ServiceListOptions};
-use x_core::system::SystemInfo;
-use x_core::{KillSignal, SystemContext};
+use x_core::network::{AddressInfo, DnsConfig, InterfaceInfo, RouteInfo};
+use x_core::port::{ConnectionState, KillPlan, PortInfo, PortListOptions, PortQuery};
+use x_core::process::{ProcessInfo, ProcessListOptions, ProcessNode, ProcessSort, ProcessTree};
+use x_core::service::{ServiceInfo, ServiceListOptions, ServiceState};
+use x_core::system::{MemoryUsage, SystemInfo};
+use x_core::{format_bytes, KillSignal, SystemContext};
+
+use crate::palette::{self, Command, CommandId};
 
 /// Rows assumed before the first draw, when the real height is still unknown.
 const DEFAULT_VISIBLE_ROWS: usize = 20;
 
-/// The pages of the interface, in tab order.
+/// The order `s` cycles process sorting through.
+const SORT_CYCLE: [ProcessSort; 5] = [
+    ProcessSort::Cpu,
+    ProcessSort::Memory,
+    ProcessSort::Pid,
+    ProcessSort::Name,
+    ProcessSort::StartTime,
+];
+
+/// How many search hits each family contributes at most.
+const SEARCH_HITS_PER_FAMILY: usize = 8;
+
+/// The pages of the interface, in sidebar order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum View {
+    /// Overview of the machine: CPU, memory, disks, sockets.
+    Dashboard,
     /// Sockets and their owners.
     Ports,
     /// Processes.
     Processes,
-    /// Network configuration.
+    /// Network configuration and live connections.
     Network,
+    /// Services.
+    Services,
     /// System health.
     System,
     /// Mounted filesystems and a usage tree of the launch directory.
-    Disk,
+    Disks,
 }
 
 impl View {
     /// Every view, for tab cycling.
-    pub const ALL: [View; 5] = [
+    pub const ALL: [View; 7] = [
+        View::Dashboard,
         View::Ports,
         View::Processes,
         View::Network,
+        View::Services,
         View::System,
-        View::Disk,
+        View::Disks,
     ];
 
-    /// Tab label.
+    /// Sidebar label.
     pub fn title(self) -> &'static str {
         match self {
+            Self::Dashboard => "dashboard",
             Self::Ports => "ports",
             Self::Processes => "processes",
             Self::Network => "network",
+            Self::Services => "services",
             Self::System => "system",
-            Self::Disk => "disk",
+            Self::Disks => "disks",
         }
     }
 
@@ -103,6 +125,124 @@ pub enum Modal {
         /// Signal that will be delivered.
         signal: KillSignal,
     },
+    /// The Ctrl+P command palette.
+    Palette {
+        /// Text typed so far.
+        input: String,
+        /// Selected row of the filtered command list.
+        selected: usize,
+    },
+    /// The global search overlay.
+    Search {
+        /// Text typed so far.
+        input: String,
+        /// Selected row of the hit list.
+        selected: usize,
+    },
+    /// A read-only snapshot of one entity, with an optional kill target.
+    Detail {
+        /// Dialog title.
+        title: String,
+        /// `(field, value)` pairs, already rendered to text.
+        rows: Vec<(String, String)>,
+        /// What `k` would confirm, when the entity can be acted on.
+        target: Option<Target>,
+    },
+}
+
+/// One row of the global search overlay.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SearchHit {
+    /// Which family the hit belongs to (`process`, `port`, …).
+    pub family: &'static str,
+    /// What is shown bold.
+    pub label: String,
+    /// The supporting line under the label.
+    pub detail: String,
+    action: SearchAction,
+}
+
+/// What happens when a search hit is chosen.
+#[derive(Debug, Clone, PartialEq)]
+enum SearchAction {
+    /// Switch to this page; `query` becomes its filter when present.
+    Filter { view: View, query: Option<String> },
+    /// Reveal this directory in the disk usage tree.
+    Usage(PathBuf),
+}
+
+/// Socket counts shown on the dashboard.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PortSummary {
+    /// Sockets in `listen`.
+    pub listening: usize,
+    /// Sockets in `established`.
+    pub established: usize,
+    /// Every socket the platform reported.
+    pub total: usize,
+}
+
+impl PortSummary {
+    fn from_rows(rows: &[PortInfo]) -> Self {
+        let mut summary = Self {
+            total: rows.len(),
+            ..Default::default()
+        };
+        for row in rows {
+            match row.state {
+                ConnectionState::Listen => summary.listening += 1,
+                ConnectionState::Established => summary.established += 1,
+                _ => {}
+            }
+        }
+        summary
+    }
+}
+
+/// Human label of a socket state, shared with the renderer.
+pub fn state_label(state: ConnectionState) -> &'static str {
+    match state {
+        ConnectionState::Listen => "listen",
+        ConnectionState::Established => "established",
+        ConnectionState::SynReceived => "syn-received",
+        ConnectionState::SynSent => "syn-sent",
+        ConnectionState::FinWait1 => "fin-wait-1",
+        ConnectionState::FinWait2 => "fin-wait-2",
+        ConnectionState::CloseWait => "close-wait",
+        ConnectionState::Closing => "closing",
+        ConnectionState::LastAck => "last-ack",
+        ConnectionState::TimeWait => "time-wait",
+        ConnectionState::Closed => "closed",
+        ConnectionState::Bound => "bound",
+        ConnectionState::Unknown => "unknown",
+    }
+}
+
+/// Human label of a service state, shared with the renderer.
+pub fn service_state_label(state: ServiceState) -> &'static str {
+    match state {
+        ServiceState::Running => "running",
+        ServiceState::Stopped => "stopped",
+        ServiceState::Starting => "starting",
+        ServiceState::Stopping => "stopping",
+        ServiceState::Failed => "failed",
+        ServiceState::Disabled => "disabled",
+        ServiceState::Enabled => "enabled",
+        ServiceState::ActiveEnabled => "active_enabled",
+        ServiceState::NotFound => "not_found",
+        ServiceState::Unknown => "unknown",
+    }
+}
+
+/// Short name of a process sort key, for the table title.
+pub fn sort_label(sort: ProcessSort) -> &'static str {
+    match sort {
+        ProcessSort::Cpu => "cpu",
+        ProcessSort::Memory => "memory",
+        ProcessSort::Pid => "pid",
+        ProcessSort::Name => "name",
+        ProcessSort::StartTime => "start",
+    }
 }
 
 /// The whole interface state.
@@ -118,12 +258,22 @@ pub struct App {
     scroll: usize,
 
     ports: Vec<PortInfo>,
+    port_summary: Option<PortSummary>,
     processes: Vec<ProcessInfo>,
+    process_sort: ProcessSort,
+    tree_mode: bool,
+    process_tree: Option<ProcessTree>,
+    /// Pids whose subtree is hidden in tree mode.
+    folded: BTreeSet<u32>,
     services: Vec<ServiceInfo>,
     interfaces: Vec<InterfaceInfo>,
+    addresses: Vec<AddressInfo>,
     routes: Vec<RouteInfo>,
     dns: DnsConfig,
+    /// Established and other non-listening sockets, for the connections table.
+    connections: Vec<PortInfo>,
     system: Option<SystemInfo>,
+    memory: Option<MemoryUsage>,
     disks: Vec<DiskInfo>,
 
     /// Root of the directory-usage scan, fixed at launch like `ncdu`.
@@ -134,6 +284,10 @@ pub struct App {
     collapsed: BTreeSet<PathBuf>,
     /// Mailbox of the in-flight scan; `None` once collected.
     scan: Option<Arc<Mutex<Option<Vec<DirUsage>>>>>,
+
+    /// Global search cache, recomputed when the query changes.
+    search_hits: Vec<SearchHit>,
+    search_notes: Vec<String>,
 
     last_refresh: std::time::Instant,
     cpu: f32,
@@ -149,7 +303,7 @@ impl App {
     pub fn new(context: SystemContext) -> Self {
         let mut app = Self {
             context,
-            view: View::Ports,
+            view: View::Dashboard,
             quit: false,
             modal: Modal::None,
             status: String::new(),
@@ -157,17 +311,27 @@ impl App {
             selected: 0,
             scroll: 0,
             ports: Vec::new(),
+            port_summary: None,
             processes: Vec::new(),
+            process_sort: ProcessSort::Cpu,
+            tree_mode: false,
+            process_tree: None,
+            folded: BTreeSet::new(),
             services: Vec::new(),
             interfaces: Vec::new(),
+            addresses: Vec::new(),
             routes: Vec::new(),
             dns: DnsConfig::default(),
+            connections: Vec::new(),
             system: None,
+            memory: None,
             disks: Vec::new(),
             usage_root: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             usage: Vec::new(),
             collapsed: BTreeSet::new(),
             scan: None,
+            search_hits: Vec::new(),
+            search_notes: Vec::new(),
             last_refresh: std::time::Instant::now(),
             cpu: 0.0,
             visible_rows: DEFAULT_VISIBLE_ROWS,
@@ -206,9 +370,40 @@ impl App {
         &self.ports
     }
 
+    /// Socket counts of the last dashboard refresh.
+    pub fn port_summary(&self) -> Option<&PortSummary> {
+        self.port_summary.as_ref()
+    }
+
     /// Processes in the current snapshot.
     pub fn processes(&self) -> &[ProcessInfo] {
         &self.processes
+    }
+
+    /// The process sort key in effect.
+    pub fn process_sort(&self) -> ProcessSort {
+        self.process_sort
+    }
+
+    /// `true` while the processes page shows a tree.
+    pub fn tree_mode(&self) -> bool {
+        self.tree_mode
+    }
+
+    /// The visible process rows: the flat list, or the tree flattened with
+    /// folded subtrees omitted. Each row carries its depth.
+    pub fn process_rows(&self) -> Vec<(usize, &ProcessInfo)> {
+        if !self.tree_mode {
+            return self.processes.iter().map(|process| (0, process)).collect();
+        }
+        let Some(tree) = &self.process_tree else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for root in &tree.roots {
+            flatten_folded(root, 0, &self.folded, &mut out);
+        }
+        out
     }
 
     /// First visible row, kept in sync with the selection.
@@ -226,24 +421,29 @@ impl App {
         &self.status
     }
 
-    /// Aggregate CPU utilization of the last system refresh.
+    /// Aggregate CPU utilization of the last refresh.
     pub fn cpu(&self) -> f32 {
         self.cpu
     }
 
-    /// Live memory utilization, read on demand because it is cheap.
-    pub fn memory_usage(&self) -> Option<x_core::system::MemoryUsage> {
-        self.context.system.memory_usage().ok()
+    /// Memory utilization of the last system or dashboard refresh.
+    pub fn memory_usage(&self) -> Option<&MemoryUsage> {
+        self.memory.as_ref()
     }
 
-    /// Services of the last system refresh.
+    /// Services of the last services refresh.
     pub fn services(&self) -> &[ServiceInfo] {
         &self.services
     }
 
     /// Interfaces of the last network refresh.
-    pub fn interfaces(&self) -> &[x_core::network::InterfaceInfo] {
+    pub fn interfaces(&self) -> &[InterfaceInfo] {
         &self.interfaces
+    }
+
+    /// Addresses of the last network refresh.
+    pub fn addresses(&self) -> &[AddressInfo] {
+        &self.addresses
     }
 
     /// DNS configuration of the last network refresh.
@@ -256,19 +456,44 @@ impl App {
         &self.routes
     }
 
+    /// Non-listening sockets of the last network refresh.
+    pub fn connections(&self) -> &[PortInfo] {
+        &self.connections
+    }
+
     /// Static system facts of the last system refresh.
     pub fn system(&self) -> Option<&SystemInfo> {
         self.system.as_ref()
     }
 
+    /// Cached global search hits.
+    pub fn search_hits(&self) -> &[SearchHit] {
+        &self.search_hits
+    }
+
+    /// Notes about families the search could not read.
+    pub fn search_notes(&self) -> &[String] {
+        &self.search_notes
+    }
+
+    /// Palette commands matching the text typed so far.
+    pub fn palette_matches(&self) -> Vec<Command> {
+        match &self.modal {
+            Modal::Palette { input, .. } => palette::matching(input),
+            _ => palette::matching(""),
+        }
+    }
+
     /// Re-read the snapshot for the visible page.
     pub fn refresh(&mut self) {
         let result = match self.view {
+            View::Dashboard => self.refresh_dashboard(),
             View::Ports => self.refresh_ports(),
             View::Processes => self.refresh_processes(),
             View::Network => self.refresh_network(),
+            View::Services => self.refresh_services(),
             View::System => self.refresh_system(),
-            View::Disk => self.refresh_disk(),
+            View::Disks => self.refresh_disks(),
         };
         if let Err(error) = result {
             self.status = error.message().to_string();
@@ -276,11 +501,41 @@ impl App {
         self.last_refresh = std::time::Instant::now();
     }
 
+    /// The dashboard is the one page that summarizes several capabilities at
+    /// once, so a failing one is reported but never blanks the rest.
+    fn refresh_dashboard(&mut self) -> Result<()> {
+        let mut errors: Vec<String> = Vec::new();
+        match self.context.system.info() {
+            Ok(info) => self.system = Some(info),
+            Err(error) => errors.push(error.message().to_string()),
+        }
+        match self.context.system.cpu_usage() {
+            Ok(usage) => self.cpu = usage.total_percent,
+            Err(error) => errors.push(error.message().to_string()),
+        }
+        match self.context.system.memory_usage() {
+            Ok(usage) => self.memory = Some(usage),
+            Err(error) => errors.push(error.message().to_string()),
+        }
+        match self.context.disk.list() {
+            Ok(rows) => self.disks = rows,
+            Err(error) => errors.push(error.message().to_string()),
+        }
+        match self.context.port.list(&PortListOptions::default()) {
+            Ok(rows) => self.port_summary = Some(PortSummary::from_rows(&rows)),
+            Err(error) => errors.push(error.message().to_string()),
+        }
+        if !errors.is_empty() {
+            self.status = errors.join("; ");
+        }
+        Ok(())
+    }
+
     fn refresh_ports(&mut self) -> Result<()> {
         // `?` keeps the previous rows on failure: a transient error should
         // show a message, not blank the screen.
         self.ports = self.context.port.list(&PortListOptions {
-            listening_only: true,
+            listening_only: false,
             search: self.search(),
             ..Default::default()
         })?;
@@ -290,27 +545,37 @@ impl App {
     fn refresh_processes(&mut self) -> Result<()> {
         // Only the visible page is refreshed: sampling CPU on every process is
         // the most expensive call in the workspace.
-        self.processes = self.context.process.list(&ProcessListOptions {
+        let options = ProcessListOptions {
             search: self.search(),
-            sort: ProcessSort::Cpu,
+            sort: self.process_sort,
             with_usage: true,
             limit: Some(200),
             user: None,
-        })?;
+        };
+        if self.tree_mode {
+            self.process_tree = Some(self.context.process.tree(&options)?);
+        } else {
+            self.processes = self.context.process.list(&options)?;
+        }
         Ok(())
     }
 
     fn refresh_network(&mut self) -> Result<()> {
         self.interfaces = self.context.network.interfaces()?;
+        self.addresses = self.context.network.addresses()?;
         self.routes = self.context.network.routes()?;
         self.dns = self.context.network.dns()?;
-        self.services.clear();
+        self.connections = self.context.port.list(&PortListOptions {
+            search: self.search(),
+            ..Default::default()
+        })?;
+        // Listeners are the ports page's job; this table is about connections.
+        self.connections
+            .retain(|row| row.state != ConnectionState::Listen);
         Ok(())
     }
 
-    fn refresh_system(&mut self) -> Result<()> {
-        self.system = Some(self.context.system.info()?);
-        self.cpu = self.context.system.cpu_usage()?.total_percent;
+    fn refresh_services(&mut self) -> Result<()> {
         self.services = self.context.service.list(&ServiceListOptions {
             search: self.search(),
             running_only: false,
@@ -319,7 +584,14 @@ impl App {
         Ok(())
     }
 
-    fn refresh_disk(&mut self) -> Result<()> {
+    fn refresh_system(&mut self) -> Result<()> {
+        self.system = Some(self.context.system.info()?);
+        self.cpu = self.context.system.cpu_usage()?.total_percent;
+        self.memory = Some(self.context.system.memory_usage()?);
+        Ok(())
+    }
+
+    fn refresh_disks(&mut self) -> Result<()> {
         self.disks = self.context.disk.list()?;
         self.start_scan();
         Ok(())
@@ -347,8 +619,9 @@ impl App {
         });
     }
 
-    /// Pick up a finished background scan, if one is waiting.
-    fn collect_scan(&mut self) {
+    /// Pick up a finished background scan, if one is waiting. Returns `true`
+    /// when new rows arrived.
+    fn collect_scan(&mut self) -> bool {
         let rows = self
             .scan
             .as_ref()
@@ -358,7 +631,9 @@ impl App {
             self.status = format!("usage: {} directories", rows.len().saturating_sub(1));
             self.usage = rows;
             self.scan = None;
+            return true;
         }
+        false
     }
 
     /// Mounted filesystems of the last disk refresh.
@@ -374,6 +649,13 @@ impl App {
     /// `true` while the background walker is still running.
     pub fn usage_scanning(&self) -> bool {
         self.scan.is_some()
+    }
+
+    /// Point the usage tree at a fixture so tests never walk the real tree.
+    #[cfg(test)]
+    pub(crate) fn set_usage_fixture(&mut self, root: std::path::PathBuf, rows: Vec<DirUsage>) {
+        self.usage_root = root;
+        self.usage = rows;
     }
 
     /// The visible usage rows in tree order: the scan regrouped by parent,
@@ -410,7 +692,7 @@ impl App {
         out
     }
 
-    /// Show or hide the subtree under the selected row.
+    /// Show or hide the subtree under the selected usage row.
     fn toggle_collapse(&mut self) {
         let Some(path) = self
             .usage_tree()
@@ -426,9 +708,32 @@ impl App {
         self.clamp_scroll();
     }
 
+    /// Show or hide the subtree under the selected process row.
+    fn toggle_process_fold(&mut self) {
+        let Some(pid) = self
+            .process_rows()
+            .get(self.selected)
+            .map(|(_, row)| row.pid)
+        else {
+            return;
+        };
+        if !self.folded.remove(&pid) {
+            self.folded.insert(pid);
+        }
+        self.selected = self.selected.min(self.row_count().saturating_sub(1));
+        self.clamp_scroll();
+    }
+
     /// Called when the refresh interval elapsed.
     pub fn on_tick(&mut self) {
-        self.collect_scan();
+        if self.collect_scan() {
+            // A scan finishing while the search overlay is open refreshes its
+            // file family instead of leaving a stale empty group.
+            if let Modal::Search { input, .. } = &self.modal {
+                let query = input.clone();
+                self.run_search(&query);
+            }
+        }
         if self.last_refresh.elapsed() >= crate::REFRESH {
             self.refresh();
         }
@@ -445,33 +750,52 @@ impl App {
                 target,
                 signal,
             } => self.on_key_confirm(key, title, target, signal),
+            Modal::Palette { input, selected } => self.on_key_palette(key, input, selected),
+            Modal::Search { input, selected } => self.on_key_search(key, input, selected),
+            Modal::Detail {
+                title,
+                rows,
+                target,
+            } => self.on_key_detail(key, title, rows, target),
         }
     }
 
     fn on_key_page(&mut self, key: KeyEvent) {
+        // Ctrl+P works from anywhere.
+        if key.code == KeyCode::Char('p') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.modal = Modal::Palette {
+                input: String::new(),
+                selected: 0,
+            };
+            return;
+        }
+        // Digits jump straight to a page; the sidebar shows the mapping.
+        if let KeyCode::Char(digit) = key.code {
+            if let Some(index) = digit.to_digit(10) {
+                let index = index as usize;
+                if (1..=View::ALL.len()).contains(&index) {
+                    self.goto_view(View::ALL[index - 1]);
+                    return;
+                }
+            }
+        }
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => self.quit = true,
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => self.quit = true,
             KeyCode::Char('c') => self.confirm_kill_selection(),
             KeyCode::Char('k') => self.confirm_kill_selection(),
-            KeyCode::Char('/') => {
-                self.modal = Modal::Prompt {
-                    label: "filter",
-                    input: self.filter.clone(),
-                }
-            }
+            KeyCode::Char('/') => self.open_search(),
+            KeyCode::Char('f') => self.open_filter(),
             KeyCode::Char('r') => self.refresh(),
-            KeyCode::Tab | KeyCode::Right => {
-                self.view = self.view.next();
-                self.selected = 0;
-                self.scroll = 0;
-                self.refresh();
-            }
-            KeyCode::BackTab | KeyCode::Left => {
-                self.view = self.view.previous();
-                self.selected = 0;
-                self.scroll = 0;
-                self.refresh();
+            KeyCode::Tab | KeyCode::Right => self.goto_view(self.view.next()),
+            KeyCode::BackTab | KeyCode::Left => self.goto_view(self.view.previous()),
+            KeyCode::Char('t') => self.toggle_tree(),
+            KeyCode::Char('s') => self.cycle_sort(),
+            KeyCode::Char('p') => self.ports_of_selection(),
+            KeyCode::Char(' ') => {
+                if self.view == View::Processes && self.tree_mode {
+                    self.toggle_process_fold();
+                }
             }
             KeyCode::Char('g') | KeyCode::Home => {
                 self.selected = 0;
@@ -525,6 +849,383 @@ impl App {
         }
     }
 
+    fn on_key_palette(&mut self, key: KeyEvent, mut input: String, mut selected: usize) {
+        match key.code {
+            KeyCode::Esc => self.modal = Modal::None,
+            KeyCode::Enter => {
+                let matches = palette::matching(&input);
+                if let Some(command) = matches.get(selected) {
+                    let id = command.id;
+                    self.modal = Modal::None;
+                    self.run_command(id);
+                } else {
+                    self.status = "no matching command".into();
+                    self.modal = Modal::None;
+                }
+            }
+            KeyCode::Down => {
+                let len = palette::matching(&input).len();
+                selected = (selected + 1).min(len.saturating_sub(1));
+                self.modal = Modal::Palette { input, selected };
+            }
+            KeyCode::Up => {
+                selected = selected.saturating_sub(1);
+                self.modal = Modal::Palette { input, selected };
+            }
+            KeyCode::Backspace => {
+                input.pop();
+                selected = 0;
+                self.modal = Modal::Palette { input, selected };
+            }
+            KeyCode::Char(c) => {
+                input.push(c);
+                selected = 0;
+                self.modal = Modal::Palette { input, selected };
+            }
+            _ => self.modal = Modal::Palette { input, selected },
+        }
+    }
+
+    fn on_key_search(&mut self, key: KeyEvent, mut input: String, mut selected: usize) {
+        match key.code {
+            KeyCode::Esc => {
+                self.modal = Modal::None;
+                self.search_hits.clear();
+                self.search_notes.clear();
+            }
+            KeyCode::Enter => {
+                let hit = self.search_hits.get(selected).cloned();
+                self.modal = Modal::None;
+                match hit {
+                    Some(hit) => self.apply_search_hit(hit),
+                    None => self.status = format!("no matches for {}", input.trim()),
+                }
+            }
+            KeyCode::Down => {
+                let len = self.search_hits.len();
+                selected = (selected + 1).min(len.saturating_sub(1));
+                self.modal = Modal::Search { input, selected };
+            }
+            KeyCode::Up => {
+                selected = selected.saturating_sub(1);
+                self.modal = Modal::Search { input, selected };
+            }
+            KeyCode::PageDown => {
+                let len = self.search_hits.len();
+                selected = (selected + 5).min(len.saturating_sub(1));
+                self.modal = Modal::Search { input, selected };
+            }
+            KeyCode::PageUp => {
+                selected = selected.saturating_sub(5);
+                self.modal = Modal::Search { input, selected };
+            }
+            KeyCode::Backspace => {
+                input.pop();
+                self.run_search(&input);
+                selected = selected.min(self.search_hits.len().saturating_sub(1));
+                self.modal = Modal::Search { input, selected };
+            }
+            KeyCode::Char(c) => {
+                input.push(c);
+                self.run_search(&input);
+                selected = selected.min(self.search_hits.len().saturating_sub(1));
+                self.modal = Modal::Search { input, selected };
+            }
+            _ => self.modal = Modal::Search { input, selected },
+        }
+    }
+
+    fn on_key_detail(
+        &mut self,
+        key: KeyEvent,
+        _title: String,
+        _rows: Vec<(String, String)>,
+        target: Option<Target>,
+    ) {
+        match key.code {
+            KeyCode::Char('k') => match target {
+                Some(target) => {
+                    let confirm_title = match &target {
+                        Target::Sockets(plan) => match &plan.query {
+                            PortQuery::Port(port) => format!("free port {port}"),
+                            PortQuery::Process(name) => format!("free ports of {name}"),
+                        },
+                        Target::Process { pid, name } => format!("kill {name} ({pid})"),
+                    };
+                    self.modal = Modal::Confirm {
+                        title: confirm_title,
+                        target,
+                        signal: KillSignal::Terminate,
+                    };
+                }
+                None => {
+                    self.status = "nothing to kill here".into();
+                    self.modal = Modal::None;
+                }
+            },
+            // Any other key closes the snapshot.
+            _ => self.modal = Modal::None,
+        }
+    }
+
+    fn open_filter(&mut self) {
+        self.modal = Modal::Prompt {
+            label: "filter",
+            input: self.filter.clone(),
+        };
+    }
+
+    fn open_search(&mut self) {
+        self.modal = Modal::Search {
+            input: String::new(),
+            selected: 0,
+        };
+        self.run_search("");
+        // The file family searches the usage tree; opening the search makes
+        // sure the walk is at least started.
+        self.start_scan();
+    }
+
+    /// Recompute the search cache for `query`.
+    fn run_search(&mut self, query: &str) {
+        let (hits, notes) = self.compute_search(query);
+        self.search_hits = hits;
+        self.search_notes = notes;
+    }
+
+    /// Query every family for `query`. Unreadable families are noted instead
+    /// of failing the whole search.
+    fn compute_search(&self, query: &str) -> (Vec<SearchHit>, Vec<String>) {
+        let mut hits = Vec::new();
+        let mut notes = Vec::new();
+        let trimmed = query.trim();
+        if trimmed.is_empty() {
+            return (hits, notes);
+        }
+        match self.context.process.list(&ProcessListOptions {
+            search: Some(trimmed.to_string()),
+            sort: ProcessSort::Pid,
+            with_usage: false,
+            limit: Some(SEARCH_HITS_PER_FAMILY),
+            user: None,
+        }) {
+            Ok(rows) => {
+                for row in rows {
+                    hits.push(SearchHit {
+                        family: "process",
+                        label: format!("{} ({})", row.name, row.pid),
+                        detail: row
+                            .command_line
+                            .clone()
+                            .or_else(|| row.user.clone())
+                            .unwrap_or_else(|| format!("pid {}", row.pid)),
+                        action: SearchAction::Filter {
+                            view: View::Processes,
+                            query: Some(trimmed.to_string()),
+                        },
+                    });
+                }
+            }
+            Err(_) => notes.push("processes unreadable".into()),
+        }
+        match self.context.port.list(&PortListOptions {
+            search: Some(trimmed.to_string()),
+            limit: Some(SEARCH_HITS_PER_FAMILY),
+            ..Default::default()
+        }) {
+            Ok(rows) => {
+                for row in rows {
+                    let owner = match (row.process_name.as_deref(), row.pid) {
+                        (Some(name), Some(pid)) => format!("{name} (pid {pid})"),
+                        (Some(name), None) => name.to_string(),
+                        _ => "no owner".to_string(),
+                    };
+                    hits.push(SearchHit {
+                        family: "port",
+                        label: format!(
+                            "{} {} {}",
+                            row.protocol.name(),
+                            row.endpoint(),
+                            state_label(row.state)
+                        ),
+                        detail: owner,
+                        action: SearchAction::Filter {
+                            view: View::Ports,
+                            query: Some(trimmed.to_string()),
+                        },
+                    });
+                }
+            }
+            Err(_) => notes.push("ports unreadable".into()),
+        }
+        match self.context.service.list(&ServiceListOptions {
+            search: Some(trimmed.to_string()),
+            running_only: false,
+            limit: Some(SEARCH_HITS_PER_FAMILY),
+            ..Default::default()
+        }) {
+            Ok(rows) => {
+                for row in rows {
+                    hits.push(SearchHit {
+                        family: "service",
+                        label: row.name.clone(),
+                        detail: match (row.pid, row.state) {
+                            (Some(pid), _) => format!("pid {pid}"),
+                            (None, state) => service_state_label(state).to_string(),
+                        },
+                        action: SearchAction::Filter {
+                            view: View::Services,
+                            query: Some(trimmed.to_string()),
+                        },
+                    });
+                }
+            }
+            Err(_) => notes.push("services unreadable".into()),
+        }
+        match self.context.network.interfaces() {
+            Ok(rows) => {
+                let needle = trimmed.to_ascii_lowercase();
+                let mut count = 0;
+                for row in rows {
+                    let haystack = format!(
+                        "{} {} {}",
+                        row.name,
+                        row.description.as_deref().unwrap_or(""),
+                        row.mac_address.as_deref().unwrap_or("")
+                    )
+                    .to_ascii_lowercase();
+                    if !haystack.contains(&needle) {
+                        continue;
+                    }
+                    hits.push(SearchHit {
+                        family: "network",
+                        label: row.name.clone(),
+                        detail: row
+                            .mac_address
+                            .clone()
+                            .or_else(|| row.description.clone())
+                            .unwrap_or_default(),
+                        action: SearchAction::Filter {
+                            view: View::Network,
+                            query: None,
+                        },
+                    });
+                    count += 1;
+                    if count >= SEARCH_HITS_PER_FAMILY {
+                        break;
+                    }
+                }
+            }
+            Err(_) => notes.push("network unreadable".into()),
+        }
+        // The file family covers what this interface actually holds: the
+        // usage tree of the launch directory.
+        let needle = trimmed.to_ascii_lowercase();
+        let mut files = 0;
+        for row in &self.usage {
+            if !row
+                .path
+                .to_string_lossy()
+                .to_ascii_lowercase()
+                .contains(&needle)
+            {
+                continue;
+            }
+            hits.push(SearchHit {
+                family: "file",
+                label: row.path.display().to_string(),
+                detail: format!("{} ({} files)", format_bytes(row.total_bytes), row.files),
+                action: SearchAction::Usage(row.path.clone()),
+            });
+            files += 1;
+            if files >= SEARCH_HITS_PER_FAMILY {
+                break;
+            }
+        }
+        if files == 0 && self.usage_scanning() {
+            notes.push("files still scanning".into());
+        }
+        (hits, notes)
+    }
+
+    fn apply_search_hit(&mut self, hit: SearchHit) {
+        match hit.action {
+            SearchAction::Filter { view, query } => {
+                self.filter = query.unwrap_or_default();
+                self.goto_view(view);
+            }
+            SearchAction::Usage(path) => {
+                self.filter.clear();
+                self.goto_view(View::Disks);
+                if let Some(index) = self.usage_tree().iter().position(|row| row.path == path) {
+                    self.selected = index;
+                    self.clamp_scroll();
+                }
+                self.status = format!("file {}", path.display());
+            }
+        }
+    }
+
+    /// Switch pages through the same path the tabs use.
+    fn goto_view(&mut self, view: View) {
+        self.view = view;
+        self.selected = 0;
+        self.scroll = 0;
+        self.refresh();
+    }
+
+    fn run_command(&mut self, id: CommandId) {
+        match id {
+            CommandId::Goto(view) => self.goto_view(view),
+            CommandId::Refresh => self.refresh(),
+            CommandId::Filter => self.open_filter(),
+            CommandId::Search => self.open_search(),
+            CommandId::Kill => self.confirm_kill_selection(),
+            CommandId::ToggleTree => self.toggle_tree(),
+            CommandId::CycleSort => self.cycle_sort(),
+            CommandId::PortsOfSelection => self.ports_of_selection(),
+            CommandId::Quit => self.quit = true,
+        }
+    }
+
+    fn toggle_tree(&mut self) {
+        self.tree_mode = !self.tree_mode;
+        self.status = if self.tree_mode {
+            "tree: on (space folds)".to_string()
+        } else {
+            "tree: off".to_string()
+        };
+        self.selected = 0;
+        self.scroll = 0;
+        self.refresh();
+    }
+
+    fn cycle_sort(&mut self) {
+        let index = SORT_CYCLE
+            .iter()
+            .position(|sort| *sort == self.process_sort)
+            .unwrap_or(0);
+        self.process_sort = SORT_CYCLE[(index + 1) % SORT_CYCLE.len()];
+        self.status = format!("sort: {}", sort_label(self.process_sort));
+        self.refresh();
+    }
+
+    /// Jump to the ports held by the selected process, filtered to it.
+    fn ports_of_selection(&mut self) {
+        if self.view != View::Processes {
+            self.status = "select a process first".into();
+            return;
+        }
+        let rows = self.process_rows();
+        let Some((_, row)) = rows.get(self.selected) else {
+            return;
+        };
+        let name = row.name.clone();
+        self.filter = name.clone();
+        self.goto_view(View::Ports);
+        self.status = format!("ports of {name}");
+    }
+
     /// The rows of the visible page.
     pub fn rows(&self) -> usize {
         self.row_count()
@@ -532,11 +1233,13 @@ impl App {
 
     fn row_count(&self) -> usize {
         match self.view {
+            View::Dashboard => 0,
             View::Ports => self.ports.len(),
-            View::Processes => self.processes.len(),
-            View::Network => self.interfaces.len(),
-            View::System => self.services.len(),
-            View::Disk => self.usage_tree().len(),
+            View::Processes => self.process_rows().len(),
+            View::Network => self.connections.len(),
+            View::Services => self.services.len(),
+            View::System => 0,
+            View::Disks => self.usage_tree().len(),
         }
     }
 
@@ -573,11 +1276,20 @@ impl App {
         (!trimmed.is_empty()).then(|| trimmed.to_string())
     }
 
+    /// The selected socket/connection row of the current page.
+    fn selected_socket(&self) -> Option<&PortInfo> {
+        match self.view {
+            View::Ports => self.ports.get(self.selected),
+            View::Network => self.connections.get(self.selected),
+            _ => None,
+        }
+    }
+
     /// Open the confirmation dialog for the selected row.
     pub fn confirm_kill_selection(&mut self) {
         match self.view {
-            View::Ports => {
-                let Some(row) = self.ports.get(self.selected) else {
+            View::Ports | View::Network => {
+                let Some(row) = self.selected_socket() else {
                     return;
                 };
                 let port = row.local_port;
@@ -598,7 +1310,8 @@ impl App {
                 }
             }
             View::Processes => {
-                let Some(row) = self.processes.get(self.selected) else {
+                let rows = self.process_rows();
+                let Some((_, row)) = rows.get(self.selected) else {
                     return;
                 };
                 let pid = row.pid;
@@ -615,10 +1328,127 @@ impl App {
 
     fn activate_selection(&mut self) {
         match self.view {
-            View::Ports | View::Processes => self.confirm_kill_selection(),
-            View::Disk => self.toggle_collapse(),
+            View::Ports | View::Network => self.open_port_detail(),
+            View::Processes => self.open_process_detail(),
+            View::Services => self.open_service_detail(),
+            View::Disks => self.toggle_collapse(),
             _ => {}
         }
+    }
+
+    /// Snapshot one socket — plus its owning process when the platform can
+    /// read it — into the detail dialog.
+    fn open_port_detail(&mut self) {
+        let Some(row) = self.selected_socket().cloned() else {
+            return;
+        };
+        let mut rows: Vec<(String, String)> = vec![
+            ("port".into(), row.local_port.to_string()),
+            ("proto".into(), row.protocol.name().to_string()),
+            ("state".into(), state_label(row.state).to_string()),
+            ("local".into(), row.endpoint()),
+            (
+                "remote".into(),
+                row.remote_socket_addr()
+                    .map(|addr| addr.to_string())
+                    .unwrap_or_else(|| "-".into()),
+            ),
+            (
+                "pid".into(),
+                row.pid
+                    .map(|pid| pid.to_string())
+                    .unwrap_or_else(|| "-".into()),
+            ),
+            (
+                "process".into(),
+                row.process_name.clone().unwrap_or_else(|| "-".into()),
+            ),
+            (
+                "user".into(),
+                row.user.clone().unwrap_or_else(|| "-".into()),
+            ),
+        ];
+        if let Some(pid) = row.pid {
+            match self.context.process.get(pid) {
+                Ok(info) => append_process_detail(&mut rows, &info),
+                Err(error) => rows.push(("process detail".into(), error.message().to_string())),
+            }
+        }
+        let target = match self.context.port.plan(
+            &PortQuery::Port(row.local_port),
+            x_core::port::PortSort::Port,
+        ) {
+            Ok(plan) if !plan.is_empty() => Some(Target::Sockets(plan)),
+            _ => None,
+        };
+        self.modal = Modal::Detail {
+            title: format!(
+                "socket {} {} {}",
+                row.protocol.name(),
+                row.endpoint(),
+                state_label(row.state)
+            ),
+            rows,
+            target,
+        };
+    }
+
+    fn open_process_detail(&mut self) {
+        let rows = self.process_rows();
+        let Some((_, row)) = rows.get(self.selected) else {
+            return;
+        };
+        let pid = row.pid;
+        let name = row.name.clone();
+        match self.context.process.get(pid) {
+            Ok(info) => {
+                let mut rows: Vec<(String, String)> = Vec::new();
+                append_process_detail(&mut rows, &info);
+                self.modal = Modal::Detail {
+                    title: format!("process {name} ({pid})"),
+                    rows,
+                    target: Some(Target::Process { pid, name }),
+                };
+            }
+            Err(error) => self.status = error.message().to_string(),
+        }
+    }
+
+    fn open_service_detail(&mut self) {
+        let Some(row) = self.services.get(self.selected).cloned() else {
+            return;
+        };
+        let rows: Vec<(String, String)> = vec![
+            (
+                "display".into(),
+                row.display_name.clone().unwrap_or_else(|| "-".into()),
+            ),
+            ("state".into(), service_state_label(row.state).to_string()),
+            (
+                "pid".into(),
+                row.pid
+                    .map(|pid| pid.to_string())
+                    .unwrap_or_else(|| "-".into()),
+            ),
+            (
+                "enabled".into(),
+                match row.enabled {
+                    Some(true) => "yes".into(),
+                    Some(false) => "no".into(),
+                    None => "unknown".into(),
+                },
+            ),
+            ("manager".into(), format!("{:?}", row.manager)),
+            (
+                "description".into(),
+                row.description.clone().unwrap_or_else(|| "-".into()),
+            ),
+        ];
+        self.modal = Modal::Detail {
+            title: format!("service {}", row.name),
+            rows,
+            target: None,
+        };
     }
 
     /// Execute exactly what the confirmation dialog showed.
@@ -639,379 +1469,84 @@ impl App {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crossterm::event::KeyEventState;
-    use x_core::error::PermissionRequirement;
-    use x_core::testing::{stub_process, stub_service, stub_socket, StubFailure, Stubs};
-
-    /// One key press, with the modifiers the interface looks at.
-    fn key(code: KeyCode) -> KeyEvent {
-        KeyEvent {
-            code,
-            modifiers: KeyModifiers::NONE,
-            kind: crossterm::event::KeyEventKind::Press,
-            state: KeyEventState::NONE,
-        }
+/// Depth-first walk that skips folded subtrees.
+fn flatten_folded<'a>(
+    node: &'a ProcessNode,
+    depth: usize,
+    folded: &BTreeSet<u32>,
+    out: &mut Vec<(usize, &'a ProcessInfo)>,
+) {
+    out.push((depth, &node.process));
+    if folded.contains(&node.process.pid) {
+        return;
     }
-
-    fn text(text: &str) -> Vec<KeyEvent> {
-        text.chars().map(|c| key(KeyCode::Char(c))).collect()
-    }
-
-    fn app_with_sockets(count: u16) -> (Stubs, App) {
-        let stubs = Stubs::new().with_ports(
-            (0..count)
-                .map(|index| stub_socket(8000 + index, 100 + u32::from(index), "node"))
-                .collect(),
-        );
-        let app = App::new(stubs.context());
-        (stubs, app)
-    }
-
-    #[test]
-    fn view_cycles_and_wraps_in_both_directions() {
-        let (_stubs, mut app) = app_with_sockets(1);
-
-        assert_eq!(app.view(), View::Ports);
-        app.on_key(key(KeyCode::Tab));
-        assert_eq!(app.view(), View::Processes);
-        app.on_key(key(KeyCode::BackTab));
-        assert_eq!(app.view(), View::Ports);
-
-        app.on_key(key(KeyCode::Left));
-        assert_eq!(app.view(), View::Disk, "left from the first tab wraps");
-        app.on_key(key(KeyCode::Right));
-        assert_eq!(app.view(), View::Ports, "right from the last tab wraps");
-    }
-
-    #[test]
-    fn selection_is_clamped_to_the_last_row() {
-        let (_stubs, mut app) = app_with_sockets(3);
-        assert_eq!(app.rows(), 3);
-
-        for _ in 0..10 {
-            app.on_key(key(KeyCode::Down));
-        }
-        assert_eq!(app.selected(), 2);
-
-        for _ in 0..10 {
-            app.on_key(key(KeyCode::Up));
-        }
-        assert_eq!(app.selected(), 0);
-    }
-
-    #[test]
-    fn scrolling_follows_the_selection_inside_the_reported_viewport() {
-        let (_stubs, mut app) = app_with_sockets(10);
-        app.note_viewport(3);
-
-        app.on_key(key(KeyCode::Down));
-        assert_eq!(app.scroll(), 0, "first move stays inside the window");
-        app.on_key(key(KeyCode::Down));
-        app.on_key(key(KeyCode::Down));
-        assert_eq!(app.selected(), 3);
-        assert_eq!(
-            app.scroll(),
-            1,
-            "the window scrolls once to keep row 3 visible"
-        );
-
-        app.on_key(key(KeyCode::Up));
-        app.on_key(key(KeyCode::Up));
-        app.on_key(key(KeyCode::Up));
-        assert_eq!(app.scroll(), 0, "scrolling back does not leave a gap above");
-    }
-
-    #[test]
-    fn filter_prompt_filters_the_visible_page() {
-        let stubs = Stubs::new()
-            .with_ports(vec![
-                stub_socket(8080, 42, "node"),
-                stub_socket(9090, 43, "python"),
-            ])
-            .with_processes(vec![stub_process(1, None, "launchd")]);
-        let mut app = App::new(stubs.context());
-        app.note_viewport(10);
-
-        app.on_key(key(KeyCode::Char('/')));
-        assert!(matches!(app.modal(), Modal::Prompt { .. }));
-        for event in text("8080") {
-            app.on_key(event);
-        }
-        app.on_key(key(KeyCode::Enter));
-
-        assert_eq!(app.filter(), "8080");
-        assert!(matches!(app.modal(), Modal::None));
-        assert_eq!(app.view(), View::Ports);
-        assert_eq!(app.ports().len(), 1);
-        assert_eq!(app.ports()[0].local_port, 8080);
-    }
-
-    #[test]
-    fn escape_cancels_the_filter_prompt_without_applying_it() {
-        let (_stubs, mut app) = app_with_sockets(3);
-
-        app.on_key(key(KeyCode::Char('/')));
-        for event in text("80") {
-            app.on_key(event);
-        }
-        app.on_key(key(KeyCode::Esc));
-
-        assert!(matches!(app.modal(), Modal::None));
-        assert_eq!(app.filter(), "");
-        assert_eq!(app.ports().len(), 3);
-    }
-
-    #[test]
-    fn killing_a_socket_needs_confirmation_and_then_runs_the_plan() {
-        let (stubs, mut app) = app_with_sockets(1);
-
-        app.on_key(key(KeyCode::Char('k')));
-        let modal = app.modal().clone();
-        let Modal::Confirm {
-            title,
-            target,
-            signal,
-        } = modal
-        else {
-            panic!("expected a confirmation dialog, got {modal:?}");
-        };
-        assert_eq!(title, "free port 8000");
-        assert_eq!(signal, KillSignal::Terminate);
-        assert_eq!(
-            target,
-            Target::Sockets(KillPlan::new(
-                PortQuery::Port(8000),
-                vec![stub_socket(8000, 100, "node")]
-            ))
-        );
-        assert!(
-            stubs.port.killed().is_empty(),
-            "nothing is killed before confirming"
-        );
-
-        app.on_key(key(KeyCode::Char('y')));
-        assert_eq!(stubs.port.killed(), vec![100]);
-        assert!(matches!(app.modal(), Modal::None));
-        assert_eq!(app.status(), "killed 1 process(es)");
-    }
-
-    #[test]
-    fn declining_the_dialog_kills_nothing() {
-        let (stubs, mut app) = app_with_sockets(1);
-
-        app.on_key(key(KeyCode::Char('k')));
-        app.on_key(key(KeyCode::Char('n')));
-
-        assert!(stubs.port.killed().is_empty());
-        assert_eq!(app.status(), "aborted: free port 8000");
-        assert!(matches!(app.modal(), Modal::None));
-    }
-
-    #[test]
-    fn a_dialog_swallows_page_keys() {
-        let (stubs, mut app) = app_with_sockets(2);
-
-        app.on_key(key(KeyCode::Char('k')));
-        app.on_key(key(KeyCode::Tab));
-        app.on_key(key(KeyCode::Char('j')));
-
-        assert_eq!(app.view(), View::Ports, "tab and j went to the dialog");
-        assert!(stubs.port.killed().is_empty());
-        assert!(!app.should_quit(), "q inside a dialog must not quit");
-    }
-
-    #[test]
-    fn killing_a_process_confirms_the_pid_and_name() {
-        let stubs = Stubs::new().with_processes(vec![stub_process(4242, Some(1), "bluecode")]);
-        let mut app = App::new(stubs.context());
-        app.on_key(key(KeyCode::Tab));
-
-        app.on_key(key(KeyCode::Enter));
-        let Modal::Confirm { target, .. } = app.modal() else {
-            panic!("expected a confirmation dialog");
-        };
-        assert_eq!(
-            *target,
-            Target::Process {
-                pid: 4242,
-                name: "bluecode".into()
-            }
-        );
-
-        app.on_key(key(KeyCode::Enter));
-        assert_eq!(stubs.process.killed(), vec![4242]);
-    }
-
-    #[test]
-    fn pages_without_something_to_kill_say_so() {
-        let (_stubs, mut app) = app_with_sockets(1);
-
-        for _ in 0..2 {
-            app.on_key(key(KeyCode::Tab));
-        }
-        assert_eq!(app.view(), View::Network);
-        app.on_key(key(KeyCode::Char('k')));
-        assert_eq!(app.status(), "nothing to kill on this page");
-        assert!(matches!(app.modal(), Modal::None));
-    }
-
-    #[test]
-    fn a_failed_refresh_reports_the_error_and_keeps_the_rows() {
-        let stubs = Stubs::new().with_ports(vec![stub_socket(8080, 42, "node")]);
-        let mut app = App::new(stubs.context());
-        assert_eq!(app.ports().len(), 1);
-
-        stubs.port.fail_with(StubFailure::denied(
-            PermissionRequirement::Root,
-            "must be root",
-        ));
-        app.refresh();
-
-        assert_eq!(app.status(), "must be root");
-        assert_eq!(
-            app.ports().len(),
-            1,
-            "the last good snapshot stays on screen"
-        );
-    }
-
-    #[test]
-    fn every_tab_refreshes_its_own_capability() {
-        let stubs = Stubs::new()
-            .with_ports(vec![stub_socket(8080, 42, "node")])
-            .with_processes(vec![stub_process(7, None, "node")])
-            .with_services(vec![stub_service("sshd", 12)]);
-        let mut app = App::new(stubs.context());
-
-        for (index, _) in View::ALL.iter().enumerate() {
-            app.on_key(key(KeyCode::Tab));
-            let view = View::ALL[(index + 1) % View::ALL.len()];
-            assert_eq!(app.view(), view);
-            app.note_viewport(10);
-            assert_eq!(
-                app.rows(),
-                match view {
-                    View::Ports => 1,
-                    View::Processes => 1,
-                    View::Network => 0,
-                    View::System => 1,
-                    // The walker thread has not reported inside the test.
-                    View::Disk => 0,
-                }
-            );
-        }
-        assert_eq!(app.services()[0].name, "sshd");
-    }
-
-    #[test]
-    fn quit_keys_are_q_escape_and_control_c_but_not_a_bare_c() {
-        for code in [KeyCode::Char('q'), KeyCode::Esc] {
-            let (_stubs, mut app) = app_with_sockets(1);
-            app.on_key(key(code));
-            assert!(app.should_quit(), "{code:?} should quit");
-        }
-
-        let (_stubs, mut app) = app_with_sockets(1);
-        app.on_key(KeyEvent {
-            code: KeyCode::Char('c'),
-            modifiers: KeyModifiers::CONTROL,
-            kind: crossterm::event::KeyEventKind::Press,
-            state: KeyEventState::NONE,
-        });
-        assert!(app.should_quit());
-
-        let (stubs, mut app) = app_with_sockets(1);
-        app.on_key(key(KeyCode::Char('c')));
-        assert!(!app.should_quit(), "a bare c kills the selection instead");
-        assert!(matches!(app.modal(), Modal::Confirm { .. }));
-        assert!(stubs.port.killed().is_empty());
-    }
-
-    fn dir_usage(path: &str, depth: usize, total_bytes: u64) -> DirUsage {
-        DirUsage {
-            path: PathBuf::from(path),
-            depth,
-            total_bytes,
-            files: 1,
-            dirs: 0,
-            unreadable: 0,
-        }
-    }
-
-    fn sample_usage() -> Vec<DirUsage> {
-        let root = PathBuf::from("r");
-        vec![
-            dir_usage(".", 0, 100),
-            dir_usage("big", 1, 60),
-            dir_usage("small", 1, 30),
-            dir_usage("big/inner", 2, 50),
-        ]
-        .into_iter()
-        .map(|mut row| {
-            row.path = if row.depth == 0 {
-                root.clone()
-            } else {
-                root.join(row.path)
-            };
-            row
-        })
-        .collect()
-    }
-
-    #[test]
-    fn the_usage_tree_orders_children_by_size_then_collapses() {
-        let (_stubs, mut app) = app_with_sockets(1);
-        app.view = View::Disk;
-        app.usage = sample_usage();
-
-        let names: Vec<String> = app
-            .usage_tree()
-            .iter()
-            .map(|row| row.path.file_name().unwrap().to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(names, ["r", "big", "inner", "small"]);
-
-        // Enter on `big` hides its subtree; Enter again brings it back.
-        app.selected = 1;
-        app.on_key(key(KeyCode::Enter));
-        let names: Vec<String> = app
-            .usage_tree()
-            .iter()
-            .map(|row| row.path.file_name().unwrap().to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(names, ["r", "big", "small"]);
-
-        app.on_key(key(KeyCode::Enter));
-        assert_eq!(app.usage_tree().len(), 4);
-    }
-
-    #[test]
-    fn a_finished_background_scan_is_collected_on_the_next_tick() {
-        let (_stubs, mut app) = app_with_sockets(1);
-        app.view = View::Disk;
-        let rows = sample_usage();
-        app.scan = Some(Arc::new(Mutex::new(Some(rows))));
-
-        app.on_tick();
-
-        assert_eq!(app.usage.len(), 4);
-        assert!(app.scan.is_none());
-        assert!(app.status().starts_with("usage:"), "{}", app.status());
-        assert!(!app.usage_scanning());
-    }
-
-    #[test]
-    fn collapsing_a_parent_of_the_selection_keeps_the_selection_in_range() {
-        let (_stubs, mut app) = app_with_sockets(1);
-        app.view = View::Disk;
-        app.usage = sample_usage();
-
-        app.selected = 1;
-        app.on_key(key(KeyCode::Enter)); // collapse `big`, hiding `inner`
-        assert_eq!(app.rows(), 3);
-        assert!(app.selected < app.rows(), "selection stays inside the tree");
+    for child in &node.children {
+        flatten_folded(child, depth + 1, folded, out);
     }
 }
+
+/// The process facts shared by the process and socket detail dialogs.
+fn append_process_detail(rows: &mut Vec<(String, String)>, info: &ProcessInfo) {
+    let text = |value: &Option<String>| value.clone().unwrap_or_else(|| "-".into());
+    rows.push((
+        "name".into(),
+        if rows.is_empty() {
+            info.name.clone()
+        } else {
+            format!("[owner] {}", info.name)
+        },
+    ));
+    rows.push((
+        "ppid".into(),
+        info.parent_pid
+            .map(|pid| pid.to_string())
+            .unwrap_or_else(|| "-".into()),
+    ));
+    rows.push(("user".into(), text(&info.user)));
+    rows.push(("state".into(), info.state.label().to_string()));
+    rows.push((
+        "cpu".into(),
+        info.cpu_usage
+            .map(|cpu| format!("{cpu:.1}%"))
+            .unwrap_or_else(|| "-".into()),
+    ));
+    rows.push((
+        "mem".into(),
+        info.memory_bytes
+            .map(format_bytes)
+            .unwrap_or_else(|| "-".into()),
+    ));
+    rows.push((
+        "threads".into(),
+        info.threads
+            .map(|threads| threads.to_string())
+            .unwrap_or_else(|| "-".into()),
+    ));
+    rows.push(("exe".into(), text(&info.executable)));
+    rows.push(("cwd".into(), text(&info.cwd)));
+    rows.push(("command".into(), text(&info.command_line)));
+    if let Some(files) = &info.open_files {
+        if !files.is_empty() {
+            rows.push(("open files".into(), files.len().to_string()));
+            for file in files.iter().take(5) {
+                rows.push((String::new(), file.clone()));
+            }
+        }
+    }
+    if let Some(connections) = &info.connections {
+        if !connections.is_empty() {
+            rows.push(("sockets".into(), connections.len().to_string()));
+            for connection in connections.iter().take(5) {
+                let target = if connection.remote.is_empty() {
+                    connection.local.clone()
+                } else {
+                    format!("{} -> {}", connection.local, connection.remote)
+                };
+                rows.push((String::new(), format!("{} {target}", connection.protocol)));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests;

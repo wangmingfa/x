@@ -15,6 +15,7 @@
 
 pub mod app;
 pub mod event;
+pub mod palette;
 pub mod ui;
 
 use std::time::Duration;

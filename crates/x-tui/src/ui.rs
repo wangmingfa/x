@@ -1,63 +1,71 @@
 //! Drawing.
 //!
-//! Layout is fixed on purpose: a header with the tabs, a body that is one table
-//! per view, a status line and a footer with the keys that currently do
-//! something. Anything the user can act on is visible without scrolling back.
+//! Layout is fixed on purpose: a sidebar with the pages, a body that is one
+//! dashboard or table per view, a status line and a footer with the keys that
+//! currently do something. Anything the user can act on is visible without
+//! scrolling back.
 
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, Borders, Cell, Clear, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState,
-    Table, Tabs,
+    Block, Borders, Cell, Clear, Gauge, List, ListItem, ListState, Paragraph, Row, Scrollbar,
+    ScrollbarOrientation, ScrollbarState, Table,
 };
 use ratatui::Frame;
 
 use x_core::network::is_default_route;
-use x_core::port::ConnectionState;
 use x_core::process::ProcessInfo;
 use x_core::service::ServiceInfo;
 use x_core::{format_bytes, format_duration};
 
-use crate::app::{App, Modal, Target, View};
+use crate::app::{service_state_label, sort_label, state_label, App, Modal, Target, View};
 
 /// Draw the whole interface.
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let rows = Layout::vertical([
-        Constraint::Length(3),
         Constraint::Min(3),
         Constraint::Length(1),
         Constraint::Length(1),
     ])
     .split(frame.area());
+    let main = Layout::horizontal([Constraint::Length(16), Constraint::Min(20)]).split(rows[0]);
 
-    tabs(frame, app, rows[0]);
-    body(frame, app, rows[1]);
-    status(frame, app, rows[2]);
-    footer(frame, rows[3]);
+    sidebar(frame, app, main[0]);
+    body(frame, app, main[1]);
+    status(frame, app, rows[1]);
+    footer(frame, app, rows[2]);
 
     if !matches!(app.modal(), Modal::None) {
         dialog(frame, app, frame.area());
     }
 }
 
-fn tabs(frame: &mut Frame, app: &App, area: Rect) {
-    let titles = View::ALL.iter().map(|view| view.title().to_string());
-    let index = View::ALL.iter().position(|view| *view == app.view());
-    let tabs = Tabs::new(titles)
-        .select(index)
+/// The pages as a vertical list; digits and tab cycle through them.
+fn sidebar(frame: &mut Frame, app: &App, area: Rect) {
+    let items: Vec<ListItem> = View::ALL
+        .iter()
+        .enumerate()
+        .map(|(index, view)| ListItem::new(format!("{} {}", index + 1, view.title())))
+        .collect();
+    let selected = View::ALL.iter().position(|view| *view == app.view());
+    let list = List::new(items)
         .block(Block::default().borders(Borders::ALL).title(" x "))
-        .highlight_style(Style::default().fg(Color::Cyan).bold());
-    frame.render_widget(tabs, area);
+        .highlight_style(Style::default().fg(Color::Cyan).bold())
+        .highlight_symbol("> ");
+    let mut state = ListState::default().with_selected(selected);
+    frame.render_stateful_widget(list, area, &mut state);
 }
 
 fn body(frame: &mut Frame, app: &mut App, area: Rect) {
     match app.view() {
+        View::Dashboard => dashboard(frame, app, area),
         View::Ports => ports(frame, app, area),
         View::Processes => processes(frame, app, area),
         View::Network => network(frame, app, area),
+        View::Services => services(frame, app, area),
         View::System => system(frame, app, area),
-        View::Disk => disk(frame, app, area),
+        View::Disks => disks(frame, app, area),
     }
 }
 
@@ -93,6 +101,154 @@ fn selected_row(index: usize, selected: usize) -> Style {
     }
 }
 
+/// `12.3M` style link speed label.
+fn format_speed(bps: u64) -> String {
+    if bps >= 1_000_000_000 {
+        format!("{:.1} Gbps", bps as f64 / 1_000_000_000.0)
+    } else if bps >= 1_000_000 {
+        format!("{:.0} Mbps", bps as f64 / 1_000_000.0)
+    } else if bps >= 1_000 {
+        format!("{:.0} kbps", bps as f64 / 1_000.0)
+    } else {
+        format!("{bps} bps")
+    }
+}
+
+/// Keep the active filter visible in the table title.
+fn titled(base: &str, app: &App) -> String {
+    let filter = app.filter().trim();
+    if filter.is_empty() {
+        base.to_string()
+    } else {
+        format!("{base} | filter {filter:?}")
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Dashboard
+// ---------------------------------------------------------------------------
+
+fn dashboard(frame: &mut Frame, app: &mut App, area: Rect) {
+    let rows = Layout::vertical([
+        Constraint::Length(8),
+        Constraint::Length(8),
+        Constraint::Min(5),
+    ])
+    .split(area);
+    let top =
+        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).split(rows[0]);
+    let mid =
+        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).split(rows[1]);
+
+    let mut facts: Vec<Line> = Vec::new();
+    match app.system() {
+        Some(info) => {
+            facts.push(Line::raw(format!(
+                "{} {} ({})",
+                info.os_name, info.os_version, info.arch
+            )));
+            facts.push(Line::raw(format!("host  {}", info.hostname)));
+            facts.push(Line::raw(format!(
+                "cpu   {} x {}",
+                info.cpu_count,
+                info.cpu_brand.clone().unwrap_or_else(|| "unknown".into())
+            )));
+            facts.push(Line::raw(format!(
+                "up    {}",
+                format_duration(info.uptime_seconds)
+            )));
+        }
+        None => facts.push(Line::raw("system facts unreadable")),
+    }
+    frame.render_widget(
+        Paragraph::new(facts).block(Block::default().borders(Borders::ALL).title(" system ")),
+        top[0],
+    );
+
+    let cpu = app.cpu().clamp(0.0, 100.0);
+    frame.render_widget(
+        Gauge::default()
+            .block(Block::default().borders(Borders::ALL).title(" cpu "))
+            .gauge_style(Style::default().fg(Color::Cyan))
+            .ratio(f64::from(cpu) / 100.0)
+            .label(format!("{cpu:.1}%")),
+        top[1],
+    );
+
+    let memory = app.memory_usage();
+    let label = match memory {
+        Some(usage) => format!(
+            "{:.1}% | {} of {}",
+            usage.percent,
+            format_bytes(usage.used_bytes),
+            format_bytes(usage.total_bytes)
+        ),
+        None => "unreadable".into(),
+    };
+    frame.render_widget(
+        Gauge::default()
+            .block(Block::default().borders(Borders::ALL).title(" memory "))
+            .gauge_style(Style::default().fg(Color::Magenta))
+            .ratio(
+                memory
+                    .map(|usage| f64::from(usage.percent.clamp(0.0, 100.0)) / 100.0)
+                    .unwrap_or(0.0),
+            )
+            .label(label),
+        mid[0],
+    );
+
+    let mut ports: Vec<Line> = Vec::new();
+    match app.port_summary() {
+        Some(summary) => {
+            ports.push(Line::raw(format!("listening    {}", summary.listening)));
+            ports.push(Line::raw(format!("established  {}", summary.established)));
+            ports.push(Line::raw(format!("all sockets  {}", summary.total)));
+        }
+        None => ports.push(Line::raw("socket table unreadable")),
+    }
+    frame.render_widget(
+        Paragraph::new(ports).block(Block::default().borders(Borders::ALL).title(" ports ")),
+        mid[1],
+    );
+
+    let mounts: Vec<Row> = app
+        .disks()
+        .iter()
+        .map(|row| {
+            Row::new(vec![
+                row.mount_point.clone(),
+                row.file_system.clone().unwrap_or_default(),
+                row.media_type
+                    .map(|media| media.to_string())
+                    .unwrap_or_default(),
+                format_bytes(row.total_bytes),
+                format_bytes(row.used_bytes()),
+                format!("{:.0}%", row.percent),
+            ])
+        })
+        .collect();
+    frame.render_widget(
+        table(
+            &[
+                ("mount", 6),
+                ("fs", 8),
+                ("media", 9),
+                ("size", 10),
+                ("used", 10),
+                ("use%", 5),
+            ],
+            "filesystems",
+        )
+        .rows(mounts),
+        rows[2],
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Ports / Processes / Network / Services / System / Disks
+// ---------------------------------------------------------------------------
+
 fn ports(frame: &mut Frame, app: &mut App, area: Rect) {
     let inner_height = inner_rows(app, area);
     let start = app.scroll();
@@ -110,7 +266,9 @@ fn ports(frame: &mut Frame, app: &mut App, area: Rect) {
                 row.pid.map(|p| p.to_string()).unwrap_or_default(),
                 row.process_name.clone().unwrap_or_default(),
                 row.user.clone().unwrap_or_default(),
-                row.endpoint(),
+                row.remote_socket_addr()
+                    .map(|addr| addr.to_string())
+                    .unwrap_or_else(|| row.endpoint()),
             ])
             .style(selected_row(start + index, app.selected()))
         })
@@ -124,9 +282,9 @@ fn ports(frame: &mut Frame, app: &mut App, area: Rect) {
             ("pid", 7),
             ("process", 20),
             ("user", 12),
-            ("local address", 40),
+            ("remote", 40),
         ],
-        "listening sockets",
+        &titled("sockets", app),
     )
     .rows(rows);
     frame.render_widget(widget, area);
@@ -137,45 +295,58 @@ fn processes(frame: &mut Frame, app: &mut App, area: Rect) {
     let inner_height = inner_rows(app, area);
     let start = app.scroll();
     let rows: Vec<Row> = app
-        .processes()
-        .iter()
+        .process_rows()
+        .into_iter()
         .enumerate()
         .skip(start)
         .take(inner_height.max(1))
-        .map(|(index, row)| process_row(start + index, app.selected(), row))
+        .map(|(index, (depth, row))| process_row(start + index, depth, app.selected(), row))
         .collect();
 
+    let mode = if app.tree_mode() { " | tree" } else { "" };
+    let title = titled(
+        &format!("processes | sort {}{mode}", sort_label(app.process_sort())),
+        app,
+    );
     let widget = table(
         &[
             ("pid", 7),
             ("user", 12),
             ("cpu%", 7),
             ("mem", 10),
-            ("name", 22),
+            ("name", 30),
             ("command", 60),
         ],
-        "processes by cpu",
+        &title,
     )
     .rows(rows);
     frame.render_widget(widget, area);
     scrollbar(frame, app, area);
 }
 
-fn process_row(index: usize, selected: usize, row: &ProcessInfo) -> Row<'_> {
+fn process_row(index: usize, depth: usize, selected: usize, row: &ProcessInfo) -> Row<'_> {
+    let name = if depth == 0 {
+        row.name.clone()
+    } else {
+        format!("{}{}", "  ".repeat(depth), row.name)
+    };
     Row::new(vec![
         row.pid.to_string(),
         row.user.clone().unwrap_or_default(),
         format!("{:.1}", row.cpu_usage.unwrap_or_default()),
         row.memory_bytes.map(format_bytes).unwrap_or_default(),
-        row.name.clone(),
+        name,
         row.command_line.clone().unwrap_or_default(),
     ])
     .style(selected_row(index, selected))
 }
 
 fn network(frame: &mut Frame, app: &mut App, area: Rect) {
-    let columns =
-        Layout::horizontal([Constraint::Percentage(45), Constraint::Percentage(55)]).split(area);
+    let interface_rows = (app.interfaces().len() as u16 + 4).clamp(5, 12);
+    let panes =
+        Layout::vertical([Constraint::Length(interface_rows), Constraint::Min(5)]).split(area);
+    let columns = Layout::horizontal([Constraint::Percentage(45), Constraint::Percentage(55)])
+        .split(panes[0]);
 
     let defaults: Vec<&str> = app
         .routes()
@@ -188,11 +359,24 @@ fn network(frame: &mut Frame, app: &mut App, area: Rect) {
         .interfaces()
         .iter()
         .map(|row| {
+            let ips: Vec<String> = app
+                .addresses()
+                .iter()
+                .filter(|address| address.interface == row.name)
+                .take(2)
+                .map(|address| {
+                    address
+                        .prefix_len
+                        .map(|prefix| format!("{}/{prefix}", address.address))
+                        .unwrap_or_else(|| address.address.to_string())
+                })
+                .collect();
             Row::new(vec![
                 row.name.clone(),
                 format!("{:?}", row.state).to_lowercase(),
+                ips.join(","),
                 row.mac_address.clone().unwrap_or_default(),
-                row.mtu.map(|m| m.to_string()).unwrap_or_default(),
+                row.link_speed_bps.map(format_speed).unwrap_or_default(),
                 if defaults.contains(&row.name.as_str()) {
                     "default"
                 } else {
@@ -205,10 +389,11 @@ fn network(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_widget(
         table(
             &[
-                ("interface", 12),
-                ("state", 10),
+                ("interface", 14),
+                ("state", 8),
+                ("address", 30),
                 ("mac", 18),
-                ("mtu", 6),
+                ("speed", 10),
                 ("route", 8),
             ],
             "interfaces",
@@ -251,11 +436,9 @@ fn network(frame: &mut Frame, app: &mut App, area: Rect) {
         "addresses",
         Style::default().fg(Color::Yellow).bold(),
     ));
-
-    let addresses = app.context().network.addresses().unwrap_or_default();
-    for address in addresses.iter().take(8) {
+    for address in app.addresses().iter().take(8) {
         text.push(Line::raw(format!(
-            "  {:<10} {}/{}",
+            "  {:<12} {}/{}",
             address.interface,
             address.address,
             address
@@ -264,17 +447,93 @@ fn network(frame: &mut Frame, app: &mut App, area: Rect) {
                 .unwrap_or_default()
         )));
     }
-
     frame.render_widget(
         Paragraph::new(text).block(Block::default().borders(Borders::ALL).title(" routes ")),
         columns[1],
     );
+
+    let inner_height = inner_rows(app, panes[1]);
+    let start = app.scroll();
+    let connections: Vec<Row> = app
+        .connections()
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(inner_height.max(1))
+        .map(|(index, row)| {
+            Row::new(vec![
+                row.protocol.name().to_string(),
+                row.endpoint(),
+                row.remote_socket_addr()
+                    .map(|addr| addr.to_string())
+                    .unwrap_or_else(|| "-".into()),
+                state_label(row.state).to_string(),
+                row.pid.map(|p| p.to_string()).unwrap_or_default(),
+                row.process_name.clone().unwrap_or_default(),
+            ])
+            .style(selected_row(start + index, app.selected()))
+        })
+        .collect();
+    frame.render_widget(
+        table(
+            &[
+                ("proto", 5),
+                ("local", 40),
+                ("remote", 40),
+                ("state", 12),
+                ("pid", 7),
+                ("process", 20),
+            ],
+            &titled("connections", app),
+        )
+        .rows(connections),
+        panes[1],
+    );
+    scrollbar(frame, app, panes[1]);
+}
+
+fn services(frame: &mut Frame, app: &mut App, area: Rect) {
+    let inner_height = inner_rows(app, area);
+    let start = app.scroll();
+    let rows: Vec<Row> = app
+        .services()
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(inner_height.max(1))
+        .map(|(index, row): (usize, &ServiceInfo)| {
+            Row::new(vec![
+                row.name.clone(),
+                service_state_label(row.state).to_string(),
+                row.pid.map(|p| p.to_string()).unwrap_or_default(),
+                row.display_name.clone().unwrap_or_default(),
+                match row.enabled {
+                    Some(true) => "yes".to_string(),
+                    Some(false) => "no".to_string(),
+                    None => "-".to_string(),
+                },
+            ])
+            .style(selected_row(start + index, app.selected()))
+        })
+        .collect();
+    frame.render_widget(
+        table(
+            &[
+                ("service", 28),
+                ("state", 10),
+                ("pid", 7),
+                ("display name", 30),
+                ("enabled", 8),
+            ],
+            &titled("services", app),
+        )
+        .rows(rows),
+        area,
+    );
+    scrollbar(frame, app, area);
 }
 
 fn system(frame: &mut Frame, app: &mut App, area: Rect) {
-    let columns =
-        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).split(area);
-
     let mut facts: Vec<Line> = Vec::new();
     if let Some(info) = app.system() {
         facts.push(Line::raw(format!(
@@ -283,31 +542,26 @@ fn system(frame: &mut Frame, app: &mut App, area: Rect) {
         )));
         facts.push(Line::raw(format!("host {}", info.hostname)));
         facts.push(Line::raw(format!(
-            "cpu   {} x {}",
+            "cpu  {} x {}",
             info.cpu_count,
             info.cpu_brand.clone().unwrap_or_else(|| "unknown".into())
         )));
         facts.push(Line::raw(format!(
-            "mem   {} of {}",
-            format_bytes(info.total_memory_bytes - info.available_memory_bytes),
-            format_bytes(info.total_memory_bytes)
-        )));
-        facts.push(Line::raw(format!(
-            "up    {}",
+            "up   {}",
             format_duration(info.uptime_seconds)
         )));
     }
     facts.push(Line::from(""));
-    facts.push(Line::raw(format!("cpu   {:.1}%", app.cpu())));
+    facts.push(Line::raw(format!("cpu  {:.1}%", app.cpu())));
     if let Some(usage) = app.memory_usage() {
         facts.push(Line::raw(format!(
-            "mem   {:.1}% ({} free)",
+            "mem  {:.1}% ({} free)",
             usage.percent,
             format_bytes(usage.available_bytes)
         )));
         if usage.swap_total_bytes > 0 {
             facts.push(Line::raw(format!(
-                "swap  {} of {}",
+                "swap {} of {}",
                 format_bytes(usage.swap_used_bytes),
                 format_bytes(usage.swap_total_bytes)
             )));
@@ -318,37 +572,12 @@ fn system(frame: &mut Frame, app: &mut App, area: Rect) {
     }
     frame.render_widget(
         Paragraph::new(facts).block(Block::default().borders(Borders::ALL).title(" system ")),
-        columns[0],
-    );
-
-    let services: Vec<Row> = app
-        .services()
-        .iter()
-        .map(|row: &ServiceInfo| {
-            Row::new(vec![
-                row.name.clone(),
-                format!("{:?}", row.state).to_lowercase(),
-                row.pid.map(|p| p.to_string()).unwrap_or_default(),
-                match row.enabled {
-                    Some(true) => "yes".to_string(),
-                    Some(false) => "no".to_string(),
-                    None => "unknown".to_string(),
-                },
-            ])
-        })
-        .collect();
-    frame.render_widget(
-        table(
-            &[("service", 28), ("state", 10), ("pid", 7), ("enabled", 8)],
-            "services",
-        )
-        .rows(services),
-        columns[1],
+        area,
     );
 }
 
 /// Mounted filesystems on top, the usage tree of the launch directory below.
-fn disk(frame: &mut Frame, app: &mut App, area: Rect) {
+fn disks(frame: &mut Frame, app: &mut App, area: Rect) {
     let panes = Layout::vertical([
         Constraint::Length((app.disks().len() as u16 + 4).clamp(5, 12)),
         Constraint::Min(3),
@@ -451,13 +680,31 @@ fn status(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-fn footer(frame: &mut Frame, area: Rect) {
-    let keys = "tab view   j/arrows move   / filter   r refresh   k kill   enter confirm   q quit";
+fn footer(frame: &mut Frame, app: &App, area: Rect) {
+    let keys = match app.view() {
+        View::Dashboard => "1-7 pages   / search   ctrl+p commands   r refresh   q quit",
+        View::Ports => "enter details   k kill   / search   f filter   r refresh   q quit",
+        View::Processes => {
+            if app.tree_mode() {
+                "enter details   k kill   space fold   t tree off   s sort   p ports   / search   f filter   r refresh   q quit"
+            } else {
+                "enter details   k kill   t tree   s sort   p ports   / search   f filter   r refresh   q quit"
+            }
+        }
+        View::Network => "enter details   k kill   / search   f filter   r refresh   q quit",
+        View::Services => "enter details   / search   f filter   r refresh   q quit",
+        View::System => "/ search   ctrl+p commands   r refresh   q quit",
+        View::Disks => "enter fold   / search   ctrl+p commands   r refresh   q quit",
+    };
     frame.render_widget(
         Paragraph::new(keys).style(Style::default().fg(Color::DarkGray)),
         area,
     );
 }
+
+// ---------------------------------------------------------------------------
+// Dialogs
+// ---------------------------------------------------------------------------
 
 fn dialog(frame: &mut Frame, app: &App, area: Rect) {
     let width = area.width.saturating_sub(8).min(76);
@@ -466,7 +713,12 @@ fn dialog(frame: &mut Frame, app: &App, area: Rect) {
             target: Target::Sockets(plan),
             ..
         } => (plan.sockets.len() as u16 + 7).min(area.height.saturating_sub(4)),
-        _ => 8.min(area.height.saturating_sub(4)),
+        Modal::Confirm { .. } => 8.min(area.height.saturating_sub(4)),
+        Modal::Prompt { .. } => 8.min(area.height.saturating_sub(4)),
+        Modal::Palette { .. } => 18.min(area.height.saturating_sub(4)),
+        Modal::Search { .. } => 22.min(area.height.saturating_sub(4)),
+        Modal::Detail { rows, .. } => (rows.len() as u16 + 4).min(area.height.saturating_sub(4)),
+        Modal::None => 8,
     };
     let popup = Rect {
         x: area.x + (area.width.saturating_sub(width)) / 2,
@@ -529,23 +781,95 @@ fn dialog(frame: &mut Frame, app: &App, area: Rect) {
                 popup,
             );
         }
+        Modal::Palette { input, selected } => {
+            let matches = app.palette_matches();
+            let visible = popup.height.saturating_sub(3) as usize;
+            let start = selected.saturating_sub(visible.saturating_sub(1));
+            let mut lines: Vec<Line> = vec![Line::styled(
+                format!("> {input}_"),
+                Style::default().fg(Color::Cyan),
+            )];
+            for (index, command) in matches.iter().enumerate().skip(start).take(visible) {
+                let style = if index == *selected {
+                    Style::default().bg(Color::Blue).fg(Color::White)
+                } else {
+                    Style::default()
+                };
+                lines.push(
+                    Line::raw(format!("{:<36} {}", command.label, command.hint)).style(style),
+                );
+            }
+            frame.render_widget(
+                Paragraph::new(lines)
+                    .block(Block::default().borders(Borders::ALL).title(" commands ")),
+                popup,
+            );
+        }
+        Modal::Search { input, selected } => {
+            let hits = app.search_hits();
+            let visible = popup.height.saturating_sub(4) as usize;
+            let start = selected.saturating_sub(visible.saturating_sub(1));
+            let mut lines: Vec<Line> = vec![Line::styled(
+                format!("> {input}_"),
+                Style::default().fg(Color::Cyan),
+            )];
+            let mut family = "";
+            for (index, hit) in hits.iter().enumerate().skip(start).take(visible) {
+                if hit.family != family {
+                    family = hit.family;
+                    lines.push(Line::styled(
+                        format!(" {family}"),
+                        Style::default().fg(Color::Yellow).bold(),
+                    ));
+                }
+                let style = if index == *selected {
+                    Style::default().bg(Color::Blue).fg(Color::White)
+                } else {
+                    Style::default()
+                };
+                lines.push(Line::raw(format!("  {:<32} {}", hit.label, hit.detail)).style(style));
+            }
+            for note in app.search_notes() {
+                lines.push(Line::styled(
+                    format!("! {note}"),
+                    Style::default().fg(Color::Red),
+                ));
+            }
+            frame.render_widget(
+                Paragraph::new(lines)
+                    .block(Block::default().borders(Borders::ALL).title(" search ")),
+                popup,
+            );
+        }
+        Modal::Detail {
+            title,
+            rows,
+            target,
+        } => {
+            let mut lines: Vec<Line> = Vec::new();
+            for (key, value) in rows {
+                lines.push(Line::raw(format!("  {key:<12} {value}")));
+            }
+            lines.push(Line::from(""));
+            lines.push(Line::styled(
+                if target.is_some() {
+                    "k kill    any other key closes"
+                } else {
+                    "any key closes"
+                },
+                Style::default().fg(Color::Cyan),
+            ));
+            frame.render_widget(
+                Paragraph::new(lines).block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(format!(" {title} ")),
+                ),
+                popup,
+            );
+        }
     }
 }
 
-fn state_label(state: ConnectionState) -> &'static str {
-    match state {
-        ConnectionState::Listen => "listen",
-        ConnectionState::Established => "established",
-        ConnectionState::SynReceived => "syn-received",
-        ConnectionState::SynSent => "syn-sent",
-        ConnectionState::FinWait1 => "fin-wait-1",
-        ConnectionState::FinWait2 => "fin-wait-2",
-        ConnectionState::CloseWait => "close-wait",
-        ConnectionState::Closing => "closing",
-        ConnectionState::LastAck => "last-ack",
-        ConnectionState::TimeWait => "time-wait",
-        ConnectionState::Closed => "closed",
-        ConnectionState::Bound => "bound",
-        ConnectionState::Unknown => "unknown",
-    }
-}
+#[cfg(test)]
+mod tests;
