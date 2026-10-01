@@ -1152,6 +1152,123 @@ fn bluetooth_without_the_capability_is_unsupported() {
     assert_eq!(out.code, ErrorKind::Unsupported.exit_code());
 }
 
+// ---------------------------------------------------------------------------
+// x display
+// ---------------------------------------------------------------------------
+
+use x_core::display::{DisplayInfo, Point, Resolution};
+
+/// A 2560×1440 panel at 60 Hz with everything the platform might report.
+fn display_row(name: &str, primary: bool) -> DisplayInfo {
+    let mut info = DisplayInfo::new(name);
+    info.id = Some(format!("display-{}", name.to_ascii_lowercase()));
+    info.connected = Some(true);
+    info.resolution = Some(Resolution {
+        width: 2560,
+        height: 1440,
+    });
+    info.refresh_hz = Some(59.94);
+    info.scale_percent = Some(125);
+    info.primary = Some(primary);
+    info.position = Some(Point {
+        x: if primary { 0 } else { 2560 },
+        y: 0,
+    });
+    info
+}
+
+#[test]
+fn display_list_prints_a_dash_for_every_unknown() {
+    let bare = DisplayInfo::new("GHOST-1");
+    let stubs = Stubs::new().with_displays(vec![display_row("Internal", true), bare]);
+    let out = x(&stubs, &["display", "list"], false);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert!(out.stdout.contains("Internal"));
+    assert!(out.stdout.contains("2560x1440"));
+    assert!(out.stdout.contains("59.94"));
+    assert!(out.stdout.contains("125%"));
+    // The GHOST-1 row reports nothing but its name: every cell is a dash.
+    let ghost = out
+        .stdout
+        .lines()
+        .find(|line| line.contains("GHOST-1"))
+        .expect("ghost row");
+    assert!(ghost.contains('-'), "{ghost}");
+    assert!(!ghost.contains("yes"), "{ghost}");
+}
+
+#[test]
+fn display_list_json_omits_unknown_fields() {
+    let stubs = Stubs::new().with_displays(vec![
+        display_row("Internal", true),
+        DisplayInfo::new("GHOST-1"),
+    ]);
+    let out = x(&stubs, &["display", "list", "--json"], false);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    let value: serde_json::Value = serde_json::from_str(&out.stdout).expect("json");
+    let rows = value.as_array().expect("array");
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["refresh_hz"], serde_json::json!(59.94));
+    assert_eq!(rows[0]["position"]["x"], serde_json::json!(0));
+    assert!(rows[1].get("resolution").is_none());
+    assert!(rows[1].get("primary").is_none());
+}
+
+#[test]
+fn display_info_selects_by_number_and_name() {
+    let stubs = Stubs::new().with_displays(vec![
+        display_row("Internal", true),
+        display_row("DELL U2720Q", false),
+    ]);
+
+    let by_number = x(&stubs, &["display", "info", "2"], false);
+    assert_eq!(by_number.code, 0, "{}", by_number.stderr);
+    assert!(by_number.stdout.contains("DELL U2720Q"));
+
+    let by_name = x(&stubs, &["display", "info", "dell u2720q"], false);
+    assert_eq!(by_name.code, 0, "{}", by_name.stderr);
+    assert!(by_name.stdout.contains("DELL U2720Q"));
+    assert!(
+        !by_name.stdout.contains("Internal"),
+        "the wrong display was selected: {}",
+        by_name.stdout
+    );
+
+    let json = x(&stubs, &["display", "info", "1", "--json"], false);
+    assert_eq!(json.code, 0, "{}", json.stderr);
+    let value: serde_json::Value = serde_json::from_str(&json.stdout).expect("json");
+    assert_eq!(value["name"], serde_json::json!("Internal"));
+    assert_eq!(value["scale_percent"], serde_json::json!(125));
+}
+
+#[test]
+fn display_info_refuses_missing_and_ambiguous_targets() {
+    let stubs = Stubs::new().with_displays(vec![
+        display_row("Generic Monitor A", true),
+        display_row("Generic Monitor B", false),
+    ]);
+
+    let missing = x(&stubs, &["display", "info", "Ghost"], false);
+    assert_eq!(missing.code, ErrorKind::NotFound.exit_code());
+    assert!(missing.stderr.contains("no display matching"));
+
+    let ambiguous = x(&stubs, &["display", "info", "Monitor"], false);
+    assert_eq!(ambiguous.code, ErrorKind::InvalidInput.exit_code());
+    assert!(ambiguous.stderr.contains("matches 2 displays"));
+
+    let zero = x(&stubs, &["display", "info", "0"], false);
+    assert_eq!(zero.code, ErrorKind::InvalidInput.exit_code());
+
+    let out_of_range = x(&stubs, &["display", "info", "7"], false);
+    assert_eq!(out_of_range.code, ErrorKind::NotFound.exit_code());
+}
+
+#[test]
+fn display_without_the_capability_is_unsupported() {
+    let out = x_in(&stub_context(), &["display", "list"], false);
+    assert_eq!(out.code, ErrorKind::Unsupported.exit_code());
+}
+
 /// A TLS stub that answers like a verified handshake.
 fn stub_tls() -> x_core::netdiag::TlsInfo {
     x_core::netdiag::TlsInfo {

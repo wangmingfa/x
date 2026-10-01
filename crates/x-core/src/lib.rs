@@ -45,6 +45,7 @@ pub mod devcheck;
 pub mod devenv;
 pub mod device;
 pub mod disk;
+pub mod display;
 pub mod dockerinfo;
 pub mod error;
 pub mod file;

@@ -6,6 +6,7 @@ pub mod clipboard;
 pub mod device;
 pub mod devtools;
 pub mod disk;
+pub mod display;
 pub mod envpath;
 pub mod file;
 pub mod firewall;

@@ -407,6 +407,8 @@ pub fn attach(context: SystemContext) -> SystemContext {
         logs: context.logs,
         // Device enumeration is a read too; it passes straight through.
         device: context.device,
+        // Display topology is a read; it passes straight through as well.
+        display: context.display,
         bluetooth: context.bluetooth.map(|inner| {
             Arc::new(AuditedBluetooth {
                 inner,

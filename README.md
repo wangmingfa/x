@@ -146,6 +146,22 @@ macOS 读 `system_profiler SPBluetoothDataType -json`——两者没有命令行
 不留痕。平台没报 `powered` / `paired` 等标志就显示 `-`，JSON 里整字段
 缺席，不拿「未知」冒充「否」。
 
+### 显示与显示器（`x display`）
+
+| 命令 | 说明 |
+| --- | --- |
+| `x display list` | 拓扑表：连接、分辨率、刷新率、缩放、主屏、位置 |
+| `x display info <序号或名称>` | 单台显示器的全部字段（名称模糊匹配，歧义即拒） |
+| `x display list --json` | 整份拓扑的 JSON 数组（没报的字段整列缺席） |
+
+Windows 走 Gdi32 原生枚举（`EnumDisplayDevicesW` 逐监视器、`EnumDisplay
+SettingsW(ENUM_CURRENT_SETTINGS)` 取当前模式与桌面位置、`GetDpiForMonitor`
+取有效缩放）——`Win32_VideoController` 这类投影无法与监视器一一对应，
+不做拼图式猜测；Linux 读 DRM 连接器的 sysfs（`status` 判连接、
+`modes` 首行即当前模式 `1920x1080 60.00`），位置/主屏/缩放属合成器状态，
+如实缺席；macOS 解析 `system_profiler SPDisplaysDataType -json`，含
+Retina「as W x H」缩放换算。全部只读，不落审计。
+
 ### 证书与网络诊断（`x cert` / `x tls` / `x http` / `x net check`）
 
 | 命令 | 说明 |
@@ -314,7 +330,7 @@ GitHub Actions CI 在 Ubuntu / macOS / Windows 三平台上跑格式、clippy
 
 - [x] 设备（`x device list/usb/audio/display/…`）：USB、蓝牙、音频、显示、摄像头、键鼠（HID）、网卡；三平台原文透传 + 保守归类
 - [x] 蓝牙（`x bluetooth devices/scan/connect/disconnect`）：读三平台原文透传，动词 Linux 全量、Windows/macOS 如实不支持；确认 + 审计
-- [ ] 显示（`x display list/info`）：分辨率、刷新率、缩放、主显示器、位置、HDR
+- [x] 显示（`x display list/info`）：分辨率、刷新率、缩放、主显示器、位置；HDR 未提供（Windows 需再过 QueryDisplayConfig，macOS/Linux 口径不一，留待后续如实读取）
 - [ ] 窗口（`x window list/active/focus/minimize/maximize`）
 - [ ] 事件（`x events`）：进程启停、网络连接、USB 插拔、磁盘挂载、服务状态变化，适合 TUI 实时展示
 - [ ] TUI 增强：Dashboard 首页（CPU / 内存 / 磁盘 / 端口概览 + 侧边导航）

@@ -889,6 +889,31 @@ impl crate::bluetooth::BluetoothManager for StubBluetooth {
     }
 }
 
+/// Display topology stub serving a fixed list, or an honest "cannot list"
+/// when no list was configured.
+#[derive(Debug, Default)]
+pub struct StubDisplay {
+    displays: Option<Vec<crate::display::DisplayInfo>>,
+}
+
+impl StubDisplay {
+    /// Fixed topology.
+    pub fn new(displays: Vec<crate::display::DisplayInfo>) -> Self {
+        Self {
+            displays: Some(displays),
+        }
+    }
+}
+
+impl crate::display::DisplayManager for StubDisplay {
+    fn displays(&self) -> crate::error::Result<Vec<crate::display::DisplayInfo>> {
+        match &self.displays {
+            Some(rows) => Ok(rows.clone()),
+            None => Err(crate::Error::unsupported("stub cannot list displays")),
+        }
+    }
+}
+
 /// A context assembled from configurable stubs.
 ///
 /// ```no_run
@@ -920,6 +945,8 @@ pub struct Stubs {
     pub device: std::sync::Arc<StubDevices>,
     /// Bluetooth capability.
     pub bluetooth: std::sync::Arc<StubBluetooth>,
+    /// Display capability.
+    pub display: std::sync::Arc<StubDisplay>,
 }
 
 impl Default for Stubs {
@@ -942,6 +969,7 @@ impl Stubs {
             logs: std::sync::Arc::new(StubLogs::default()),
             device: std::sync::Arc::new(StubDevices::default()),
             bluetooth: std::sync::Arc::new(StubBluetooth::default()),
+            display: std::sync::Arc::new(StubDisplay::default()),
         }
     }
 
@@ -1035,6 +1063,14 @@ impl Stubs {
         }
     }
 
+    /// Serve `rows` as the display topology.
+    pub fn with_displays(self, rows: Vec<crate::display::DisplayInfo>) -> Self {
+        Self {
+            display: std::sync::Arc::new(StubDisplay::new(rows)),
+            ..self
+        }
+    }
+
     /// Canned DNS / TLS / HTTP probe answers on the network capability.
     pub fn with_net_probes(
         self,
@@ -1064,6 +1100,7 @@ impl Stubs {
             .logs(Arc::clone(&self.logs) as Arc<dyn crate::logs::LogReader>)
             .device(Arc::clone(&self.device) as Arc<dyn crate::device::DeviceManager>)
             .bluetooth(Arc::clone(&self.bluetooth) as Arc<dyn crate::bluetooth::BluetoothManager>)
+            .display(Arc::clone(&self.display) as Arc<dyn crate::display::DisplayManager>)
             .build()
             .expect("stub capabilities are always complete")
     }

@@ -13,6 +13,7 @@ pub mod process_sysinfo;
 pub mod bluetooth_os;
 pub mod clipboard_cmd;
 pub mod device_os;
+pub mod display_os;
 pub mod file_open;
 pub mod firewall_os;
 pub mod hosts_os;

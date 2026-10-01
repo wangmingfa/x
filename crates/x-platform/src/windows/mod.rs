@@ -12,6 +12,7 @@
 
 pub(crate) mod buffer;
 pub mod disk;
+pub mod display;
 pub(crate) mod netprobe;
 pub mod network;
 pub mod port;
