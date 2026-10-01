@@ -19,6 +19,10 @@ pub enum OutputFormat {
     Plain,
     /// Pretty printed JSON.
     Json,
+    /// One JSON object per row, newline delimited — stream friendly.
+    Jsonl,
+    /// RFC 4180 style CSV with a header row.
+    Csv,
 }
 
 /// One table cell.
@@ -200,6 +204,22 @@ impl Table {
     }
 }
 
+/// Render one CSV record: quote fields that contain separators, quotes or
+/// newlines, double the quotes inside, join with commas.
+fn csv_line(fields: &[String]) -> String {
+    fields
+        .iter()
+        .map(|field| {
+            if field.contains(',') || field.contains('"') || field.contains('\n') {
+                format!("\"{}\"", field.replace('"', "\"\""))
+            } else {
+                field.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 /// Writes command results in the selected format.
 pub struct Renderer {
     format: OutputFormat,
@@ -259,6 +279,32 @@ impl Renderer {
                     })
                     .collect();
                 self.json(&rows)
+            }
+            OutputFormat::Jsonl => {
+                for row in &table.rows {
+                    let mut object = serde_json::Map::new();
+                    for (index, header) in table.headers.iter().enumerate() {
+                        object.insert(
+                            header.clone(),
+                            serde_json::Value::String(row.get(index).cloned().unwrap_or_default()),
+                        );
+                    }
+                    writeln!(self.out, "{}", serde_json::Value::Object(object))?;
+                }
+                Ok(())
+            }
+            OutputFormat::Csv => {
+                let header: Vec<String> = table.headers.clone();
+                self.out.write_all(csv_line(&header).as_bytes())?;
+                self.out.write_all(b"\r\n")?;
+                for row in &table.rows {
+                    let fields: Vec<String> = (0..table.headers.len())
+                        .map(|index| row.get(index).cloned().unwrap_or_default())
+                        .collect();
+                    self.out.write_all(csv_line(&fields).as_bytes())?;
+                    self.out.write_all(b"\r\n")?;
+                }
+                Ok(())
             }
         }
     }
@@ -385,6 +431,33 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&text).expect("json");
         assert_eq!(value[0]["name"], "node");
         assert_eq!(value[0]["port"], "8080");
+    }
+
+    #[test]
+    fn jsonl_output_is_one_object_per_row() {
+        let text = render(OutputFormat::Jsonl, |table| {
+            table.push(row!["node", "8080"]);
+            table.push(row!["nginx", "80"]);
+        });
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2, "one object per row, no header: {text}");
+        let first: serde_json::Value = serde_json::from_str(lines[0]).expect("jsonl line 1");
+        assert_eq!(first["name"], "node");
+        assert_eq!(first["port"], "8080");
+        let second: serde_json::Value = serde_json::from_str(lines[1]).expect("jsonl line 2");
+        assert_eq!(second["name"], "nginx");
+    }
+
+    #[test]
+    fn csv_output_has_a_header_and_quotes_specials() {
+        let text = render(OutputFormat::Csv, |table| {
+            table.push(row!["node", "8080"]);
+            table.push(row!["a,b", "plain"]);
+        });
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[0], "name,port");
+        assert_eq!(lines[1], "node,8080");
+        assert_eq!(lines[2], "\"a,b\",plain");
     }
 
     #[test]

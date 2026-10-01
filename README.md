@@ -410,7 +410,7 @@ GitHub Actions CI 在 Ubuntu / macOS / Windows 三平台上跑格式、clippy
 - [ ] Agent 模式：`x explain <命令>` 解释输出；自然语言输入放最后，核心不依赖 AI
 - [ ] 配置（`~/.config/x/config.toml`）：主题、刷新率、默认输出格式、默认排序
 - [ ] 主题：TUI 内置 Default / Dark / Light / Monochrome + 自定义
-- [ ] 输出：`--jsonl`、`--csv`（human / json 已有）
+- [x] 输出：`--jsonl`、`--csv`（human / json 已有）
 - [ ] shell 补全：`x completion bash|zsh|fish|powershell|elvish`
 - [ ] man 页与帮助生成
 - [ ] Dry run：`--dry-run` 先说明将执行的操作（与确认机制互补）

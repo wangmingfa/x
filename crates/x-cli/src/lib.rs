@@ -46,6 +46,14 @@ pub struct Cli {
     #[arg(long, global = true, conflicts_with = "no_color")]
     pub plain: bool,
 
+    /// Render one JSON object per row (newline delimited, stream friendly).
+    #[arg(long, global = true, conflicts_with_all = ["json", "plain", "csv", "no_color"])]
+    pub jsonl: bool,
+
+    /// Render RFC 4180 CSV with a header row.
+    #[arg(long, global = true, conflicts_with_all = ["json", "plain", "jsonl", "no_color"])]
+    pub csv: bool,
+
     /// Never emit ANSI colors.
     #[arg(long, global = true)]
     pub no_color: bool,
@@ -255,6 +263,10 @@ pub fn run_with(context: &x_core::SystemContext, cli: Cli) -> i32 {
     });
     let format = if cli.json {
         OutputFormat::Json
+    } else if cli.jsonl {
+        OutputFormat::Jsonl
+    } else if cli.csv {
+        OutputFormat::Csv
     } else if cli.plain {
         OutputFormat::Plain
     } else {
