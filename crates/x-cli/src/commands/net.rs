@@ -13,6 +13,14 @@ use crate::{
     row,
 };
 
+/// Default target for `x net speed`: a large, stable, publicly mirrored file.
+///
+/// The size matters more than the host: a few kilobytes would measure latency
+/// and connection setup, not throughput. This object is the one speedtest
+/// tools reach for, served over plain HTTP so no TLS handshake is timed
+/// alongside the transfer.
+const DEFAULT_SPEED_URL: &str = "http://speedtest.tele2.net/10MB.zip";
+
 /// `x net` subcommands.
 #[derive(Debug, Subcommand)]
 pub enum NetCommand {
@@ -80,6 +88,25 @@ pub enum NetCommand {
         #[arg(long, default_value_t = 2.0)]
         timeout: f64,
     },
+
+    /// Measure download throughput against a URL.
+    ///
+    /// A sample of what this connection actually moved, not the negotiated
+    /// link speed that `x net interfaces` reports.
+    Speed {
+        /// URL to fetch; the body is discarded, only the transfer is timed.
+        #[arg(default_value = DEFAULT_SPEED_URL)]
+        url: String,
+
+        /// Give up after this many seconds.
+        #[arg(long, default_value_t = 30.0)]
+        timeout: f64,
+
+        /// Take this many samples and report each one, so a slow start or a
+        /// warm cache is visible instead of averaged away.
+        #[arg(long, default_value_t = 1)]
+        count: usize,
+    },
 }
 
 /// Route a `x net` invocation.
@@ -110,6 +137,11 @@ pub fn dispatch(
             max_hops,
             timeout,
         } => trace(context, renderer, host, *max_hops, *timeout),
+        NetCommand::Speed {
+            url,
+            timeout,
+            count,
+        } => speed(renderer, url, *timeout, *count),
     }
 }
 
@@ -430,6 +462,61 @@ pub fn trace(
         ]);
     }
     renderer.table(&table)?;
+    Ok(0)
+}
+
+/// Measure download throughput by timing a transfer.
+///
+/// Each sample is reported on its own rather than averaged: a slow first run
+/// (TLS-less connection setup, cold route, cold CDN edge) and a warm second one
+/// answer different questions, and an average hides both. A failed sample ends
+/// the run with the tool's own error rather than printing a rate that never
+/// happened.
+fn speed(renderer: &mut Renderer, url: &str, timeout: f64, count: usize) -> Result<i32> {
+    let timeout_ms = if timeout.is_finite() && timeout > 0.0 {
+        (timeout * 1000.0) as u64
+    } else {
+        30_000
+    };
+    let samples = count.max(1);
+
+    let mut taken: Vec<x_core::netdiag::SpeedSample> = Vec::new();
+    for index in 0..samples {
+        let sample = x_platform::common::netdiag::speed_sample(url, timeout_ms)?;
+        if renderer.format() == OutputFormat::Json {
+            renderer.always_json(&sample)?;
+        } else if samples == 1 {
+            renderer.line(format!(
+                "{url}\n  {}  ({:.2}s, {})",
+                sample.human_bits_per_second(),
+                sample.seconds,
+                x_core::format_bytes(sample.bytes),
+            ))?;
+        } else {
+            renderer.line(format!(
+                "[{}/{}] {}  ({:.2}s, {})",
+                index + 1,
+                samples,
+                sample.human_bits_per_second(),
+                sample.seconds,
+                x_core::format_bytes(sample.bytes),
+            ))?;
+        }
+        taken.push(sample);
+    }
+
+    // The peak is reported alongside the list because what a user usually
+    // wants is "how fast can this link go", and the best run is the closest
+    // answer that still came from a real measurement.
+    if renderer.format() != OutputFormat::Json && taken.len() > 1 {
+        if let Some(best) = taken.iter().max_by_key(|s| s.bits_per_second) {
+            renderer.line(format!(
+                "peak {} from {} sample(s)",
+                best.human_bits_per_second(),
+                taken.len()
+            ))?;
+        }
+    }
     Ok(0)
 }
 

@@ -8,7 +8,7 @@
 //! paraphrases.
 
 use x_core::error::{Error, ErrorKind, Result};
-use x_core::netdiag::{HttpResponse, TlsInfo};
+use x_core::netdiag::{HttpResponse, SpeedSample, TlsInfo};
 
 /// Probe `host:port` for TLS facts using the platform TLS client.
 pub fn tls_info(host: &str, port: u16, timeout_ms: u64) -> Result<TlsInfo> {
@@ -63,6 +63,62 @@ pub fn http_probe(url: &str, method: &str, timeout_ms: u64) -> Result<HttpRespon
         return Err(Error::system(detail));
     }
     Ok(response)
+}
+
+/// Measure download throughput by fetching `url` and timing the transfer.
+///
+/// This is a sample of what the connection actually moved, deliberately kept
+/// separate from the negotiated link speed that `x net interfaces` reports:
+/// the two answer different questions and averaging one into the other would
+/// hide which is which. The body is discarded, so the cost is the transfer and
+/// nothing else.
+///
+/// curl prints `0.000000` when it could not time a transfer; that is refused
+/// rather than turned into an infinite rate.
+pub fn speed_sample(url: &str, timeout_ms: u64) -> Result<SpeedSample> {
+    let sink = if cfg!(windows) { "NUL" } else { "/dev/null" };
+    let seconds = (timeout_ms / 1000).max(1).to_string();
+    let args = [
+        "-sS",
+        "-o",
+        sink,
+        "--max-time",
+        &seconds,
+        "-w",
+        "%{size_download}|%{time_total}|%{speed_download}",
+        url,
+    ];
+    let (code, stdout, stderr) = run_curl(&args)?;
+    if code != 0 {
+        let first_line = stderr
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .unwrap_or("curl failed")
+            .to_string();
+        return Err(curl_error(code, &first_line));
+    }
+
+    let fields: Vec<&str> = stdout.trim().split('|').collect();
+    if fields.len() != 3 {
+        return Err(Error::system(format!(
+            "curl did not report a transfer for {url}: {}",
+            stdout.trim()
+        )));
+    }
+    let bytes: u64 = fields[0]
+        .parse()
+        .map_err(|_| Error::system(format!("curl reported size `{}`", fields[0])))?;
+    let elapsed: f64 = fields[1]
+        .parse()
+        .map_err(|_| Error::system(format!("curl reported time `{}`", fields[1])))?;
+
+    SpeedSample::new(url, bytes, elapsed).ok_or_else(|| {
+        Error::system(format!(
+            "curl could not time the transfer from {url} (time `{}`), so no rate can be reported",
+            fields[1]
+        ))
+    })
 }
 
 /// Map curl's exit codes onto `x`'s error kinds.
