@@ -46,7 +46,7 @@ pick() {
         if [ "${rendered:-0}" = 1 ]; then
             printf '\e[%dA' "$((count + 1))"
         fi
-        printf '%s\n' "$title"
+        printf '%s\e[0K\n' "$title"
         local i=0
         for opt in "${options[@]}"; do
             if [ "$i" = "$sel" ]; then
@@ -101,26 +101,44 @@ if [ -z "$tag" ]; then
         kind="stable"
         [ "$kind_result" = 2 ] && kind="pre"
 
-        # 2. Version bump with preview
+        # 2. Version selection with preview
         while true; do
-            set +e
-            pick "Bump version (current: $version)" \
-                "patch  ->  v$major.$minor.$((patch + 1))" \
-                "minor  ->  v$major.$((minor + 1)).0" \
-                "major  ->  v$((major + 1)).0.0"
-            bump_result=$?
-            set -e
-            [ "$bump_result" -ge 1 ] 2>/dev/null || exit 130
-
-            case "$bump_result" in
-                1) next="v$major.$minor.$((patch + 1))" ;;
-                2) next="v$major.$((minor + 1)).0" ;;
-                3) next="v$((major + 1)).0.0" ;;
-            esac
+            local next="" next_base=""
+            if [ "$kind" = "pre" ]; then
+                set +e
+                pick "Pre-release base version (current: $version)" \
+                    "keep current  ->  v$major.$minor.$patch" \
+                    "patch bump    ->  v$major.$minor.$((patch + 1))" \
+                    "minor bump    ->  v$major.$((minor + 1)).0" \
+                    "major bump    ->  v$((major + 1)).0.0"
+                base_result=$?
+                set -e
+                [ "$base_result" -ge 1 ] 2>/dev/null || exit 130
+                case "$base_result" in
+                    1) next_base="v$major.$minor.$patch" ;;
+                    2) next_base="v$major.$minor.$((patch + 1))" ;;
+                    3) next_base="v$major.$((minor + 1)).0" ;;
+                    4) next_base="v$((major + 1)).0.0" ;;
+                esac
+            else
+                set +e
+                pick "Bump version (current: $version)" \
+                    "patch  ->  v$major.$minor.$((patch + 1))" \
+                    "minor  ->  v$major.$((minor + 1)).0" \
+                    "major  ->  v$((major + 1)).0.0"
+                bump_result=$?
+                set -e
+                [ "$bump_result" -ge 1 ] 2>/dev/null || exit 130
+                case "$bump_result" in
+                    1) next_base="v$major.$minor.$((patch + 1))" ;;
+                    2) next_base="v$major.$((minor + 1)).0" ;;
+                    3) next_base="v$((major + 1)).0.0" ;;
+                esac
+            fi
 
             if [ "$kind" = "pre" ]; then
                 set +e
-                pick "Pre-release tag for $next" \
+                pick "Pre-release tag for $next_base" \
                     "rc" \
                     "alpha" \
                     "beta"
@@ -132,16 +150,27 @@ if [ -z "$tag" ]; then
                     2) prefix="alpha" ;;
                     3) prefix="beta" ;;
                 esac
-                printf 'Pre-release number for %s-<n>.1? [1]: ' "$prefix"
-                read -r pre_num
-                pre_num=${pre_num:-1}
-                case "$pre_num" in
+                # scan existing tags of the same base+prefix, suggest next number
+                local pre_num=1
+                local last_num
+                last_num=$(git tag --list "${next_base}-${prefix}.*" \
+                    | sed -n "s/^${next_base}-${prefix}\.\([0-9][0-9]*\)$/\1/p" \
+                    | sort -n | tail -1)
+                if [ -n "$last_num" ]; then
+                    pre_num=$((last_num + 1))
+                fi
+                printf 'Pre-release number for %s-<n> [%s]: ' "$prefix" "$pre_num"
+                read -r input_num
+                input_num=${input_num:-$pre_num}
+                case "$input_num" in
                     ''|*[!0-9]*)
-                        printf 'error: pre-release number must be a number, got "%s"\n' "$pre_num" >&2
+                        printf 'error: pre-release number must be a number, got "%s"\n' "$input_num" >&2
                         exit 1
                         ;;
                 esac
-                next="$next-$prefix.$pre_num"
+                next="$next_base-$prefix.$input_num"
+            else
+                next="$next_base"
             fi
 
             printf 'Selected tag: %s\n' "$next"
