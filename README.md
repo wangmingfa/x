@@ -438,3 +438,52 @@ GitHub Actions CI 在 Ubuntu / macOS / Windows 三平台上跑格式、clippy
 - [x] Dry run：`--dry-run` 先说明将执行的操作（与确认机制互补）
 - [x] 打包分发：install 脚本 / Homebrew tap / Windows 安装包
 - [x] 各平台原生运行时的持续回归（CI 已覆盖，新增 `regression` 测试组 + 真实原生冒烟：覆盖权限拒绝、目标消失、服务管理器不可达、磁盘/网络读失败等真实故障，确认优雅降级而非崩溃）
+
+### P5 候选（待启动，按性价比排序）
+
+下面是从当前代码面（已实现的命令面、x-core 模型层、平台门控现状）梳理出的
+候选，不预先承诺顺序；每项开工前仍按「不强行统一不存在的能力」原则复核
+平台可得性。
+
+**A 组 · 高性价比，缺口明确**
+
+- [ ] 实时监视：`x ps watch` / `x sys watch`（对齐已有的 `x port watch` 与
+  `x events` 轮询模型：定时重采样、只在变化或到达节流周期时输出，`--interval`
+  / `--count`，Ctrl+C 干净退出）。零新模型，纯 CLI 层复用 `list()`。
+- [ ] 日志跟随：`x logs system|service|process --follow`（journalctl -f /
+  Get-WinEvent -Follow / log stream 的统一形状；`--since`、`--grep`、
+  `--level` 过滤）。当前 logs 只有 `--limit` 快照，缺流式。
+- [ ] 文件哈希：`x file hash <path> [--algo sha256|blake3…]`（纯读取，三平台
+  同构，std 无依赖可实现 sha256/crc32 家族；补齐 file 域的完整性视角）。
+- [ ] 审计查询：`x audit list [--action A] [--user U] [--since T] [--tail N]`
+  （读自己写的 JSON-lines 日志，天然三平台同构；写侧已有、读侧空白，是审计
+  闭环的最后一块）。
+- [ ] `x net speed`：链路协商速率与实际吞吐分列（现有 interfaces 只报协商
+  速率，README 已注明「不是带宽测量」）；轻量实现取 curl/wget 打固定小文件
+  计吞吐，超时与失败如实报告。
+
+**B 组 · 补齐已知留空项**
+
+- [ ] macOS CPU 温度：`x sys cpu` 温度目前仅 Linux 有（thermal_zone/hwmon）；
+  macOS 需 SMC 读取且要 root，按「不支持就如实说」的既有做法，先做
+  权限感知的探测与降级说明，不猜值。
+- [ ] 容器统一到 `x container`：现有 `x docker *` 只覆盖 docker CLI；
+  Podman / containerd 的 CLI 形状不同，按插件/逃生舱模式各写一个适配，
+  不强行合并成假统一。
+- [ ] 显示 HDR：Windows 需再过 QueryDisplayConfig，macOS/Linux 口径不一；
+  先在 capability 里如实标 unsupported，读取留后续。
+- [ ] DHCP 标记补齐：Windows/macOS 已接入，Linux 内核不记录地址来源，
+  如实留空是终点，除非找到用户态权威来源，否则不做。
+
+**C 组 · 产品化收尾**
+
+- [ ] 破坏性操作的 `--yes` 语义统一化：确认/审计路径已统一，但各命令
+  `--yes` 与 `--dry-run` 的组合行为还没有钉死的契约测试，补矩阵测试。
+- [ ] TUI 键位可配置：键位目前硬编码在 App 状态机（`Ctrl+P`、`/`、`k`…），
+  `config.toml` 已有主题/刷新率字段，键位映射同样可以走同一份配置。
+- [ ] 退出码契约版本化：`--version-info` 已打印 contract 版本，把退出码与
+  输出格式纳入显式契约文档，避免破坏脚本。
+- [ ] 性能基线：`x capability` 之外加一次「本机 1000 进程 / 10k 端口」
+  规模的采样耗时基准，防止列表类命令随平台适配器变慢。
+- [ ] 发布流程与 CHANGELOG：`scripts/release-tag.sh` 已能打 tag 触发
+  Release，缺自动生成的 CHANGELOG 与 release notes 模板。
