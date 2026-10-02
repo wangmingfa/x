@@ -235,7 +235,13 @@ mod tests {
         }
         let (root, workdir) = temp_repo();
 
-        assert_eq!(repo_root(&workdir).unwrap(), root);
+        // `git rev-parse --show-toplevel` returns the symlink-resolved path,
+        // while `std::env::temp_dir()` may go through a symlink (macOS maps
+        // /tmp and /var into /private). Compare canonical forms.
+        assert_eq!(
+            repo_root(&workdir).unwrap().canonicalize().unwrap(),
+            root.canonicalize().unwrap()
+        );
 
         std::fs::write(workdir.join("a.txt"), "two").unwrap();
         std::fs::write(workdir.join("b.txt"), "new").unwrap();
