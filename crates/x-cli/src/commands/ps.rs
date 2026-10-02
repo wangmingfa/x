@@ -2,9 +2,7 @@
 
 use clap::Subcommand;
 use x_core::error::{Error, Result};
-use x_core::process::{
-    diff_processes, ProcessInfo, ProcessListOptions, ProcessNode, ProcessSort,
-};
+use x_core::process::{diff_processes, ProcessInfo, ProcessListOptions, ProcessNode, ProcessSort};
 use x_core::KillSignal;
 use x_core::SystemContext;
 
@@ -316,9 +314,7 @@ fn watch_row(row: &ProcessInfo) -> String {
         row.pid,
         row.state.label(),
         clip(
-            row.command_line
-                .as_deref()
-                .unwrap_or(row.name.as_str()),
+            row.command_line.as_deref().unwrap_or(row.name.as_str()),
             COMMAND_WIDTH
         )
     )

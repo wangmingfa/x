@@ -97,6 +97,43 @@ fn record_quiet(entry: &AuditEntry) {
     let _ = record(entry);
 }
 
+/// The raw audit log text, or `None` when auditing is off or nothing was ever
+/// written.
+///
+/// Reading the log back needs no platform work: it is JSON lines this module
+/// wrote, so only the path is platform-specific and [`log_path`] resolves it.
+/// Exposing the text (rather than a filtered page) lets the frontend parse and
+/// filter in one place, and lets an explicit `--path` share that same path.
+pub fn read_text() -> Option<String> {
+    let path = log_path()?;
+    std::fs::read_to_string(path).ok()
+}
+
+/// Read the audit log back and apply `query`.
+///
+/// Records are handed over newest first: the file is append-ordered, so the
+/// newest record is the last line, and every consumer here (the CLI, `tail`,
+/// a limit) wants the recent end.
+///
+/// A missing log is not an error — auditing may simply never have fired — so
+/// it reads as an empty report rather than a failure.
+pub fn read(query: &x_core::audit::AuditQuery) -> x_core::audit::AuditReadReport {
+    let Some(text) = read_text() else {
+        return x_core::audit::AuditReadReport::default();
+    };
+
+    let mut parsed = x_core::audit::parse_log(&text);
+    // Append order is oldest first; the contract everywhere else is newest
+    // first, and a `--limit` must keep the recent records.
+    parsed.entries.reverse();
+    let entries = x_core::audit::filter(parsed.entries, query);
+    x_core::audit::AuditReadReport {
+        entries,
+        malformed_lines: parsed.malformed_lines,
+        truncated_last_line: parsed.truncated_last_line,
+    }
+}
+
 /// The shared state of the three decorators.
 struct Recorder {
     user: Option<String>,

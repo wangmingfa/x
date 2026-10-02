@@ -495,7 +495,10 @@ mod tests {
     fn follow_prints_the_backlog_once_and_then_nothing_new() {
         let stub = StubLogs::new(
             "stub",
-            vec![entry("err", "cron", "older"), entry("info", "cron", "newer")],
+            vec![
+                entry("err", "cron", "older"),
+                entry("info", "cron", "newer"),
+            ],
         );
         let buffer = Buffer::default();
         let mut renderer = Renderer::to_sink(OutputFormat::Plain, false, buffer.clone());
@@ -520,7 +523,10 @@ mod tests {
         // chronological, so the follow loop reverses the fresh batch.
         let stub = StubLogs::new(
             "stub",
-            vec![entry("info", "cron", "newer"), entry("err", "cron", "older")],
+            vec![
+                entry("info", "cron", "newer"),
+                entry("err", "cron", "older"),
+            ],
         );
         let buffer = Buffer::default();
         let mut renderer = Renderer::to_sink(OutputFormat::Plain, false, buffer.clone());
@@ -531,7 +537,10 @@ mod tests {
         let printed = buffer.text();
         let older = printed.find("older").expect("older printed");
         let newer = printed.find("newer").expect("newer printed");
-        assert!(older < newer, "a reader wants chronological order:\n{printed}");
+        assert!(
+            older < newer,
+            "a reader wants chronological order:\n{printed}"
+        );
     }
 
     #[test]
@@ -602,6 +611,9 @@ mod tests {
     #[test]
     fn log_line_keeps_the_platform_vocabulary_intact() {
         let line = log_line(&entry("错误", "System", "boom\nhappened"));
-        assert_eq!(line, "2026-10-02 10:00:00 +08:00 错误 [System] boom happened");
+        assert_eq!(
+            line,
+            "2026-10-02 10:00:00 +08:00 错误 [System] boom happened"
+        );
     }
 }

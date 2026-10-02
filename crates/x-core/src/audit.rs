@@ -89,6 +89,145 @@ fn civil_from_days(days: i64) -> (i64, i64, i64) {
     (if month <= 2 { year + 1 } else { year }, month, day)
 }
 
+/// Filters for reading the audit log back.
+///
+/// The log is JSON lines written by this same crate, so reading it needs no
+/// platform adapter: the only platform-specific part is the path, which the
+/// writer already resolved.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuditQuery {
+    /// Keep only this action (`process.kill`), or any action in the
+    /// `domain` when written as `process.*`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
+    /// Keep only records written by this user.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+    /// Keep only records whose outcome is not `ok`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub failures_only: bool,
+    /// Keep only records at or after this RFC 3339 UTC stamp.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since: Option<String>,
+    /// Free text over action, target and outcome.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grep: Option<String>,
+    /// Keep at most this many records, newest first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+/// Whether `entry` satisfies every filter in `query`.
+///
+/// `--action process.*` is the one glob: `x audit list --action process.kill`
+/// and `--action process.*` are both things a user reaches for, and the log is
+/// small enough that matching is trivial either way.
+pub fn matches(entry: &AuditEntry, query: &AuditQuery) -> bool {
+    if let Some(action) = &query.action {
+        let wanted = action.trim();
+        let hit = if let Some(domain) = wanted.strip_suffix(".*") {
+            entry.action.starts_with(domain)
+                && entry.action.as_bytes().get(domain.len()) == Some(&b'.')
+        } else {
+            entry.action.eq_ignore_ascii_case(wanted)
+        };
+        if !hit {
+            return false;
+        }
+    }
+    if let Some(user) = &query.user {
+        let hit = entry
+            .user
+            .as_deref()
+            .is_some_and(|name| name.eq_ignore_ascii_case(user.trim()));
+        if !hit {
+            return false;
+        }
+    }
+    if query.failures_only && entry.outcome.trim() == "ok" {
+        return false;
+    }
+    // RFC 3339 UTC sorts lexicographically, so no date parsing is needed; the
+    // comparison is deliberately string-based and exact rather than a lenient
+    // "parse and hope" that would silently drop records.
+    if let Some(since) = &query.since {
+        if entry.time.as_str() < since.as_str() {
+            return false;
+        }
+    }
+    if let Some(needle) = &query.grep {
+        let needle = needle.to_ascii_lowercase();
+        let haystack =
+            format!("{} {} {}", entry.action, entry.target, entry.outcome).to_ascii_lowercase();
+        if !haystack.contains(&needle) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Apply `query` to records given newest first, keeping their order.
+pub fn filter(entries: Vec<AuditEntry>, query: &AuditQuery) -> Vec<AuditEntry> {
+    let mut kept: Vec<AuditEntry> = entries.into_iter().filter(|e| matches(e, query)).collect();
+    if let Some(limit) = query.limit {
+        kept.truncate(limit);
+    }
+    kept
+}
+
+/// How much of the log could not be read.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuditReadReport {
+    /// Records parsed and kept after filtering.
+    pub entries: Vec<AuditEntry>,
+    /// Lines that were not valid audit JSON. A half-written final line is
+    /// normal after a crash mid-append, so this is counted, not fatal.
+    pub malformed_lines: usize,
+    /// Lines the writer never finished writing.
+    pub truncated_last_line: bool,
+}
+
+impl AuditReadReport {
+    /// `true` when nothing usable came back.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+/// Parse JSON-lines audit text into records, newest first.
+///
+/// A line that does not parse is counted and skipped: the writer appends
+/// without locking, so a torn line from a killed process must not make the
+/// whole log unreadable. A record missing its mandatory fields is skipped the
+/// same way, because a half-record would render as an empty row.
+pub fn parse_log(text: &str) -> AuditReadReport {
+    let mut report = AuditReadReport::default();
+    let mut lines: Vec<&str> = text.lines().collect();
+    let ended_mid_line = !text.ends_with('\n') && !text.is_empty();
+    if ended_mid_line {
+        // The last line was never terminated, so it was being written when the
+        // previous run stopped.
+        report.truncated_last_line = true;
+        lines.pop();
+    }
+
+    for line in lines {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<AuditEntry>(trimmed) {
+            Ok(entry) if !entry.action.is_empty() => report.entries.push(entry),
+            _ => report.malformed_lines += 1,
+        }
+    }
+    report
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,5 +297,236 @@ mod tests {
         };
         let parsed: AuditEntry = serde_json::from_str(&entry.json_line()).expect("parse");
         assert_eq!(parsed, entry);
+    }
+
+    fn entry(action: &str, user: &str, outcome: &str, time: &str) -> AuditEntry {
+        AuditEntry {
+            time: time.into(),
+            user: Some(user.into()),
+            action: action.into(),
+            target: format!("target for {action}"),
+            outcome: outcome.into(),
+        }
+    }
+
+    fn query() -> AuditQuery {
+        AuditQuery::default()
+    }
+
+    // --- reading the log back ----------------------------------------------
+
+    #[test]
+    fn parsing_reads_every_valid_record() {
+        let text = concat!(
+            r#"{"time":"2026-10-01T10:00:00Z","user":"root","action":"process.kill","target":"pid 42","outcome":"ok"}"#,
+            "\n",
+            r#"{"time":"2026-10-01T10:00:01Z","user":"root","action":"service.action","target":"sshd (stop)","outcome":"ok"}"#,
+            "\n",
+        );
+        let report = parse_log(text);
+        assert_eq!(report.entries.len(), 2);
+        assert_eq!(report.malformed_lines, 0);
+        assert!(!report.truncated_last_line);
+    }
+
+    #[test]
+    fn a_torn_final_line_is_counted_not_fatal() {
+        // The writer appends without a lock, so a process killed mid-append
+        // leaves half a line. It must not make the whole log unreadable.
+        let text = concat!(
+            r#"{"time":"2026-10-01T10:00:00Z","user":"root","action":"process.kill","target":"pid 42","outcome":"ok"}"#,
+            "\n",
+            r#"{"time":"2026-10-01T10:00:01Z","action":"service.ac"#,
+        );
+        let report = parse_log(text);
+        assert_eq!(report.entries.len(), 1, "the good record survives");
+        assert!(report.truncated_last_line);
+        assert_eq!(report.malformed_lines, 0, "a torn tail is not corruption");
+    }
+
+    #[test]
+    fn genuinely_malformed_lines_are_counted_and_skipped() {
+        let text = concat!(
+            "not json at all\n",
+            "\n",
+            r#"{"time":"2026-10-01T10:00:00Z","action":"process.kill","target":"pid 1","outcome":"ok"}"#,
+            "\n",
+            r#"{"no":"action field"}"#,
+            "\n",
+        );
+        let report = parse_log(text);
+        assert_eq!(report.entries.len(), 1);
+        assert_eq!(report.malformed_lines, 2, "garbage and actionless");
+    }
+
+    #[test]
+    fn an_empty_log_parses_to_nothing_without_error() {
+        let report = parse_log("");
+        assert!(report.is_empty());
+        assert_eq!(report.malformed_lines, 0);
+        assert!(!report.truncated_last_line);
+    }
+
+    #[test]
+    fn an_action_filter_matches_exactly_or_by_domain() {
+        let kill = entry("process.kill", "root", "ok", "2026-10-01T10:00:00Z");
+        let kill_many = entry("process.kill_many", "root", "ok", "2026-10-01T10:00:01Z");
+        let service = entry("service.action", "root", "ok", "2026-10-01T10:00:02Z");
+
+        let exact = AuditQuery {
+            action: Some("process.kill".into()),
+            ..query()
+        };
+        assert!(matches(&kill, &exact));
+        assert!(!matches(&kill_many, &exact), "kill_many is not kill");
+
+        let domain = AuditQuery {
+            action: Some("process.*".into()),
+            ..query()
+        };
+        assert!(matches(&kill, &domain));
+        assert!(matches(&kill_many, &domain));
+        assert!(!matches(&service, &domain));
+    }
+
+    #[test]
+    fn a_domain_glob_does_not_match_a_domain_with_the_same_prefix() {
+        // `process` must not pull in `processional.*`.
+        let decoy = entry("processional.kill", "root", "ok", "2026-10-01T10:00:00Z");
+        let domain = AuditQuery {
+            action: Some("process.*".into()),
+            ..query()
+        };
+        assert!(!matches(&decoy, &domain));
+    }
+
+    #[test]
+    fn a_user_filter_is_case_insensitive_and_needs_a_name() {
+        let root = entry("process.kill", "ROOT", "ok", "2026-10-01T10:00:00Z");
+        let anonymous = AuditEntry {
+            time: "2026-10-01T10:00:01Z".into(),
+            user: None,
+            action: "process.kill".into(),
+            target: "pid 1".into(),
+            outcome: "ok".into(),
+        };
+
+        let wanted = AuditQuery {
+            user: Some("root".into()),
+            ..query()
+        };
+        assert!(matches(&root, &wanted));
+        assert!(!matches(&anonymous, &wanted), "no user, no match");
+    }
+
+    #[test]
+    fn failures_only_keeps_outcomes_that_are_not_ok() {
+        let ok = entry("process.kill", "root", "ok", "2026-10-01T10:00:00Z");
+        let refused = entry(
+            "process.kill",
+            "root",
+            "error: permission denied",
+            "2026-10-01T10:00:01Z",
+        );
+
+        let failures = AuditQuery {
+            failures_only: true,
+            ..query()
+        };
+        assert!(!matches(&ok, &failures));
+        assert!(matches(&refused, &failures));
+    }
+
+    #[test]
+    fn since_compares_stamps_as_text_because_rfc3339_sorts() {
+        let early = entry("process.kill", "root", "ok", "2026-10-01T09:59:59Z");
+        let late = entry("process.kill", "root", "ok", "2026-10-01T10:00:01Z");
+
+        let since = AuditQuery {
+            since: Some("2026-10-01T10:00:00Z".into()),
+            ..query()
+        };
+        assert!(!matches(&early, &since));
+        assert!(matches(&late, &since), "the boundary is inclusive");
+    }
+
+    #[test]
+    fn grep_searches_action_target_and_outcome() {
+        let row = entry("process.kill", "root", "ok", "2026-10-01T10:00:00Z");
+
+        for needle in ["kill", "TARGET FOR", "ok"] {
+            let found = AuditQuery {
+                grep: Some(needle.into()),
+                ..query()
+            };
+            assert!(matches(&row, &found), "{needle} should match");
+        }
+        let missing = AuditQuery {
+            grep: Some("nothing-here".into()),
+            ..query()
+        };
+        assert!(!matches(&row, &missing));
+    }
+
+    #[test]
+    fn every_filter_must_pass_together() {
+        let rows = vec![
+            entry("process.kill", "root", "ok", "2026-10-01T10:00:00Z"),
+            entry(
+                "process.kill",
+                "root",
+                "error: denied",
+                "2026-10-01T10:00:01Z",
+            ),
+            entry(
+                "service.action",
+                "root",
+                "error: denied",
+                "2026-10-01T10:00:02Z",
+            ),
+        ];
+
+        let combined = AuditQuery {
+            action: Some("process.*".into()),
+            failures_only: true,
+            ..query()
+        };
+        let kept: Vec<String> = filter(rows, &combined)
+            .into_iter()
+            .map(|e| e.outcome)
+            .collect();
+        assert_eq!(kept, vec!["error: denied"], "only the process failure");
+    }
+
+    #[test]
+    fn a_limit_keeps_the_newest_records() {
+        // The reader hands records over newest first, so a plain truncate
+        // keeps the newest and never reorders.
+        let rows = vec![
+            entry("process.kill", "root", "ok", "2026-10-01T10:00:02Z"),
+            entry("process.kill", "root", "ok", "2026-10-01T10:00:01Z"),
+            entry("process.kill", "root", "ok", "2026-10-01T10:00:00Z"),
+        ];
+        let limited = AuditQuery {
+            limit: Some(2),
+            ..query()
+        };
+        let kept = filter(rows, &limited);
+        assert_eq!(kept.len(), 2);
+        assert_eq!(kept[0].time, "2026-10-01T10:00:02Z");
+    }
+
+    #[test]
+    fn an_empty_query_keeps_everything() {
+        let rows = vec![
+            entry("process.kill", "root", "ok", "2026-10-01T10:00:00Z"),
+            entry(
+                "service.action",
+                "alice",
+                "error: nope",
+                "2026-10-01T10:00:01Z",
+            ),
+        ];
+        assert_eq!(filter(rows, &query()).len(), 2);
     }
 }

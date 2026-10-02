@@ -1,5 +1,6 @@
 //! One module per capability, mirroring the `x-core` manager traits.
 
+pub mod audit;
 pub mod bluetooth;
 pub mod capability;
 pub mod clipboard;

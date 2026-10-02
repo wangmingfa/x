@@ -227,6 +227,10 @@ pub enum Command {
     #[command(subcommand)]
     Logs(commands::logs::LogsCommand),
 
+    /// What this machine recorded about its own destructive actions.
+    #[command(subcommand)]
+    Audit(commands::audit::AuditCommand),
+
     /// Hardware inventory (USB, Bluetooth, audio, display, camera, HID).
     #[command(subcommand)]
     Device(commands::device::DeviceCommand),
@@ -447,6 +451,7 @@ fn dispatch(
             commands::firewall::dispatch(context, renderer, confirmer, cmd)
         }
         Some(Command::Logs(cmd)) => commands::logs::dispatch(context, renderer, cmd),
+        Some(Command::Audit(cmd)) => commands::audit::dispatch(renderer, cmd),
         Some(Command::Device(cmd)) => commands::device::dispatch(context, renderer, cmd),
         Some(Command::Bluetooth(cmd)) => {
             commands::bluetooth::dispatch(context, renderer, confirmer, cmd)
