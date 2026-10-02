@@ -489,9 +489,14 @@ GitHub Actions CI 在 Ubuntu / macOS / Windows 三平台上跑格式、clippy
 
 **B 组 · 补齐已知留空项**
 
-- [ ] macOS CPU 温度：`x sys cpu` 温度目前仅 Linux 有（thermal_zone/hwmon）；
-  macOS 需 SMC 读取且要 root，按「不支持就如实说」的既有做法，先做
-  权限感知的探测与降级说明，不猜值。
+- [x] macOS CPU 温度：`x sys cpu` 的温度此前仅 Linux 有（thermal_zone/hwmon），
+  现经 `AppleSMCUserClient` 读取 die 传感器。**枚举键名而不是硬编码**：Intel 是
+  `TC0*`、Apple silicon 是 `Tp0*`/`Tm0*`，任何固定清单都只在部分机型上成立；
+  GPU（`TG0*`）、环境（`TA0*`）、电池（`TB0*`）、内存（大写 `TM0P`）都被排除
+  ——那是别的传感器，不是 CPU 温度。只接受 `sp78` 且落在 −40…150 ℃ 的读数，
+  SMC 的「无读数」标记（`0x7f7f`，会解成 127.7 ℃）直接丢弃。多数机器上无特权
+  会被 user client 拒绝，如实返回 `None`，`x capability` 早已把 `None` 渲染成
+  「本平台未暴露」——不猜值、不估算。
 - [ ] 容器统一到 `x container`：现有 `x docker *` 只覆盖 docker CLI；
   Podman / containerd 的 CLI 形状不同，按插件/逃生舱模式各写一个适配，
   不强行合并成假统一。

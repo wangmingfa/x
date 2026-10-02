@@ -55,8 +55,12 @@ impl SystemManager for MacosSystem {
         // performance levels only carry names.
         usage.max_frequency_mhz =
             sysctl_int("hw.cpufrequency_max").map(|hertz| hertz as f32 / 1_000_000.0);
-        // The SMC sensor that holds the die temperature needs root, and macOS
-        // has no scaling governor to name.
+        // The die sensor lives behind the SMC user client, which refuses an
+        // unprivileged read on most machines: `None` here is the honest answer
+        // and `x capability` already reports it as not exposed.
+        usage.temperature_celsius = crate::macos::smc::cpu_temperature().unwrap_or(None);
+        // macOS has no scaling governor to name; the power manager keeps that
+        // decision to itself.
         Ok(usage)
     }
 

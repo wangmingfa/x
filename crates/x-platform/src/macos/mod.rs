@@ -13,4 +13,5 @@ pub mod network;
 pub mod port;
 pub mod process;
 pub mod service;
+pub mod smc;
 pub mod system;
