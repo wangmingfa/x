@@ -116,14 +116,6 @@ fn i32_at(buffer: &[u8], offset: usize) -> i32 {
 }
 
 /// Read a little endian `u32` out of a kernel buffer.
-fn u32_at(buffer: &[u8], offset: usize) -> u32 {
-    let bytes: [u8; 4] = buffer
-        .get(offset..offset + 4)
-        .and_then(|slice| slice.try_into().ok())
-        .unwrap_or([0; 4]);
-    u32::from_ne_bytes(bytes)
-}
-
 /// Ports are stored as network byte order inside an `int`.
 fn port_at(buffer: &[u8], offset: usize) -> u16 {
     let bytes: [u8; 2] = buffer
