@@ -38,20 +38,21 @@ pick() {
     hide_cursor=$'\e[?25l'
     show_cursor=$'\e[?25h'
     printf '%s' "$hide_cursor"
-    trap 'printf "%s" "'"$show_cursor"'"; exit 130' INT
+    trap 'printf "%s" "$show_cursor"; exit 130' INT
 
     while true; do
-        # redraw: move cursor up (count) lines after the first render
+        # redraw: move cursor back up over ALL lines drawn last time
+        # (title + one line per option = count + 1)
         if [ "${rendered:-0}" = 1 ]; then
-            printf '\e[%dA' "$count"
+            printf '\e[%dA' "$((count + 1))"
         fi
         printf '%s\n' "$title"
         local i=0
         for opt in "${options[@]}"; do
             if [ "$i" = "$sel" ]; then
-                printf '  \e[36m❯ %s\e[0m\n' "$opt"
+                printf '  \e[36m❯ %s\e[0m\e[0K\n' "$opt"
             else
-                printf '    %s\n' "$opt"
+                printf '    %s\e[0K\n' "$opt"
             fi
             i=$((i + 1))
         done
