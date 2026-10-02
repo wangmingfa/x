@@ -102,43 +102,13 @@ if [ -z "$tag" ]; then
         [ "$kind_result" = 2 ] && kind="pre"
 
         # 2. Version selection with preview
+        #    For pre-release, pick the prefix (rc/alpha/beta) FIRST so the
+        #    base-version menu can show the FULL final tag as preview.
         next="" next_base=""
         while true; do
             if [ "$kind" = "pre" ]; then
                 set +e
-                pick "Pre-release base version (current: $version)" \
-                    "keep current  ->  v$major.$minor.$patch" \
-                    "patch bump    ->  v$major.$minor.$((patch + 1))" \
-                    "minor bump    ->  v$major.$((minor + 1)).0" \
-                    "major bump    ->  v$((major + 1)).0.0"
-                base_result=$?
-                set -e
-                [ "$base_result" -ge 1 ] 2>/dev/null || exit 130
-                case "$base_result" in
-                    1) next_base="v$major.$minor.$patch" ;;
-                    2) next_base="v$major.$minor.$((patch + 1))" ;;
-                    3) next_base="v$major.$((minor + 1)).0" ;;
-                    4) next_base="v$((major + 1)).0.0" ;;
-                esac
-            else
-                set +e
-                pick "Bump version (current: $version)" \
-                    "patch  ->  v$major.$minor.$((patch + 1))" \
-                    "minor  ->  v$major.$((minor + 1)).0" \
-                    "major  ->  v$((major + 1)).0.0"
-                bump_result=$?
-                set -e
-                [ "$bump_result" -ge 1 ] 2>/dev/null || exit 130
-                case "$bump_result" in
-                    1) next_base="v$major.$minor.$((patch + 1))" ;;
-                    2) next_base="v$major.$((minor + 1)).0" ;;
-                    3) next_base="v$((major + 1)).0.0" ;;
-                esac
-            fi
-
-            if [ "$kind" = "pre" ]; then
-                set +e
-                pick "Pre-release tag for $next_base" \
+                pick "Pre-release tag (↑/↓, Enter)" \
                     "rc" \
                     "alpha" \
                     "beta"
@@ -150,6 +120,23 @@ if [ -z "$tag" ]; then
                     2) prefix="alpha" ;;
                     3) prefix="beta" ;;
                 esac
+
+                set +e
+                pick "Base version for $prefix (current: $version)" \
+                    "keep current  ->  v$major.$minor.$patch-$prefix.N" \
+                    "patch bump    ->  v$major.$minor.$((patch + 1))-$prefix.N" \
+                    "minor bump    ->  v$major.$((minor + 1)).0-$prefix.N" \
+                    "major bump    ->  v$((major + 1)).0.0-$prefix.N"
+                base_result=$?
+                set -e
+                [ "$base_result" -ge 1 ] 2>/dev/null || exit 130
+                case "$base_result" in
+                    1) next_base="v$major.$minor.$patch" ;;
+                    2) next_base="v$major.$minor.$((patch + 1))" ;;
+                    3) next_base="v$major.$((minor + 1)).0" ;;
+                    4) next_base="v$((major + 1)).0.0" ;;
+                esac
+
                 # scan existing tags of the same base+prefix, suggest next number
                 pre_num=1
                 last_num=""
@@ -159,7 +146,7 @@ if [ -z "$tag" ]; then
                 if [ -n "$last_num" ]; then
                     pre_num=$((last_num + 1))
                 fi
-                printf 'Pre-release number for %s-<n> [%s]: ' "$prefix" "$pre_num"
+                printf 'Pre-release number for %s-%s.<n> [%s]: ' "$next_base" "$prefix" "$pre_num"
                 read -r input_num
                 input_num=${input_num:-$pre_num}
                 case "$input_num" in
@@ -170,7 +157,21 @@ if [ -z "$tag" ]; then
                 esac
                 next="$next_base-$prefix.$input_num"
             else
-                next="$next_base"
+                set +e
+                pick "Bump version (current: $version)" \
+                    "keep current  ->  v$major.$minor.$patch" \
+                    "patch bump    ->  v$major.$minor.$((patch + 1))" \
+                    "minor bump    ->  v$major.$((minor + 1)).0" \
+                    "major bump    ->  v$((major + 1)).0.0"
+                bump_result=$?
+                set -e
+                [ "$bump_result" -ge 1 ] 2>/dev/null || exit 130
+                case "$bump_result" in
+                    1) next="v$major.$minor.$patch" ;;
+                    2) next="v$major.$minor.$((patch + 1))" ;;
+                    3) next="v$major.$((minor + 1)).0" ;;
+                    4) next="v$((major + 1)).0.0" ;;
+                esac
             fi
 
             printf 'Selected tag: %s\n' "$next"
@@ -197,8 +198,29 @@ step "Preflight checks"
 ./scripts/check.sh
 
 if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
-    printf 'error: tag %s already exists\n' "$tag" >&2
-    exit 1
+    # Tag already exists — offer to retag (delete local + remote first), which
+    # lets a failed release be re-published with the same version.
+    retag=0
+    if [ "$interactive" = 1 ]; then
+        printf 'Tag %s already exists. Delete it and re-release? [y/N]: ' "$tag"
+        read -r answer
+        case "$answer" in
+            y|Y|yes|Yes) retag=1 ;;
+            *)
+                printf 'aborted\n'
+                exit 1
+                ;;
+        esac
+    else
+        printf 'error: tag %s already exists\n' "$tag" >&2
+        exit 1
+    fi
+    if [ "$retag" = 1 ]; then
+        step "Deleting existing tag $tag (local + remote)"
+        git tag -d "$tag"
+        git push origin ":refs/tags/$tag"
+        printf 'note: the old GitHub release for %s (if any) becomes draft; delete or re-publish it manually\n' "$tag"
+    fi
 fi
 
 if [ -n "$(git status --porcelain)" ]; then
