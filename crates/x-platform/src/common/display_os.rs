@@ -215,7 +215,11 @@ pub fn first_size(text: &str) -> Option<Resolution> {
 /// The pair that follows ` as ` — the UI size of a scaled panel.
 #[cfg(target_os = "macos")]
 pub fn second_size(text: &str) -> Option<Resolution> {
-    let (_, after) = text.split_once(" as ")?;
+    // The profiler writes `1920 x 1080 (as 960 x 540)`; prose without the
+    // parenthesis also occurs, so accept both separators.
+    let (_, after) = text
+        .split_once(" (as ")
+        .or_else(|| text.split_once(" as "))?;
     size_at(after, 0)
 }
 

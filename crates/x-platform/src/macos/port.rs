@@ -261,8 +261,8 @@ mod tests {
         assert_eq!(ours.endpoint(), format!("127.0.0.1:{port}"));
         assert_eq!(
             ours.send_queue_bytes,
-            Some(0),
-            "an idle listener has an empty send buffer"
+            None,
+            "libproc's tcp_sockinfo carries no send-buffer count"
         );
         assert!(
             ours.recv_queue_bytes.is_none(),

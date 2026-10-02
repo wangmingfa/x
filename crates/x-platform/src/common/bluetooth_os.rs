@@ -633,7 +633,7 @@ mod tests {
     #[test]
     fn profiler_controller_maps_status_to_powered() {
         let doc: serde_json::Value = serde_json::from_str(
-            r#"{"controller_properties":{"address":"ac:de:48:00:11:22","device_status":"On","vendor_id":"Apple (0x5ac.0x8295)"}}"#,
+            r#"{"SPBluetoothDataType":{"controller_properties":{"address":"ac:de:48:00:11:22","device_status":"On","vendor_id":"Apple (0x5ac.0x8295)"}}}"#,
         )
         .expect("json");
         let rows = super::parse_macos_adapters(doc.get("SPBluetoothDataType"));
