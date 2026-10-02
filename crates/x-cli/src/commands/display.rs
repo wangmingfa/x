@@ -64,6 +64,7 @@ pub fn dispatch(
                 "resolution",
                 "refresh",
                 "scale",
+                "hdr",
                 "primary",
                 "position",
             ]);
@@ -74,6 +75,7 @@ pub fn dispatch(
                     resolution(info),
                     refresh(info),
                     scale(info),
+                    hdr(info),
                     yes_no(info.primary),
                     position(info),
                 ]);
@@ -94,6 +96,7 @@ pub fn dispatch(
             table.push(row!["resolution", resolution(info)]);
             table.push(row!["refresh", refresh(info)]);
             table.push(row!["scale", scale(info)]);
+            table.push(row!["hdr", hdr(info)]);
             table.push(row!["primary", yes_no(info.primary)]);
             table.push(row!["position", position(info)]);
             renderer.table(&table)?;
@@ -168,6 +171,18 @@ fn refresh(info: &DisplayInfo) -> String {
 fn scale(info: &DisplayInfo) -> String {
     match info.scale_percent {
         Some(percent) => format!("{percent}%"),
+        None => "-".to_string(),
+    }
+}
+
+/// HDR state as three distinct answers.
+///
+/// `yes`/`no` means the platform said; `-` means it did not. Printing `no` for
+/// a platform that has no HDR concept at all would be a claim nobody can check.
+fn hdr(info: &DisplayInfo) -> String {
+    match info.hdr_enabled {
+        Some(true) => "yes".to_string(),
+        Some(false) => "no".to_string(),
         None => "-".to_string(),
     }
 }

@@ -506,8 +506,16 @@ GitHub Actions CI 在 Ubuntu / macOS / Windows 三平台上跑格式、clippy
   删除——留下两套并行容器层与「统一」目标自相矛盾。探测用 `info`：二进制缺失与
   后端未启动都能一次分清；拼错的 `X_CONTAINER_ENGINE` 报参数错误（退出码 5）而不是
   谎称「本机没有引擎」。
-- [ ] 显示 HDR：Windows 需再过 QueryDisplayConfig，macOS/Linux 口径不一；
-  先在 capability 里如实标 unsupported，读取留后续。
+- [x] 显示 HDR：`DisplayInfo` 新增 `hdr_enabled` 三态（`Some(true)` 现在开着、
+  `Some(false)` 支持但没开、`None` 平台/本机没说——**「没说」不等于「没开」**，把无
+  HDR 概念的机器显示成 `no` 是没人能核对的谎）。Windows 走 DisplayConfig 的
+  `DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO`（GDI 的 `DEVMODE` 根本没有这个字段），且
+  仅在 `colorEncoding` 为 RGB 时才读那个 bit。**关联键选 `viewGdiDeviceName`**：
+  DisplayConfig 的 LUID 键在 GDI 遍历那侧根本拿不到，用了会静默匹配不到任何东西——
+  而「一直匹配不到」和「一堆 SDR 屏」在输出上完全无法分辨。macOS / Linux 的 HDR 状态
+  取决于 EDID 与合成器，x 无从得知，故留 `None`（`x display list` 的 `hdr` 列显示
+  `-`）。`x capability` 新增 display 域：按每块屏统计如实报 supported / degraded /
+  unsupported，而不是整机一个 yes/no。
 - [ ] DHCP 标记补齐：Windows/macOS 已接入，Linux 内核不记录地址来源，
   如实留空是终点，除非找到用户态权威来源，否则不做。
 

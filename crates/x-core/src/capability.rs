@@ -173,6 +173,58 @@ pub fn probe(context: &SystemContext) -> Vec<Capability> {
         Some("implemented; not exercised by this probe, privileges apply".to_string()),
     );
 
+    // ---- display -----------------------------------------------------------
+    // HDR is the one display fact that only some platforms can answer, so it is
+    // reported per display rather than as one machine-wide yes/no: a Windows
+    // machine with an SDR panel is a different answer from a laptop with no HDR
+    // display at all, and from a platform with no HDR concept.
+    if let Some(display) = &context.display {
+        match display.displays() {
+            Ok(rows) => {
+                let reporting = rows
+                    .iter()
+                    .filter(|info| info.hdr_enabled.is_some())
+                    .count();
+                let (status, note) = if rows.is_empty() {
+                    (
+                        CapabilityStatus::Degraded,
+                        Some("no display reported by this platform".to_string()),
+                    )
+                } else if reporting == 0 {
+                    (
+                        CapabilityStatus::Unsupported,
+                        Some(
+                            "no HDR state is exposed here; Windows reports it via DisplayConfig"
+                                .to_string(),
+                        ),
+                    )
+                } else if reporting < rows.len() {
+                    (
+                        CapabilityStatus::Degraded,
+                        Some(format!(
+                            "HDR reported for {reporting} of {} displays",
+                            rows.len()
+                        )),
+                    )
+                } else {
+                    (CapabilityStatus::Supported, None)
+                };
+                push("display", "display list", CapabilityStatus::Supported, None);
+                push("display", "HDR state", status, note);
+            }
+            Err(error) => {
+                let (status, note) = classify_call(&Err::<(), _>(error));
+                push("display", "display list", status, note);
+                push(
+                    "display",
+                    "HDR state",
+                    CapabilityStatus::Unsupported,
+                    Some("no display information, so no HDR state".to_string()),
+                );
+            }
+        }
+    }
+
     // ---- port --------------------------------------------------------------
     let (status, note) = classify_call(&context.port.list(&Default::default()));
     push("port", "socket list", status, note);

@@ -55,6 +55,13 @@ pub struct DisplayInfo {
     /// Top-left corner in desktop coordinates.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub position: Option<Point>,
+    /// High dynamic range state, where the platform reports it.
+    ///
+    /// `Some(true)` means HDR is active right now, `Some(false)` that the
+    /// display can do it but is not in that mode, and `None` that nothing on
+    /// this platform or this machine says — which is not the same as `false`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hdr_enabled: Option<bool>,
 }
 
 impl DisplayInfo {
@@ -69,6 +76,7 @@ impl DisplayInfo {
             scale_percent: None,
             primary: None,
             position: None,
+            hdr_enabled: None,
         }
     }
 }
@@ -106,5 +114,25 @@ mod tests {
         let back: DisplayInfo =
             serde_json::from_str(&serde_json::to_string(&info).expect("json")).expect("back");
         assert_eq!(back, info);
+    }
+
+    #[test]
+    fn an_unknown_hdr_state_is_absent_rather_than_false() {
+        // "nothing said" and "HDR is off" are different claims, so an unknown
+        // state must not serialize as `false`.
+        let info = DisplayInfo::new("HDMI-A-1");
+        let json = serde_json::to_string(&info).expect("json");
+        assert!(!json.contains("hdr"), "{json}");
+    }
+
+    #[test]
+    fn hdr_state_survives_a_round_trip_in_both_polarities() {
+        for enabled in [true, false] {
+            let mut info = DisplayInfo::new("DELL U2720Q");
+            info.hdr_enabled = Some(enabled);
+            let back: DisplayInfo =
+                serde_json::from_str(&serde_json::to_string(&info).expect("json")).expect("back");
+            assert_eq!(back.hdr_enabled, Some(enabled));
+        }
     }
 }
