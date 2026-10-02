@@ -260,8 +260,7 @@ mod tests {
         assert!(ours.process_name.is_some(), "process name must be resolved");
         assert_eq!(ours.endpoint(), format!("127.0.0.1:{port}"));
         assert_eq!(
-            ours.send_queue_bytes,
-            None,
+            ours.send_queue_bytes, None,
             "libproc's tcp_sockinfo carries no send-buffer count"
         );
         assert!(
