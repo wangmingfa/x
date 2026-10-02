@@ -29,6 +29,16 @@ pub enum FileCommand {
         path: String,
     },
 
+    /// Hash one file.
+    Hash {
+        /// File to read. A directory is refused rather than hashed as a tree.
+        path: String,
+
+        /// Checksum algorithm; sha256 when omitted.
+        #[arg(long, short = 'a', value_enum, default_value_t = AlgoArg::Sha256)]
+        algo: AlgoArg,
+    },
+
     /// Names inside a directory.
     List {
         /// Directory to list.
@@ -96,6 +106,28 @@ pub enum FileCommand {
     },
 }
 
+/// Checksum algorithm as spelled on the command line.
+#[derive(Debug, Clone, Copy, Default, clap::ValueEnum)]
+pub enum AlgoArg {
+    /// SHA-256, the interoperability default.
+    #[default]
+    Sha256,
+    /// SHA-512, the wider digest.
+    Sha512,
+    /// CRC-32, the fast accidental-corruption check.
+    Crc32,
+}
+
+impl From<AlgoArg> for x_core::file::HashAlgo {
+    fn from(value: AlgoArg) -> Self {
+        match value {
+            AlgoArg::Sha256 => x_core::file::HashAlgo::Sha256,
+            AlgoArg::Sha512 => x_core::file::HashAlgo::Sha512,
+            AlgoArg::Crc32 => x_core::file::HashAlgo::Crc32,
+        }
+    }
+}
+
 /// Arguments for `x file <sub>`.
 #[derive(Debug, clap::Args)]
 pub struct FileArgs {
@@ -121,6 +153,9 @@ pub fn dispatch(
         }
         FileCommand::Size { path } => {
             size(file.as_ref(), renderer, path)?;
+        }
+        FileCommand::Hash { path, algo } => {
+            hash(renderer, path, (*algo).into())?;
         }
         FileCommand::List { path } => {
             list(file.as_ref(), renderer, path)?;
@@ -266,6 +301,21 @@ fn size(file: &dyn x_core::file::FileManager, renderer: &mut Renderer, path: &st
         "{path}: {} ({bytes} bytes)",
         x_core::format_bytes(bytes)
     ))?;
+    Ok(0)
+}
+
+/// Hash one file.
+///
+/// Pure read, so no confirmation and no audit line. The digest is printed in
+/// the `sha256sum` shape (`<hex>  <path>`) because that is what every other
+/// tool emits, so a user can pipe or diff it against the platform's own.
+fn hash(renderer: &mut Renderer, path: &str, algo: x_core::file::HashAlgo) -> Result<i32> {
+    let digest = x_core::file::hash_file(path.as_ref(), algo)?;
+    if renderer.format() == OutputFormat::Json {
+        renderer.always_json(&digest)?;
+        return Ok(0);
+    }
+    renderer.line(format!("{}  {}", digest.hex, path))?;
     Ok(0)
 }
 
