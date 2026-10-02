@@ -158,9 +158,13 @@ fn parse_endpoint(raw: &str, protocol: Protocol) -> Option<(IpAddr, u16)> {
     let (address, port) = raw.split_once(':')?;
     let port = u16::from_str_radix(port, 16).ok()?;
     let address = match (protocol, address.len()) {
-        // IPv4 is a host order u32 printed as hex.
+        // IPv4 is a little-endian u32 printed as hex (`0100007F` = 127.0.0.1).
         (Protocol::Tcp | Protocol::Udp, 8) => {
-            IpAddr::V4(Ipv4Addr::from(u32::from_str_radix(address, 16).ok()?))
+            let mut bytes = [0u8; 4];
+            for (index, pair) in address.as_bytes().chunks(2).enumerate() {
+                bytes[index] = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
+            }
+            IpAddr::V4(Ipv4Addr::from(u32::from_le_bytes(bytes)))
         }
         // IPv6 is four host order u32 words printed as hex.
         (Protocol::Tcp | Protocol::Udp, 32) => {

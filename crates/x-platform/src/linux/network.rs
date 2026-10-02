@@ -138,11 +138,13 @@ pub fn parse_route(raw: &str) -> Vec<RouteInfo> {
                 return None;
             }
             let interface = cols[0].to_string();
-            let destination = u32::from_str_radix(cols[1], 16).ok()?;
-            let gateway = u32::from_str_radix(cols[2], 16).ok()?;
+            // `/proc/net/route` prints each u32 as 8 hex chars in MEMORY order
+            // (little-endian), so `0102A8C0` is 192.168.2.1.
+            let destination = parse_hex_le(cols[1])?;
+            let gateway = parse_hex_le(cols[2])?;
             let flags = u32::from_str_radix(cols[3], 16).ok()?;
             let metric = cols.get(6).and_then(|m| m.parse::<u64>().ok());
-            let mask = u32::from_str_radix(cols[7], 16).ok()?;
+            let mask = parse_hex_le(cols[7])?;
 
             // RTF_REJECT and RTF_BLACKHOLE routes are unreachable on purpose.
             if flags & (0x0200 | 0x0040) != 0 {
@@ -171,18 +173,19 @@ pub fn parse_route(raw: &str) -> Vec<RouteInfo> {
 pub fn parse_ipv6_route(raw: &str) -> Vec<RouteInfo> {
     raw.lines()
         .filter_map(|line| {
+            // dest_prefix plen src_prefix src_plen next_hop metric refcnt flags device
             let cols: Vec<&str> = line.split_whitespace().collect();
-            if cols.len() < 10 {
+            if cols.len() < 9 {
                 return None;
             }
             let prefix = cols[1].parse::<u8>().ok()?;
             let next_hop = parse_ipv6_hex(cols[4])?;
-            let metric = cols.get(6).and_then(|m| m.parse::<u64>().ok());
-            let flags = u32::from_str_radix(cols[8], 16).unwrap_or(0);
+            let metric = cols.get(5).and_then(|m| m.parse::<u64>().ok());
+            let flags = u32::from_str_radix(cols[7], 16).unwrap_or(0);
             if flags & 0x0200 != 0 {
                 return None;
             }
-            let interface = cols[9].to_string();
+            let interface = cols[8].to_string();
             let destination = std::net::Ipv6Addr::from(parse_ipv6_hex(cols[0])?);
             Some(RouteInfo {
                 destination: format_destination(destination.into(), prefix),
@@ -196,7 +199,22 @@ pub fn parse_ipv6_route(raw: &str) -> Vec<RouteInfo> {
 
 const RTF_GATEWAY: u32 = 0x2;
 
-/// A 32 character IPv6 address made of four host order words.
+/// A little-endian hex u32 as printed by `/proc/net/*`.
+fn parse_hex_le(raw: &str) -> Option<u32> {
+    if raw.len() != 8 {
+        return None;
+    }
+    let mut bytes = [0u8; 4];
+    for (index, pair) in raw.as_bytes().chunks(2).enumerate() {
+        bytes[index] = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
+    }
+    Some(u32::from_le_bytes(bytes))
+}
+
+/// A 32 character IPv6 address made of four printed hex words.
+///
+/// The kernel prints each 4-byte word as the numeric value loaded in host
+/// (little-endian) byte order, so `fe80::1` appears as `000080fe...01000000`.
 fn parse_ipv6_hex(raw: &str) -> Option<[u8; 16]> {
     if raw.len() != 32 {
         return None;
@@ -210,13 +228,15 @@ fn parse_ipv6_hex(raw: &str) -> Option<[u8; 16]> {
 }
 
 fn prefix_length(mask: u32) -> u8 {
-    (!mask).leading_zeros() as u8
+    mask.count_ones() as u8
 }
 
 fn format_destination(address: std::net::IpAddr, prefix: u8) -> Option<String> {
+    // An unspecified address is the catch-all route; showing `0.0.0.0/0` or
+    // `::/80` as a destination adds nothing.
     match address {
-        std::net::IpAddr::V4(ip) if prefix == 0 && ip.is_unspecified() => None,
-        std::net::IpAddr::V6(ip) if prefix == 0 && ip.is_unspecified() => None,
+        std::net::IpAddr::V4(ip) if ip.is_unspecified() => None,
+        std::net::IpAddr::V6(ip) if ip.is_unspecified() => None,
         _ => Some(format!("{address}/{prefix}")),
     }
 }
@@ -270,8 +290,8 @@ mod tests {
         lo0\t011000A8\t00000000\t0001\t0\t0\t0\tFFFFFFFF\t0\t0\t0\n";
 
     const ROUTE6: &str = "dest_prefix                        plen src_prefix                         src_plen next_hop                           metric refcnt      flags   device\n\
-        00000000000000000000000000000000   80   00000000000000000000000000000000   80   fe8000000000000000000000000000001  00000003 00000001 000004001 en0\n\
-        00000000000000000000000000000001   128  00000000000000000000000000000001  128  fe8000000000000000000000000000001  00000000 00000002 0000000C lo0\n";
+        00000000000000000000000000000000   80   00000000000000000000000000000000   80   000080fe000000000000000001000000  00000003 00000001 000004001 en0\n\
+        00000000000000000000000001000000   128  00000000000000000000000000000001  128  000080fe000000000000000001000000  00000000 00000002 0000000C lo0\n";
 
     #[test]
     fn ipv4_routes_carry_prefix_and_gateway() {

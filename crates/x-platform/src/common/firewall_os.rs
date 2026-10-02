@@ -450,12 +450,13 @@ mod tests {
                     [ 3] Anywhere on 53/tcp         ALLOW       Anywhere (v6)\n";
         let rules = parse_ufw_rules(text);
         assert_eq!(rules.len(), 3, "{rules:?}");
-        assert_eq!(rules[0].port.as_deref(), Some("22/tcp"));
+        assert_eq!(rules[0].port.as_deref(), Some("22"));
         assert_eq!(rules[0].protocol.as_deref(), Some("tcp"));
         assert_eq!(rules[0].action, "allow");
         assert_eq!(rules[1].action, "deny");
         assert_eq!(rules[1].protocol, None);
-        assert_eq!(rules[2].port.as_deref(), Some("53/tcp"));
+        assert_eq!(rules[2].port.as_deref(), Some("53"));
+        assert_eq!(rules[2].protocol.as_deref(), Some("tcp"));
     }
 
     #[cfg(all(unix, not(target_os = "macos")))]

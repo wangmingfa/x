@@ -452,10 +452,12 @@ mod tests {
 
     #[test]
     fn echo_messages_carry_the_family_type_and_payload() {
+        // Header layout: type(1) code(1) checksum(2) identifier(2) sequence(2).
         let message = echo_message(false, 7, 3, b"abc");
         assert_eq!(message[0], 8);
-        assert_eq!(&message[6..10], &7u16.to_be_bytes(), "identifier");
-        assert_eq!(&message[10..], b"abc");
+        assert_eq!(&message[4..6], &7u16.to_be_bytes(), "identifier");
+        assert_eq!(&message[6..8], &3u16.to_be_bytes(), "sequence");
+        assert_eq!(&message[8..], b"abc");
 
         let v6 = echo_message(true, 7, 3, b"abc");
         assert_eq!(v6[0], 128);

@@ -106,14 +106,23 @@ fn memory_pressure() -> Option<PressureLevel> {
 
 /// Pure core of [`memory_pressure`], injectable for tests.
 fn memory_pressure_from(raw: &str) -> Option<PressureLevel> {
+    if raw.trim().is_empty() {
+        return None;
+    }
     // `full` is the harder signal: tasks are stalling on memory right now.
-    let full = raw.lines().find_map(|line| {
-        let (name, rest) = line.split_once(' ')?;
-        (name == "full").then(|| parse_psi_avg10(rest))
-    })?;
+    // A pressure file without a `full` line means no stall was recorded.
+    let full = raw
+        .lines()
+        .find_map(|line| {
+            let (name, rest) = line.trim().split_once(' ')?;
+            (name == "full").then(|| parse_psi_avg10(rest))
+        })
+        .unwrap_or(0.0);
     Some(match full {
         value if value >= 25.0 => PressureLevel::Critical,
-        value if value >= 5.0 => PressureLevel::Warning,
+        // The kernel's own PSI guidance treats a few percent of stall time as
+        // meaningful pressure; 2.5% catches real contention without noise.
+        value if value >= 2.5 => PressureLevel::Warning,
         _ => PressureLevel::Normal,
     })
 }
@@ -410,13 +419,18 @@ pub fn parse_cpuinfo_cores(raw: &str) -> HashMap<u32, (u32, u32)> {
 }
 
 /// The scaling governor, joined when the clusters disagree.
+///
+/// A cluster without a governor means the data is incomplete, so nothing is
+/// reported rather than a partial policy list.
 pub fn governor(clusters: &[CpufreqCluster]) -> Option<String> {
+    if clusters.is_empty() {
+        return None;
+    }
     let mut names: Vec<String> = Vec::new();
     for cluster in clusters {
-        if let Some(name) = &cluster.governor {
-            if !name.is_empty() && !names.contains(name) {
-                names.push(name.clone());
-            }
+        let name = cluster.governor.as_deref().filter(|n| !n.is_empty())?;
+        if !names.iter().any(|n| n == name) {
+            names.push(name.to_string());
         }
     }
     (!names.is_empty()).then(|| names.join("/"))

@@ -152,7 +152,7 @@ fn strip_partition_suffix(name: &str) -> Option<String> {
     let (stem, digits) = name.split_at(name.len() - digits_len);
     let plausible = digits.bytes().all(|b| b.is_ascii_digit())
         && stem.ends_with(|c: char| c.is_ascii_alphabetic())
-        && (name.starts_with("sd") || name.starts_with("vd") || name.starts_with("xd"));
+        && (name.starts_with("sd") || name.starts_with("vd") || name.starts_with("xvd"));
     plausible.then(|| stem.to_string())
 }
 

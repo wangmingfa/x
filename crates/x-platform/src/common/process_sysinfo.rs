@@ -452,9 +452,10 @@ mod tests {
         // when run under cargo, and must never include unrelated shells.
         for row in &rows {
             let haystack = format!(
-                "{} {}",
+                "{} {} {}",
                 row.name,
-                row.command_line.as_deref().unwrap_or_default()
+                row.command_line.as_deref().unwrap_or_default(),
+                row.executable.as_deref().unwrap_or_default()
             )
             .to_ascii_lowercase();
             assert!(haystack.contains("cargo"), "unexpected row {row:?}");
