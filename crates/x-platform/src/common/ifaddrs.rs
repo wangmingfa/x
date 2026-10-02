@@ -7,6 +7,8 @@
 //! interface MTU comes from.
 
 use std::collections::BTreeMap;
+#[cfg(target_os = "linux")]
+use std::collections::BTreeSet;
 use std::ffi::CStr;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::os::raw::{c_char, c_int};
@@ -350,6 +352,12 @@ pub fn addresses() -> Result<Vec<AddressInfo>> {
     let list = IfAddrs::new()?;
     let _guard = IfAddrsGuard(list.head);
 
+    // Which interfaces are addressed dynamically, gathered once rather than per
+    // address. The kernel does not record how an address was configured, so
+    // this asks the tools that do know.
+    #[cfg(target_os = "linux")]
+    let dynamic = linux_dynamic_interfaces();
+
     let mut rows = Vec::new();
     for entry in list.entries() {
         if entry.name.is_empty() {
@@ -360,11 +368,21 @@ pub fn addresses() -> Result<Vec<AddressInfo>> {
         else {
             continue;
         };
+        #[cfg(target_os = "linux")]
+        // Only IPv4 is labelled: an IPv6 address marked `dynamic` came from
+        // SLAAC or DHCPv6, and a DHCPv4 lease says nothing about which.
+        let dhcp = if address.is_ipv4() {
+            dynamic.contains(&entry.name).then_some(true)
+        } else {
+            None
+        };
+        #[cfg(not(target_os = "linux"))]
+        let dhcp = None;
         rows.push(AddressInfo {
             interface: entry.name,
             address,
             prefix_len,
-            dhcp: None,
+            dhcp,
         });
     }
 
@@ -394,6 +412,115 @@ fn family_raw(address: *mut sockaddr) -> u16 {
 #[cfg(target_os = "linux")]
 fn family_raw(address: *mut sockaddr) -> u16 {
     unsafe { (*address).sa_family }
+}
+
+/// Interfaces whose IPv4 addresses were assigned dynamically.
+///
+/// The kernel does not record how an address came to be, so this asks the two
+/// tools that do, and takes whichever answers:
+///
+/// - `ip -4 addr show` tags a DHCP-assigned address `dynamic`. This is the
+///   kernel's own view and needs no daemon.
+/// - `nmcli -g IP4.METHOD,DEVICE con show --active` reports `auto` per
+///   connection, which covers NetworkManager configurations where the address
+///   already looks static once installed.
+///
+/// Only a positive answer is recorded: an interface missing from both lists is
+/// left out entirely rather than reported as `false`, because "no tool said"
+/// is not "statically configured" — a machine running neither, or a third-party
+/// DHCP client, would otherwise be mislabelled.
+#[cfg(target_os = "linux")]
+fn linux_dynamic_interfaces() -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+
+    if let Ok(text) = crate::sys::run_command("ip", &["-4", "addr", "show"]) {
+        collect_ip_dynamic(&text, &mut out);
+    }
+    if let Ok(text) = crate::sys::run_command(
+        "nmcli",
+        &["-g", "IP4.METHOD,DEVICE", "connection", "show", "--active"],
+    ) {
+        collect_nmcli_dynamic(&text, &mut out);
+    }
+    out
+}
+
+/// The interface name from an `ip addr show` block header.
+///
+/// The header is `3: enp0s3: <BROADCAST,...>`: the index comes first, then the
+/// name, and taking everything after the *first* colon would swallow the flags
+/// along with it. A virtual link prints `eth0@if42:`, where the `@if42` suffix
+/// is the peer index and not part of the name.
+#[cfg(target_os = "linux")]
+fn header_interface(line: &str) -> String {
+    let Some((_, rest)) = line.split_once(':') else {
+        return String::new();
+    };
+    let Some((name, _)) = rest.split_once(':') else {
+        return String::new();
+    };
+    name.split('@').next().unwrap_or(name).trim().to_string()
+}
+
+/// `ip addr show` output, collected into the interfaces owning a `dynamic`
+/// address.
+///
+/// The block looks like:
+///
+/// ```text
+/// 3: enp0s3: <BROADCAST,...> mtu 1500 ...
+///     inet 192.168.1.23/24 brd ... scope global dynamic enp0s3
+/// ```
+///
+/// so the interface is the `N: name:` header and each `scope global dynamic`
+/// line marks that interface as DHCP-addressed.
+#[cfg(target_os = "linux")]
+fn collect_ip_dynamic(text: &str, out: &mut BTreeSet<String>) {
+    let mut current = String::new();
+    for line in text.lines() {
+        if !line.starts_with(char::is_whitespace) {
+            // A new block header: `3: eth0@if2: <BROADCAST,...>`.
+            current = header_interface(line);
+            continue;
+        }
+        let trimmed = line.trim();
+        if !trimmed.starts_with("inet ") {
+            continue;
+        }
+        // Only `scope global` matters: link-local DHCP addresses are not
+        // routable configuration, and loopback never carries the tag.
+        if trimmed.contains("scope global") && trimmed.contains(" dynamic") && !current.is_empty() {
+            out.insert(current.clone());
+        }
+    }
+}
+
+/// `nmcli -g IP4.METHOD,DEVICE connection show --active` output.
+///
+/// One `method:device` pair per line, where `auto` is NetworkManager's word
+/// for DHCP and anything else (`manual`, `disabled`, `link-local`, …) is not.
+#[cfg(target_os = "linux")]
+fn collect_nmcli_dynamic(text: &str, out: &mut BTreeSet<String>) {
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        // The `-g` (terse) output is `method:device`.
+        let Some((method, device)) = line.split_once(':') else {
+            continue;
+        };
+        if method.trim() != "auto" {
+            continue;
+        }
+        // The device column may itself be a colon-separated list.
+        for name in device.split(':') {
+            let name = name.trim();
+            if !name.is_empty() {
+                out.insert(name.to_string());
+            }
+        }
+    }
 }
 
 /// Decode an IPv4 or IPv6 address with the prefix length from its netmask.
@@ -748,5 +875,84 @@ mod tests {
     #[test]
     fn netstat_ib_without_the_expected_header_yields_nothing() {
         assert!(parse_netstat_ib("active internet\nProto Recv-Q").is_empty());
+    }
+
+    // --- Linux DHCP origin ----------------------------------------------
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn ip_addr_marks_the_dhcp_assigned_interface_only() {
+        let text = "\
+1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN group default qlen 1000
+    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00
+    inet 127.0.0.1/8 scope host lo
+3: enp0s3: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc pfifo_fast state UP group default
+    link/ether 08:00:27:aa:bb:cc brd ff:ff:ff:ff:ff:ff
+    inet 192.168.1.23/24 brd 192.168.1.255 scope global dynamic enp0s3
+4: eth0: <BROADCAST,MULTICAST> mtu 1500 qdisc mq state DOWN group default
+    inet 10.0.0.5/24 brd 10.0.0.255 scope global eth0
+";
+        let mut out = std::collections::BTreeSet::new();
+        collect_ip_dynamic(text, &mut out);
+        assert!(out.contains("enp0s3"), "{out:?}");
+        assert!(!out.contains("eth0"), "a static address is not dynamic");
+        assert!(!out.contains("lo"), "loopback is never DHCP");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn ip_addr_ignores_link_local_and_other_scopes() {
+        // A `dynamic` link-local address says nothing about how the routable
+        // address on the same interface was configured.
+        let text = "\
+3: enp0s3: <BROADCAST,UP> mtu 1500 state UP
+    inet 169.254.10.1/16 scope link dynamic enp0s3
+    inet 192.168.1.23/24 brd 192.168.1.255 scope global enp0s3
+";
+        let mut out = std::collections::BTreeSet::new();
+        collect_ip_dynamic(text, &mut out);
+        assert!(out.is_empty(), "{out:?}");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn ip_addr_handles_the_ifname_suffix_on_virtual_links() {
+        // `eth0@if42:` is the header a veth peer prints.
+        let text = "\
+7: eth0@if42: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 state UP
+    inet 192.168.7.8/24 brd 192.168.7.255 scope global dynamic eth0
+";
+        let mut out = std::collections::BTreeSet::new();
+        collect_ip_dynamic(text, &mut out);
+        assert!(
+            out.contains("eth0"),
+            "the @if suffix must be stripped: {out:?}"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn nmcli_auto_means_dhcp_and_anything_else_does_not() {
+        let text =
+            "auto:enp0s3\nmanual:eth0\ndisabled:wlan0\nlink-local:virbr0\nauto:enp0s4:enp0s5\n";
+        let mut out = std::collections::BTreeSet::new();
+        collect_nmcli_dynamic(text, &mut out);
+        assert!(out.contains("enp0s3"), "{out:?}");
+        // A bridge binding can report several devices on one connection.
+        assert!(out.contains("enp0s4") && out.contains("enp0s5"), "{out:?}");
+        assert!(!out.contains("eth0"), "manual is static");
+        assert!(!out.contains("wlan0"), "disabled is not dhcp");
+        assert!(!out.contains("virbr0"), "link-local is not dhcp");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_tool_that_said_nothing_leaves_the_interface_unlabelled() {
+        // The whole point of only recording positives: a machine with neither
+        // tool must not have its static-looking addresses called "not DHCP".
+        let mut out = std::collections::BTreeSet::new();
+        collect_ip_dynamic("", &mut out);
+        collect_nmcli_dynamic("unparsable output\n", &mut out);
+        assert!(out.is_empty(), "{out:?}");
     }
 }

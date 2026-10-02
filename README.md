@@ -516,8 +516,14 @@ GitHub Actions CI 在 Ubuntu / macOS / Windows 三平台上跑格式、clippy
   取决于 EDID 与合成器，x 无从得知，故留 `None`（`x display list` 的 `hdr` 列显示
   `-`）。`x capability` 新增 display 域：按每块屏统计如实报 supported / degraded /
   unsupported，而不是整机一个 yes/no。
-- [ ] DHCP 标记补齐：Windows/macOS 已接入，Linux 内核不记录地址来源，
-  如实留空是终点，除非找到用户态权威来源，否则不做。
+- [x] DHCP 标记补齐：Linux 内核不记录地址来源，但**用户态有权威来源**，故已接入。
+  两个来源取并集：`ip -4 addr show` 给 DHCP 分配的地址打 `dynamic` 标记（内核视角，
+  不依赖任何守护进程），`nmcli -g IP4.METHOD,DEVICE con show --active` 报 `auto`
+  （NetworkManager 视角，覆盖装好后地址看起来已是静态的配置）。只标记
+  `scope global`——link-local 的 `dynamic` 与可路由地址的配置方式无关；IPv6 一律
+  不标（SLAAC / DHCPv6 与 DHCPv4 租约无关）。**只记录肯定答案**：两个工具都没提到的
+  接口留 `None`（`x net addresses` 该列为空）而不是 `false`——「没工具说过」不等于
+  「静态配置」，否则既没装这两个工具、或用第三方 DHCP 客户端的机器都会被误标。
 
 **C 组 · 产品化收尾**
 
