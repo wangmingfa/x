@@ -151,9 +151,14 @@ pub enum Command {
     /// What kind of project is this directory.
     Project(commands::devtools::ProjectArgs),
 
-    /// Docker containers, images, ports and logs.
+    /// Docker containers, images, ports and logs. Pinned to the docker CLI.
     #[command(subcommand)]
     Docker(commands::devtools::DockerCommand),
+
+    /// Containers, images, ports and logs, from whichever engine this
+    /// machine has (docker, podman or nerdctl).
+    #[command(subcommand)]
+    Container(commands::devtools::ContainerCommand),
 
     /// What this host can actually do: supported / degraded / unsupported.
     Capability(commands::capability::CapabilityArgs),
@@ -419,6 +424,9 @@ fn dispatch(
             commands::devtools::dispatch_project(context, renderer, args)
         }
         Some(Command::Docker(cmd)) => commands::devtools::dispatch_docker(context, renderer, cmd),
+        Some(Command::Container(cmd)) => {
+            commands::devtools::dispatch_container(context, renderer, cmd)
+        }
         Some(Command::Capability(args)) => commands::capability::dispatch(context, renderer, args),
         Some(Command::Proxy(cmd)) => commands::proxy::dispatch(context, renderer, cmd),
         Some(Command::Hosts(cmd)) => commands::hosts::dispatch(context, renderer, cmd),

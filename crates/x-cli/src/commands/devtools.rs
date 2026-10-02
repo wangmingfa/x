@@ -183,89 +183,261 @@ pub struct DockerArgs {
     pub command: DockerCommand,
 }
 
-/// Route a `x docker` invocation.
+/// `x container` subcommands: the same five questions `x docker` asks, plus
+/// which engines this machine actually has.
+#[derive(Debug, Subcommand)]
+pub enum ContainerCommand {
+    /// Containers (`-a` includes stopped ones).
+    Ps {
+        /// Include stopped containers.
+        #[arg(long, short = 'a')]
+        all: bool,
+    },
+
+    /// Images, newest first.
+    Images,
+
+    /// Every published host port across running containers.
+    Ports,
+
+    /// Which container publishes a host port.
+    Port {
+        /// Host port number.
+        port: u16,
+    },
+
+    /// Recent log lines of one container.
+    Logs {
+        /// Container name or id.
+        container: String,
+        /// Maximum number of lines.
+        #[arg(long, value_name = "N", default_value_t = 50)]
+        lines: usize,
+    },
+
+    /// Which engines this machine can talk to, and which one is in use.
+    Engines,
+}
+
+/// Arguments for `x container`.
+#[derive(Debug, clap::Args)]
+pub struct ContainerArgs {
+    #[command(subcommand)]
+    pub command: ContainerCommand,
+}
+
+/// An engine choice: pinned to one CLI, or left to discovery.
+///
+/// `x docker` pins, so it can never answer from a podman that happens to also
+/// be installed; `x container` discovers.
+#[derive(Debug, Clone, Copy)]
+enum Choice {
+    Pinned(x_core::container::Engine),
+    Discover,
+}
+
+impl Choice {
+    fn containers(&self, all: bool) -> Result<Vec<x_core::container::ContainerInfo>> {
+        match self {
+            Self::Pinned(engine) => x_core::container::containers_with(*engine, all),
+            Self::Discover => x_core::container::containers(all),
+        }
+    }
+    fn images(&self) -> Result<Vec<x_core::container::ImageInfo>> {
+        match self {
+            Self::Pinned(engine) => x_core::container::images_with(*engine),
+            Self::Discover => x_core::container::images(),
+        }
+    }
+    fn ports(&self) -> Result<Vec<x_core::container::ContainerPort>> {
+        match self {
+            Self::Pinned(engine) => x_core::container::ports_with(*engine),
+            Self::Discover => x_core::container::ports(),
+        }
+    }
+    fn logs(&self, container: &str, lines: usize) -> Result<x_core::container::ContainerLogs> {
+        match self {
+            Self::Pinned(engine) => x_core::container::logs_with(*engine, container, lines),
+            Self::Discover => x_core::container::logs(container, lines),
+        }
+    }
+}
+
+/// Route an `x docker` invocation, pinned to the docker CLI.
 pub fn dispatch_docker(
     _context: &SystemContext,
     renderer: &mut Renderer,
     command: &DockerCommand,
 ) -> Result<i32> {
+    let choice = Choice::Pinned(x_core::container::Engine::Docker);
     match command {
         DockerCommand::Ps { all } => {
-            let containers = x_core::dockerinfo::containers(*all)?;
-            if renderer.format() == OutputFormat::Json {
-                renderer.always_json(&containers)?;
-                return Ok(0);
-            }
-            let mut table = Table::new(["id", "image", "name", "state", "ports"]);
-            for c in &containers {
-                table.push(row![
-                    c.id.clone(),
-                    c.image.clone(),
-                    c.name.clone(),
-                    c.state.clone(),
-                    c.ports.clone(),
-                ]);
-            }
-            renderer.table(&table)?;
+            render_containers(renderer, &choice.containers(*all)?)?;
         }
         DockerCommand::Images => {
-            let images = x_core::dockerinfo::images()?;
-            if renderer.format() == OutputFormat::Json {
-                renderer.always_json(&images)?;
-                return Ok(0);
-            }
-            let mut table = Table::new(["repository", "tag", "id", "size"]);
-            for image in &images {
-                table.push(row![
-                    image.repository.clone(),
-                    image.tag.clone(),
-                    image.id.clone(),
-                    image.size.clone(),
-                ]);
-            }
-            renderer.table(&table)?;
+            render_images(renderer, &choice.images()?)?;
         }
         DockerCommand::Ports => {
-            let ports = x_core::dockerinfo::ports()?;
-            if renderer.format() == OutputFormat::Json {
-                renderer.always_json(&ports)?;
-                return Ok(0);
-            }
-            let mut table = Table::new(["host", "container", "name", "protocol"]);
-            for p in &ports {
-                table.push(row![
-                    format!("{}:{}", p.host_ip, p.host_port),
-                    p.container.clone(),
-                    p.name.clone(),
-                    p.protocol.clone(),
-                ]);
-            }
-            renderer.table(&table)?;
+            render_ports(renderer, &choice.ports()?)?;
         }
-        DockerCommand::Port { port } => {
-            let owner = x_core::dockerinfo::port_owner(*port)?;
-            if renderer.format() == OutputFormat::Json {
-                renderer.always_json(&owner)?;
-                return Ok(0);
-            }
-            match owner {
-                Some(p) => renderer.line(format!(
-                    "{}:{} -> {} ({})",
-                    p.host_ip, p.host_port, p.name, p.container
-                ))?,
-                None => renderer.line(format!("no container publishes {port}"))?,
-            }
-        }
+        DockerCommand::Port { port } => render_port_owner(renderer, *port, &choice.ports()?)?,
         DockerCommand::Logs { container, lines } => {
-            let logs = x_core::dockerinfo::logs(container, *lines)?;
-            if renderer.format() == OutputFormat::Json {
-                renderer.always_json(&logs)?;
-                return Ok(0);
-            }
-            for line in &logs.lines {
-                renderer.line(line.clone())?;
-            }
+            render_logs(renderer, &choice.logs(container, *lines)?)?;
         }
     }
     Ok(0)
+}
+
+/// Route an `x container` invocation against the engine this machine has.
+pub fn dispatch_container(
+    _context: &SystemContext,
+    renderer: &mut Renderer,
+    command: &ContainerCommand,
+) -> Result<i32> {
+    let choice = Choice::Discover;
+    match command {
+        ContainerCommand::Ps { all } => {
+            render_containers(renderer, &choice.containers(*all)?)?;
+        }
+        ContainerCommand::Images => {
+            render_images(renderer, &choice.images()?)?;
+        }
+        ContainerCommand::Ports => {
+            render_ports(renderer, &choice.ports()?)?;
+        }
+        ContainerCommand::Port { port } => render_port_owner(renderer, *port, &choice.ports()?)?,
+        ContainerCommand::Logs { container, lines } => {
+            render_logs(renderer, &choice.logs(container, *lines)?)?;
+        }
+        ContainerCommand::Engines => render_engines(renderer)?,
+    }
+    Ok(0)
+}
+
+/// Which engines this machine can talk to, and which one is in use.
+fn render_engines(renderer: &mut Renderer) -> Result<()> {
+    let found = x_core::container::available_engines();
+    let active = match x_core::container::active_engine() {
+        Ok(engine) => Some(engine),
+        // A pinned-but-unknown engine is a typo worth naming. Reporting it as
+        // "no engine found" would leave the user staring at a machine that
+        // plainly has one while their mistake went unmentioned.
+        Err(err) if err.kind() == x_core::ErrorKind::InvalidInput => return Err(err),
+        // Genuinely nothing installed: the empty listing below says so.
+        Err(_) => None,
+    };
+    if renderer.format() == OutputFormat::Json {
+        renderer.always_json(&serde_json::json!({
+            "available": found,
+            "active": active,
+        }))?;
+        return Ok(());
+    }
+    if found.is_empty() {
+        renderer.line(
+            "no container engine found: install docker, podman or nerdctl, or set X_CONTAINER_ENGINE",
+        )?;
+        return Ok(());
+    }
+    let mut table = Table::new(["engine", "cli", "active"]);
+    for engine in &found {
+        table.push(row![
+            engine.to_string(),
+            engine.cli(),
+            if Some(*engine) == active { "*" } else { "" },
+        ]);
+    }
+    renderer.table(&table)?;
+    Ok(())
+}
+
+fn render_containers(
+    renderer: &mut Renderer,
+    rows: &[x_core::container::ContainerInfo],
+) -> Result<()> {
+    if renderer.format() == OutputFormat::Json {
+        renderer.always_json(&rows)?;
+        return Ok(());
+    }
+    let mut table = Table::new(["engine", "id", "image", "name", "state", "ports"]);
+    for row in rows {
+        table.push(row![
+            row.engine.to_string(),
+            row.id.clone(),
+            row.image.clone(),
+            row.name.clone(),
+            row.state.clone(),
+            row.ports.clone(),
+        ]);
+    }
+    renderer.table(&table)?;
+    Ok(())
+}
+
+fn render_images(renderer: &mut Renderer, rows: &[x_core::container::ImageInfo]) -> Result<()> {
+    if renderer.format() == OutputFormat::Json {
+        renderer.always_json(&rows)?;
+        return Ok(());
+    }
+    let mut table = Table::new(["engine", "repository", "tag", "id", "size"]);
+    for row in rows {
+        table.push(row![
+            row.engine.to_string(),
+            row.repository.clone(),
+            row.tag.clone(),
+            row.id.clone(),
+            row.size.clone(),
+        ]);
+    }
+    renderer.table(&table)?;
+    Ok(())
+}
+
+fn render_ports(renderer: &mut Renderer, rows: &[x_core::container::ContainerPort]) -> Result<()> {
+    if renderer.format() == OutputFormat::Json {
+        renderer.always_json(&rows)?;
+        return Ok(());
+    }
+    let mut table = Table::new(["engine", "host", "name", "protocol"]);
+    for row in rows {
+        table.push(row![
+            row.engine.to_string(),
+            format!("{}:{}", row.host_ip, row.host_port),
+            row.name.clone(),
+            row.protocol.clone(),
+        ]);
+    }
+    renderer.table(&table)?;
+    Ok(())
+}
+
+fn render_port_owner(
+    renderer: &mut Renderer,
+    port: u16,
+    rows: &[x_core::container::ContainerPort],
+) -> Result<()> {
+    let owner = rows.iter().find(|p| p.host_port == port);
+    if renderer.format() == OutputFormat::Json {
+        renderer.always_json(&owner)?;
+        return Ok(());
+    }
+    match owner {
+        Some(row) => renderer.line(format!(
+            "{}:{} -> {} ({}, {})",
+            row.host_ip, row.host_port, row.name, row.engine, row.protocol
+        ))?,
+        None => renderer.line(format!("no container publishes {port}"))?,
+    }
+    Ok(())
+}
+
+fn render_logs(renderer: &mut Renderer, logs: &x_core::container::ContainerLogs) -> Result<()> {
+    if renderer.format() == OutputFormat::Json {
+        renderer.always_json(&logs)?;
+        return Ok(());
+    }
+    for line in &logs.lines {
+        renderer.line(line.clone())?;
+    }
+    Ok(())
 }

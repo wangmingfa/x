@@ -497,9 +497,15 @@ GitHub Actions CI 在 Ubuntu / macOS / Windows 三平台上跑格式、clippy
   SMC 的「无读数」标记（`0x7f7f`，会解成 127.7 ℃）直接丢弃。多数机器上无特权
   会被 user client 拒绝，如实返回 `None`，`x capability` 早已把 `None` 渲染成
   「本平台未暴露」——不猜值、不估算。
-- [ ] 容器统一到 `x container`：现有 `x docker *` 只覆盖 docker CLI；
-  Podman / containerd 的 CLI 形状不同，按插件/逃生舱模式各写一个适配，
-  不强行合并成假统一。
+- [x] 容器统一到 `x container`：新增 `x container ps/images/ports/port/logs`，
+  自动发现本机引擎（docker → podman → nerdctl），`x container engines` 列出可用
+  与当前引擎，`X_CONTAINER_ENGINE` 可钉住。三套 CLI 各一个适配，**不强行合并成假
+  统一**：每一行都带 `engine` 字段（同机装了 docker 和 podman 时同一个 id 可能属
+  于不同容器），状态/端口一律保留引擎原文，不改写。`x docker` 保留为别名但**钉死**
+  docker，绝不会因为装了 podman 就改从 podman 回答。原有的 `dockerinfo` 模块随之
+  删除——留下两套并行容器层与「统一」目标自相矛盾。探测用 `info`：二进制缺失与
+  后端未启动都能一次分清；拼错的 `X_CONTAINER_ENGINE` 报参数错误（退出码 5）而不是
+  谎称「本机没有引擎」。
 - [ ] 显示 HDR：Windows 需再过 QueryDisplayConfig，macOS/Linux 口径不一；
   先在 capability 里如实标 unsupported，读取留后续。
 - [ ] DHCP 标记补齐：Windows/macOS 已接入，Linux 内核不记录地址来源，
