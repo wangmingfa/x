@@ -102,8 +102,8 @@ if [ -z "$tag" ]; then
         [ "$kind_result" = 2 ] && kind="pre"
 
         # 2. Version selection with preview
+        next="" next_base=""
         while true; do
-            local next="" next_base=""
             if [ "$kind" = "pre" ]; then
                 set +e
                 pick "Pre-release base version (current: $version)" \
@@ -151,8 +151,8 @@ if [ -z "$tag" ]; then
                     3) prefix="beta" ;;
                 esac
                 # scan existing tags of the same base+prefix, suggest next number
-                local pre_num=1
-                local last_num
+                pre_num=1
+                last_num=""
                 last_num=$(git tag --list "${next_base}-${prefix}.*" \
                     | sed -n "s/^${next_base}-${prefix}\.\([0-9][0-9]*\)$/\1/p" \
                     | sort -n | tail -1)
