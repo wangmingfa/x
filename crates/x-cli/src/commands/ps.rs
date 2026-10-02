@@ -1,13 +1,16 @@
 //! `x ps`: process listing, detail, tree and termination.
 
 use clap::Subcommand;
-use x_core::error::Result;
-use x_core::process::{ProcessInfo, ProcessListOptions, ProcessNode, ProcessSort};
+use x_core::error::{Error, Result};
+use x_core::process::{
+    diff_processes, ProcessInfo, ProcessListOptions, ProcessNode, ProcessSort,
+};
 use x_core::KillSignal;
 use x_core::SystemContext;
 
 use crate::format::{clip, Confirmer, OutputFormat, Renderer, Table};
 use crate::{row, SignalArg};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Width of the command column in the human format. `--json` keeps it whole.
 const COMMAND_WIDTH: usize = 56;
@@ -68,6 +71,21 @@ pub enum PsCommand {
         /// Do not ask for confirmation.
         #[arg(long, short = 'y')]
         yes: bool,
+    },
+
+    /// Poll the process table and print only arrivals and departures.
+    Watch {
+        /// Listing filters.
+        #[command(flatten)]
+        args: PsListArgs,
+
+        /// Seconds between samples.
+        #[arg(long, default_value_t = 2.0)]
+        interval: f64,
+
+        /// Stop after this many samples; without it, run until Ctrl-C.
+        #[arg(long)]
+        count: Option<usize>,
     },
 }
 
@@ -161,7 +179,149 @@ pub fn dispatch(
                 .collect();
             kill(context, renderer, confirmer, pids, (*signal).into(), *yes)
         }
+        PsCommand::Watch {
+            args,
+            interval,
+            count,
+        } => watch(context, renderer, &args.options(), *interval, *count),
     }
+}
+
+/// One `x ps watch` change event, as JSON.
+#[derive(Debug, serde::Serialize)]
+struct WatchEvent {
+    time: String,
+    added: Vec<ProcessInfo>,
+    removed: Vec<ProcessInfo>,
+}
+
+/// Poll the process table and print only what changed since the previous
+/// sample.
+///
+/// Same shape as `x port watch`: the first poll prints a baseline line, later
+/// polls print only arrivals (`+`) and departures (`-`), and `--count n` bounds
+/// the loop so scripts and tests can take exactly `n` samples. A snapshot that
+/// fails to be sampled does not end the watch: the error is reported and the
+/// previous baseline is kept, because a transient permission failure should
+/// not look like "every process exited".
+pub fn watch(
+    context: &SystemContext,
+    renderer: &mut Renderer,
+    options: &ProcessListOptions,
+    interval: f64,
+    count: Option<usize>,
+) -> Result<i32> {
+    let offset = context
+        .system
+        .info()
+        .ok()
+        .and_then(|info| info.utc_offset_seconds)
+        .unwrap_or(0);
+    let interval = if interval.is_finite() {
+        interval.max(0.05)
+    } else {
+        2.0
+    };
+    let json = renderer.format() == OutputFormat::Json;
+
+    let mut previous: Option<Vec<ProcessInfo>> = None;
+    let mut polls = 0usize;
+    loop {
+        let current = match context.process.list(options) {
+            Ok(rows) => rows,
+            Err(err) => {
+                if json {
+                    renderer.always_json(&serde_json::json!({
+                        "time": stamp(offset),
+                        "error": err.to_string(),
+                    }))?;
+                } else {
+                    renderer.line(format!("[{}] sample failed: {err}", stamp(offset)))?;
+                }
+                renderer.flush().map_err(|e| {
+                    Error::new(
+                        x_core::ErrorKind::System,
+                        format!("watch output failed: {e}"),
+                    )
+                })?;
+                std::thread::sleep(Duration::from_secs_f64(interval));
+                polls += 1;
+                if count.is_some_and(|target| polls >= target) {
+                    return Ok(0);
+                }
+                continue;
+            }
+        };
+
+        match &previous {
+            None => {
+                if !json {
+                    renderer.line(format!(
+                        "[{}] watching {} process(es), polling every {interval}s",
+                        stamp(offset),
+                        current.len()
+                    ))?;
+                }
+            }
+            Some(before) => {
+                let diff = diff_processes(before, &current);
+                if !diff.is_empty() {
+                    if json {
+                        renderer.always_json(&WatchEvent {
+                            time: stamp(offset),
+                            added: diff.added,
+                            removed: diff.removed,
+                        })?;
+                    } else {
+                        for row in &diff.removed {
+                            renderer.line(format!("[{}] - {}", stamp(offset), watch_row(row)))?;
+                        }
+                        for row in &diff.added {
+                            renderer.line(format!("[{}] + {}", stamp(offset), watch_row(row)))?;
+                        }
+                    }
+                }
+            }
+        }
+        renderer.flush().map_err(|e| {
+            Error::new(
+                x_core::ErrorKind::System,
+                format!("watch output failed: {e}"),
+            )
+        })?;
+        previous = Some(current);
+        polls += 1;
+        if count.is_some_and(|target| polls >= target) {
+            return Ok(0);
+        }
+        std::thread::sleep(Duration::from_secs_f64(interval));
+    }
+}
+
+/// Current wall-clock stamp in the machine's own UTC offset.
+fn stamp(offset: i64) -> String {
+    x_core::format_timestamp(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+        offset,
+    )
+}
+
+/// One process as a single watch-diff line.
+fn watch_row(row: &ProcessInfo) -> String {
+    format!(
+        "pid {} {} {}",
+        row.pid,
+        row.state.label(),
+        clip(
+            row.command_line
+                .as_deref()
+                .unwrap_or(row.name.as_str()),
+            COMMAND_WIDTH
+        )
+    )
 }
 
 /// Flat process list.

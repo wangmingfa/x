@@ -253,6 +253,59 @@ pub fn flatten_tree(node: &ProcessNode) -> Vec<(usize, &ProcessInfo)> {
     out
 }
 
+/// The change set between two process snapshots.
+///
+/// Produced by [`diff_processes`] and consumed by `x ps watch`, which prints
+/// only what changed since the previous poll. A pid that is still present is
+/// never reported; only arrivals and departures are.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProcessDiff {
+    /// Processes present now but not before.
+    pub added: Vec<ProcessInfo>,
+    /// Processes present before but not now.
+    pub removed: Vec<ProcessInfo>,
+}
+
+impl ProcessDiff {
+    /// `true` when the two snapshots held the same pids.
+    pub fn is_empty(&self) -> bool {
+        self.added.is_empty() && self.removed.is_empty()
+    }
+}
+
+/// Compare two process snapshots by pid.
+///
+/// Both sides are sorted by pid so the output order is stable no matter which
+/// order the platform adapter happened to enumerate in.
+pub fn diff_processes(previous: &[ProcessInfo], current: &[ProcessInfo]) -> ProcessDiff {
+    use std::collections::BTreeSet;
+
+    let before: BTreeSet<u32> = previous.iter().map(|p| p.pid).collect();
+    let after: BTreeSet<u32> = current.iter().map(|p| p.pid).collect();
+
+    let sort = |mut rows: Vec<ProcessInfo>| {
+        rows.sort_by_key(|p| p.pid);
+        rows
+    };
+
+    ProcessDiff {
+        added: sort(
+            current
+                .iter()
+                .filter(|p| !before.contains(&p.pid))
+                .cloned()
+                .collect(),
+        ),
+        removed: sort(
+            previous
+                .iter()
+                .filter(|p| !after.contains(&p.pid))
+                .cloned()
+                .collect(),
+        ),
+    }
+}
+
 /// Build a process tree from a flat snapshot. Orphans are attached to a synthetic root.
 pub fn build_tree(processes: Vec<ProcessInfo>) -> ProcessTree {
     use std::collections::HashMap;
@@ -422,5 +475,38 @@ mod tests {
         assert_eq!(KillSignal::parse("TERM"), Some(KillSignal::Terminate));
         assert_eq!(KillSignal::parse("nope"), None);
         assert!(KillSignal::Kill.is_forceful());
+    }
+
+    #[test]
+    fn process_diff_reports_only_arrivals_and_departures() {
+        let before = vec![proc(1, None, "init"), proc(7, Some(1), "worker")];
+        let after = vec![proc(1, None, "init"), proc(9, Some(1), "fresh")];
+
+        let diff = diff_processes(&before, &after);
+        assert_eq!(diff.added.len(), 1);
+        assert_eq!(diff.added[0].pid, 9);
+        assert_eq!(diff.removed.len(), 1);
+        assert_eq!(diff.removed[0].pid, 7);
+        assert!(!diff.is_empty());
+    }
+
+    #[test]
+    fn an_unchanged_snapshot_diffs_to_nothing() {
+        let rows = vec![proc(1, None, "init"), proc(2, Some(1), "child")];
+        let diff = diff_processes(&rows, &rows);
+        assert!(diff.is_empty(), "{diff:?}");
+    }
+
+    #[test]
+    fn process_diff_sorts_both_sides_by_pid() {
+        let before = vec![proc(5, None, "b"), proc(3, None, "a")];
+        let after = vec![proc(4, None, "new"), proc(2, None, "older")];
+
+        let diff = diff_processes(&before, &after);
+        let added: Vec<u32> = diff.added.iter().map(|p| p.pid).collect();
+        let removed: Vec<u32> = diff.removed.iter().map(|p| p.pid).collect();
+        // Order must not depend on the order the adapter enumerated in.
+        assert_eq!(added, vec![2, 4]);
+        assert_eq!(removed, vec![3, 5]);
     }
 }

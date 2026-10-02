@@ -1,13 +1,15 @@
 //! `x sys`: static facts plus live CPU and memory.
 
 use clap::Subcommand;
-use x_core::error::Result;
+use x_core::error::{Error, Result};
+use x_core::system::{CpuUsage, MemoryUsage};
 use x_core::SystemContext;
 
 use crate::{
     format::{Cell, OutputFormat, Renderer, Table},
     row,
 };
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// `x sys` subcommands.
 #[derive(Debug, Subcommand)]
@@ -20,6 +22,17 @@ pub enum SysCommand {
 
     /// Memory utilization.
     Mem,
+
+    /// Poll CPU and memory and print a line per sample.
+    Watch {
+        /// Seconds between samples.
+        #[arg(long, default_value_t = 2.0)]
+        interval: f64,
+
+        /// Stop after this many samples; without it, run until Ctrl-C.
+        #[arg(long)]
+        count: Option<usize>,
+    },
 }
 
 /// Route a `x sys` invocation.
@@ -32,6 +45,7 @@ pub fn dispatch(
         SysCommand::Info => info(context, renderer),
         SysCommand::Cpu => cpu(context, renderer),
         SysCommand::Mem => mem(context, renderer),
+        SysCommand::Watch { interval, count } => watch(context, renderer, *interval, *count),
     }
 }
 
@@ -182,6 +196,103 @@ pub fn mem(context: &SystemContext, renderer: &mut Renderer) -> Result<i32> {
     }
     renderer.table(&table)?;
     Ok(0)
+}
+
+/// Poll CPU and memory and print one line per sample.
+///
+/// Unlike `x ps watch`, this prints every sample rather than only what
+/// changed: a utilization gauge is a time series, and a flat line would hide
+/// exactly the spikes the command exists to show. `--count n` bounds the loop
+/// for scripts and tests; without it, run until Ctrl-C.
+pub fn watch(
+    context: &SystemContext,
+    renderer: &mut Renderer,
+    interval: f64,
+    count: Option<usize>,
+) -> Result<i32> {
+    let offset = context
+        .system
+        .info()
+        .ok()
+        .and_then(|info| info.utc_offset_seconds)
+        .unwrap_or(0);
+    let interval = if interval.is_finite() {
+        interval.max(0.05)
+    } else {
+        2.0
+    };
+    let json = renderer.format() == OutputFormat::Json;
+
+    let mut polls = 0usize;
+    loop {
+        // One family failing must not blind the other: report the failure and
+        // keep sampling, because a transient read error is not "the machine is
+        // idle".
+        let cpu = context.system.cpu_usage();
+        let memory = context.system.memory_usage();
+        let time = x_core::format_timestamp(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+            offset,
+        );
+
+        if json {
+            renderer.always_json(&serde_json::json!({
+                "time": time,
+                "cpu": match &cpu {
+                    Ok(usage) => serde_json::to_value(usage).unwrap_or(serde_json::Value::Null),
+                    Err(err) => serde_json::json!({ "error": err.to_string() }),
+                },
+                "memory": match &memory {
+                    Ok(usage) => serde_json::to_value(usage).unwrap_or(serde_json::Value::Null),
+                    Err(err) => serde_json::json!({ "error": err.to_string() }),
+                },
+            }))?;
+        } else {
+            renderer.line(format!("[{time}] {}", sample_line(&cpu, &memory)))?;
+        }
+        renderer.flush().map_err(|e| {
+            Error::new(
+                x_core::ErrorKind::System,
+                format!("watch output failed: {e}"),
+            )
+        })?;
+
+        polls += 1;
+        if count.is_some_and(|target| polls >= target) {
+            return Ok(0);
+        }
+        std::thread::sleep(Duration::from_secs_f64(interval));
+    }
+}
+
+/// One human-readable sample, naming whichever family failed.
+fn sample_line(cpu: &Result<CpuUsage>, memory: &Result<MemoryUsage>) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    match cpu {
+        Ok(usage) => {
+            let mut text = format!("cpu {:.1}%", usage.total_percent);
+            if let Some(load) = &usage.load_average {
+                text.push_str(&format!(" load {load}"));
+            }
+            if let Some(temp) = usage.temperature_celsius {
+                text.push_str(&format!(" {temp:.0}C"));
+            }
+            parts.push(text);
+        }
+        Err(err) => parts.push(format!("cpu unavailable ({err})")),
+    }
+    match memory {
+        Ok(usage) => parts.push(format!(
+            "mem {:.1}% ({} used)",
+            usage.percent,
+            x_core::format_bytes(usage.used_bytes)
+        )),
+        Err(err) => parts.push(format!("mem unavailable ({err})")),
+    }
+    parts.join("  ")
 }
 
 /// A fixed width utilization bar, so columns stay aligned in a terminal.
