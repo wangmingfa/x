@@ -62,6 +62,7 @@ iwr https://raw.githubusercontent.com/xsys/x/main/scripts/install.ps1 -OutFile i
 | `x ps tree` | 进程树 |
 | `x ps show <pid>` | 单个进程详情 |
 | `x ps kill <pid>` / `kill-by-name <name>` | 确认后发信号，`--signal TERM / INT / HUP` |
+| `x ps watch` | 持续轮询，只输出进程增删（`--interval`、`--count`） |
 
 ### 系统（`x sys`）
 
@@ -70,6 +71,7 @@ iwr https://raw.githubusercontent.com/xsys/x/main/scripts/install.ps1 -OutFile i
 | `x sys info` | 操作系统、内核、架构、主机名、CPU 型号、核数（含 P/E 核心划分）、内存、运行时长、上次重启、时区、locale、用户 / shell / 终端 |
 | `x sys cpu` | 聚合与每核 CPU 利用率，负载均值、当前/最大频率（平台提供时）、温度（Linux）、governor（Linux） |
 | `x sys mem` | 内存利用率 |
+| `x sys watch` | 持续采样 CPU / 内存，每采样一行（`--interval`、`--count`） |
 
 ### 网络（`x net`）
 
@@ -86,6 +88,7 @@ iwr https://raw.githubusercontent.com/xsys/x/main/scripts/install.ps1 -OutFile i
 | `x net ping <host>` | ICMP 连通性（`--count` / `--timeout`），输出 min/avg/max |
 | `x net trace <host>` | 逐跳路径（`--max-hops` / `--timeout`），原生 ICMP，不依赖 tracert |
 | `x net check <host>` | 链式诊断：DNS → TCP → TLS → 证书 → HTTP，任一环失败如实标注 |
+| `x net speed [url]` | 实测下载吞吐（`--count` 多次采样、报告峰值；`--timeout`），与 interfaces 的协商速率分列 |
 
 ### 磁盘（`x disk`）
 
@@ -126,6 +129,8 @@ iwr https://raw.githubusercontent.com/xsys/x/main/scripts/install.ps1 -OutFile i
 | `x logs system [--limit N]` | 整机日志：journald / System 通道 / unified log |
 | `x logs service <name> [--limit N]` | 按服务取：systemd unit / 事件提供方 / 守护进程名 |
 | `x logs process <pid\|name> [--limit N]` | 按进程取（Windows 事件日志无进程索引，如实报不支持） |
+| 上述三者 + `--follow` | 持续跟随，只输出新增记录（`--interval`、`--count`）；按整条记录内容去重 |
+| 上述三者 + `--grep` / `--level` | 过滤：文本命中 message/origin/level（不分大小写）；`--level` 逗号分隔，词汇按平台原文（journald `err`、Windows `Error`、unified log `error`） |
 
 全部只读：不确认、不提权、不落审计。三套日志体系词汇不通，故时间戳与
 级别按平台原文透传（如 journald 的 `err`、中文 Windows 的「信息」），
@@ -271,6 +276,12 @@ PowerShell SslStream、类 Unix 用 openssl s_client），x 负责参数校验�
 读操作不留痕：`x logs` 读系统日志、`x device` 枚举设备本身都不写审计行，
 审计只覆盖改变机器的动作。
 
+读回来：`x audit list [--action A] [--user U] [--failures] [--since T]
+[--grep S] [--limit N] [--path P]`，最新在前。`--action` 支持整域通配
+（`process.*`）；日志按行去重无关，读侧只解析自家写的 JSON lines，所以
+三平台形状一致。半行截断（写入途中被杀）与坏行如实计数并在输出末尾说明，
+不因为一条坏记录让整份日志不可读；日志不存在即「没有记录」而非报错。
+
 日志位置：Windows `%LOCALAPPDATA%\x\audit.log`；Linux
 `$XDG_STATE_HOME`（缺省 `~/.local/state`）`/x/audit.log`；macOS
 `~/Library/Application Support/x/audit.log`。环境变量 `X_AUDIT_PATH`
@@ -380,7 +391,7 @@ GitHub Actions CI 在 Ubuntu / macOS / Windows 三平台上跑格式、clippy
 
 ### P1 开发者日常
 
-- [x] 文件：`x file info / type / permissions / owner / size`；`open / reveal / trash / copy / move / rename`（`x file reveal` 优先）
+- [x] 文件：`x file info / type / permissions / owner / size / hash`；`open / reveal / trash / copy / move / rename`（`x file reveal` 优先）
 - [x] 环境与 PATH：`x env list/get/set`、`x path list/find/add/remove`、`x which <cmd>`（统一 where / which / command -v）
 - [x] Shell：`x shell info / list / default`
 - [x] 用户与组：`x user current/list/info`（UID/GID/home/groups/会话）、`x group list/info/members`
@@ -447,20 +458,34 @@ GitHub Actions CI 在 Ubuntu / macOS / Windows 三平台上跑格式、clippy
 
 **A 组 · 高性价比，缺口明确**
 
-- [ ] 实时监视：`x ps watch` / `x sys watch`（对齐已有的 `x port watch` 与
-  `x events` 轮询模型：定时重采样、只在变化或到达节流周期时输出，`--interval`
-  / `--count`，Ctrl+C 干净退出）。零新模型，纯 CLI 层复用 `list()`。
-- [ ] 日志跟随：`x logs system|service|process --follow`（journalctl -f /
-  Get-WinEvent -Follow / log stream 的统一形状；`--since`、`--grep`、
-  `--level` 过滤）。当前 logs 只有 `--limit` 快照，缺流式。
-- [ ] 文件哈希：`x file hash <path> [--algo sha256|blake3…]`（纯读取，三平台
-  同构，std 无依赖可实现 sha256/crc32 家族；补齐 file 域的完整性视角）。
-- [ ] 审计查询：`x audit list [--action A] [--user U] [--since T] [--tail N]`
-  （读自己写的 JSON-lines 日志，天然三平台同构；写侧已有、读侧空白，是审计
-  闭环的最后一块）。
-- [ ] `x net speed`：链路协商速率与实际吞吐分列（现有 interfaces 只报协商
-  速率，README 已注明「不是带宽测量」）；轻量实现取 curl/wget 打固定小文件
-  计吞吐，超时与失败如实报告。
+- [x] 实时监视：`x ps watch` / `x sys watch`（对齐已有的 `x port watch` 与
+  `x events` 轮询模型：定时重采样、Ctrl+C 干净退出，`--interval` / `--count`）。
+  `ps watch` 只输出进程增删（新增 `x_core::diff_processes`，按 pid 比对、两侧
+  排序稳定）；`sys watch` 每采样输出一行——利用率仪表是时间序列，做 diff 会把
+  最该看的尖峰抹掉。采样失败只报错并保留上次基线：瞬时权限错误不该被读成
+  「所有进程都退出了」。
+- [x] 日志跟随：`x logs system|service|process --follow`，加 `--grep` / `--level`
+  过滤（`--interval`、`--count`）。**`--since` 刻意不做**：三套日志的时间戳文本
+  互不可比，把它们解析成一个过滤器正是本项目拒绝的有损假统一。轮询去重按整条
+  记录内容而非时间戳——同一时刻的多条记录很常见，没有稳定记录 id 时抑制逐字
+  重复就是诚实结果。首轮严格只出 `--limit` 行，加宽窗口仅用于探测新增。
+- [x] 文件哈希：`x file hash <path> [--algo sha256|sha512|crc32]`（纯读取，三平台
+  同构，std 无依赖手写实现，不新增任何依赖）。流式读取，大文件不落内存；输出
+  用 `sha256sum` 的 `<hex>  <path>` 形状便于与平台工具对拍。算法钉在公开测试向量
+  上而非自洽——这一点立刻抓到过 SHA-512 常量表里几个丢失的低位 nibble。目录
+  如实拒绝：不存在能与 `sha256sum` 对账的「目录摘要」。
+- [x] 审计查询：`x audit list [--action A] [--user U] [--failures] [--since T]
+  [--grep S] [--limit N] [--path P]`（读自己写的 JSON-lines 日志，天然三平台
+  同构；写侧已有、读侧空白，是审计闭环的最后一块）。`--action` 支持 `process.*`
+  整域通配。半行截断（写入途中被杀）与坏行如实计数并在输出末尾说明，不因一条坏
+  记录让整份日志不可读；日志不存在即「没有记录」而非报错；`--path` 读法同样
+  走全部过滤（那是读别处拷来的日志的路径，丢过滤会让 flag 看起来坏了）。
+- [x] `x net speed`：链路协商速率与实际吞吐分列（现有 interfaces 只报协商
+  速率，README 已注明「不是带宽测量」）。走平台自带 curl 抓一次传输并计时，
+  得到的是这条连接真正搬了多少；两个读数刻意分列字段——快链路上的慢采样、
+  慢链路上的快采样，正是用户要找的差。`--count n` 逐次报而不是求平均（冷启动
+  与热缓存回答的是不同问题），末尾附峰值。curl 把耗时报成 `0.000000` 时如实
+  拒绝，不做除法（否则会打印无限速率）。
 
 **B 组 · 补齐已知留空项**
 
