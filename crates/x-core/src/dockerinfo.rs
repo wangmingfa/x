@@ -170,7 +170,9 @@ fn docker(args: &[&str]) -> Result<String> {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let message = stderr.trim();
-        let daemon_down = message.contains("Cannot connect to the Docker daemon");
+        let daemon_down = message.contains("Cannot connect to the Docker daemon")
+            || message.contains("docker daemon is not running")
+            || message.contains("Is the docker daemon running");
         return Err(if daemon_down {
             Error::unsupported("docker daemon is not running")
         } else {
