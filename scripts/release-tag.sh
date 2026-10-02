@@ -25,8 +25,9 @@ fi
 
 case "$tag" in
     v[0-9]*.[0-9]*.[0-9]*) ;;
+    v[0-9]*.[0-9]*.[0-9]*-[0-9A-Za-z.-]*) ;;
     *)
-        printf 'error: tag must look like v0.1.2, got "%s"\n' "$tag" >&2
+        printf 'error: tag must look like v0.1.2 or v0.1.2-rc.1, got "%s"\n' "$tag" >&2
         exit 1
         ;;
 esac
