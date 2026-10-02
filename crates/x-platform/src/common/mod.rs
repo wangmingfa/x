@@ -26,6 +26,7 @@ pub mod proxy_cmd;
 pub mod proxy_os;
 pub mod schedule_os;
 pub mod shell_os;
+pub mod smc;
 pub mod startup_os;
 pub mod user_os;
 pub mod window_os;

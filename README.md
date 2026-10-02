@@ -490,13 +490,17 @@ GitHub Actions CI 在 Ubuntu / macOS / Windows 三平台上跑格式、clippy
 **B 组 · 补齐已知留空项**
 
 - [x] macOS CPU 温度：`x sys cpu` 的温度此前仅 Linux 有（thermal_zone/hwmon），
-  现经 `AppleSMCUserClient` 读取 die 传感器。**枚举键名而不是硬编码**：Intel 是
-  `TC0*`、Apple silicon 是 `Tp0*`/`Tm0*`，任何固定清单都只在部分机型上成立；
-  GPU（`TG0*`）、环境（`TA0*`）、电池（`TB0*`）、内存（大写 `TM0P`）都被排除
-  ——那是别的传感器，不是 CPU 温度。只接受 `sp78` 且落在 −40…150 ℃ 的读数，
-  SMC 的「无读数」标记（`0x7f7f`，会解成 127.7 ℃）直接丢弃。多数机器上无特权
-  会被 user client 拒绝，如实返回 `None`，`x capability` 早已把 `None` 渲染成
-  「本平台未暴露」——不猜值、不估算。
+  现经 IOKit 连接 `AppleSMC` 用户客户端读取 die 传感器。**枚举键名而不是硬编码**：
+  Intel 是 `TC0*`、Apple silicon 是 `Tp0*`/`Tm0*`，任何固定清单都只在部分机型上
+  成立；GPU（`TG0*`）、环境（`TA0*`）、电池（`TB0*`）、内存（大写 `TM0P`）都被
+  排除——那是别的传感器，不是 CPU 温度。`sp78` 是**大端有符号** 8.8 定点，只接受
+  落在 −40…150 ℃ 的读数：未接传感器的典型回答是下限 `0x8000`（−128.0 ℃），按窗口
+  丢弃。多数机器上无特权会被拒绝、虚拟机可能没有 CPU 传感器键，都如实返回 `None`，
+  `x capability` 早已把 `None` 渲染成「本平台未暴露」——不猜值、不估算。CI 上一次
+  SIGBUS 的教训值得留档：`IOConnectCallStructMethod` 的大小参数是 `size_t` 不是
+  `u32`，传窄了高半截寄存器是垃圾值，内核按错的尺寸往 56 字节的结构体里拷 80 字节
+  ——这种错不报错，直接打穿栈；协议结构体现在按权威定义写成 80 字节并抽到平台无关
+  模块全平台测试，布局用编译期断言钉死。
 - [x] 容器统一到 `x container`：新增 `x container ps/images/ports/port/logs`，
   自动发现本机引擎（docker → podman → nerdctl），`x container engines` 列出可用
   与当前引擎，`X_CONTAINER_ENGINE` 可钉住。三套 CLI 各一个适配，**不强行合并成假

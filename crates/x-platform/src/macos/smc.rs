@@ -1,140 +1,93 @@
-//! macOS CPU die temperature through the System Management Controller.
+//! The macOS side of the SMC read: IOKit FFI driving the wire protocol that
+//! lives in [`crate::common::smc`].
 //!
-//! Layer 2 of the doctrine (`IOKit`): macOS exposes no public API for the die
-//! sensor, and the kernel routes SMC reads through `AppleSMCUserClient`. The
-//! keys are **enumerated** rather than hardcoded, because the naming differs per
-//! chip generation — `TC0P` on Intel, `Tp01` on Apple silicon — so any fixed
-//! list works on only some machines.
+//! Nothing about the SMC protocol is decided here — struct layout, command
+//! codes, key packing and `sp78` decoding are all in the common module and
+//! tested on every platform. This file is only the Mach plumbing, and it
+//! exists mostly to carry the two ABI facts that a mistake in does not fail a
+//! call but corrupts memory:
 //!
-//! Two honesty rules govern what comes back. A value is reported only when the
-//! SMC actually answered with a `sp78` reading inside a plausible range; and
-//! when the call is refused — the common case without root, since the user
-//! client denies unprivileged SMC access — the caller gets `None`, which the
-//! capability report already renders as "not exposed here". Nothing is
-//! inferred, estimated or substituted for a missing sensor.
+//! - `IOConnectCallStructMethod` takes its input and output sizes as
+//!   `size_t` (`usize`), not `u32`. The wrong width leaves the upper register
+//!   half uninitialised; the kernel then copies the wrong number of bytes and
+//!   the test binary dies with SIGBUS on the way out.
+//! - `IOServiceGetMatchingService` **consumes** the reference to the matching
+//!   dictionary it is handed, so there is deliberately no `CFRelease` of it
+//!   here — releasing would be an over-release of memory we no longer own.
+//!
+//! Every failure path degrades to `None`: the service may be absent, the read
+//! may be refused without privileges, and a virtualised runner may have an SMC
+//! that answers for none of the CPU keys. "Nothing said" is the honest
+//! answer for all of those, and none of them may crash.
 
+use crate::common::smc as proto;
+use std::os::raw::{c_char, c_void};
 use x_core::error::Result;
 
-#[cfg(target_os = "macos")]
-use std::os::raw::{c_char, c_int, c_uint, c_void};
+// IOKit handles are mach ports: `u32` on 64-bit macOS.
+type IoObject = u32;
+type IoConnect = u32;
+type MachPort = u32;
+type KernReturn = i32;
 
-/// SMC command: read a key's type and size.
-#[cfg(target_os = "macos")]
-const SMC_CMD_READ_KEYINFO: u32 = 5;
-/// SMC command: read a key's bytes.
-#[cfg(target_os = "macos")]
-const SMC_CMD_READ_BYTES: u32 = 6;
-/// SMC command: enumerate the Nth key in the SMC.
-#[cfg(target_os = "macos")]
-const SMC_CMD_READ_INDEX: u32 = 8;
-
-/// The `AppleSMCUserClient` selector that takes an `SMCKeyData_t` in and out.
-#[cfg(target_os = "macos")]
-const SMC_USER_CLIENT_SELECTOR: u32 = 2;
-
-/// `sp78`: 8.8 signed fixed point, the encoding every CPU sensor uses.
-#[cfg(target_os = "macos")]
-const DATA_TYPE_SP78: u32 = 0x7370_3738;
-
-/// Outside this range the SMC is not reporting a CPU temperature, and the
-/// `0x7f7f` "invalid" marker is the case that shows up in practice.
-const MIN_PLAUSIBLE_CELSIUS: f32 = -40.0;
-const MAX_PLAUSIBLE_CELSIUS: f32 = 150.0;
-
-/// One `SMCKeyData_t`, the 56 byte structure the user client speaks.
-///
-/// The layout is `key`, `command`, `data8`, then `SMCKeyInfo_t`
-/// (`dataSize`, `dataType`, `dataAttributes` + 3 bytes of tail padding to the
-/// next 4-byte boundary) and finally the 32 value bytes.
-#[cfg(target_os = "macos")]
-#[repr(C)]
-#[derive(Clone, Copy, Default)]
-struct SmcKeyData {
-    key: u32,
-    command: u32,
-    data8: u32,
-    data_size: u32,
-    data_type: u32,
-    data_attributes: u8,
-    data_attributes_padding: [u8; 3],
-    bytes: [u8; 32],
-}
-
-#[cfg(target_os = "macos")]
-impl SmcKeyData {
-    const SIZE: u32 = std::mem::size_of::<Self>() as u32;
-
-    /// A request for `key` carrying `command`.
-    fn request(key: u32, command: u32) -> Self {
-        Self {
-            key,
-            command,
-            ..Self::default()
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
 #[link(name = "IOKit", kind = "framework")]
 extern "C" {
     fn IOServiceMatching(name: *const c_char) -> *mut c_void;
-    fn IOServiceGetMatchingService(main_port: c_uint, matching: *const c_void) -> c_uint;
-    fn IOServiceOpen(service: c_uint, task: c_uint, options: u32, connect: *mut c_uint) -> c_int;
+    fn IOServiceGetMatchingService(main_port: MachPort, matching: *mut c_void) -> IoObject;
+    fn IOServiceOpen(
+        service: IoObject,
+        task: MachPort,
+        options: u32,
+        connect: *mut IoConnect,
+    ) -> KernReturn;
     fn IOConnectCallStructMethod(
-        connection: c_uint,
+        connection: IoConnect,
         selector: u32,
         input: *const c_void,
-        input_size: u32,
+        input_size: usize,
         output: *mut c_void,
-        output_size: *mut u32,
-    ) -> c_int;
-    fn IOServiceClose(connection: c_uint) -> c_int;
-    fn IOObjectRelease(object: c_uint) -> c_int;
-    fn CFRelease(object: *const c_void);
+        output_size: *mut usize,
+    ) -> KernReturn;
+    fn IOServiceClose(connection: IoConnect) -> KernReturn;
+    fn IOObjectRelease(object: IoObject) -> KernReturn;
 }
 
-// The task port for "this process". `libc::mach_task_self()` is the deprecated
-// spelling of the constant `MACH_PORT_SELF`; the underscored entry point is the
-// real symbol behind it, and naming it here keeps the deprecation off the build.
-#[cfg(target_os = "macos")]
+// The task port for "this process": `mach_task_self()` in C is a macro for
+// the exported `mach_task_self_` symbol, so that is what we link against.
 extern "C" {
-    fn mach_task_self_() -> c_uint;
+    fn mach_task_self_() -> MachPort;
 }
 
-/// An open connection to the SMC user client.
-///
-/// The connection is closed on drop, so a read that goes wrong half way
-/// through does not leak a kernel handle.
-#[cfg(target_os = "macos")]
+/// `kIOMainPortDefault` (historically `kIOMasterPortDefault`): the current
+/// task, expressed as the port value 0.
+const MAIN_PORT_DEFAULT: MachPort = 0;
+
+/// An open connection to the `AppleSMC` user client, closed on drop.
 struct Smc {
-    connection: c_uint,
+    connection: IoConnect,
 }
 
-#[cfg(target_os = "macos")]
 impl Smc {
-    /// Open the user client, or `None` when the kernel refuses.
+    /// Open the user client, or `None` when the service is missing or the
+    /// open is refused.
     fn open() -> Option<Self> {
-        let name = std::ffi::CString::new("AppleSMCUserClient").ok()?;
-        // SAFETY: `name` is NUL terminated and lives for the call; the
-        // dictionary it returns is owned by us and released just below.
+        let name = std::ffi::CString::new("AppleSMC").ok()?;
+        // SAFETY: `name` is NUL terminated and lives for the call.
         let matching = unsafe { IOServiceMatching(name.as_ptr()) };
         if matching.is_null() {
             return None;
         }
-        // SAFETY: `matching` is the dictionary just created.
-        let service =
-            unsafe { IOServiceGetMatchingService(mach_task_self_(), matching as *const c_void) };
-        // The dictionary is ours either way, so release it before the branches
-        // below; the service retains its own reference.
-        // SAFETY: same pointer that `IOServiceMatching` handed us.
-        unsafe { CFRelease(matching) };
+        // SAFETY: `matching` is a valid dictionary; the call consumes our
+        // reference to it, so it is never released below.
+        let service = unsafe { IOServiceGetMatchingService(MAIN_PORT_DEFAULT, matching) };
         if service == 0 {
             return None;
         }
-        let mut connection: c_uint = 0;
+        let mut connection: IoConnect = 0;
         // SAFETY: `connection` is our own storage, filled in by the kernel.
         let rc = unsafe { IOServiceOpen(service, mach_task_self_(), 0, &mut connection) };
-        // SAFETY: `service` is the object `IOServiceGetMatchingService` returned.
+        // SAFETY: `service` came from `IOServiceGetMatchingService` and we hold
+        // its one reference.
         unsafe { IOObjectRelease(service) };
         if rc != 0 {
             return None;
@@ -142,91 +95,103 @@ impl Smc {
         Some(Self { connection })
     }
 
-    /// One `SMCKeyData_t` round trip.
-    fn call(&self, input: &SmcKeyData) -> Option<SmcKeyData> {
-        let mut output = SmcKeyData::default();
-        let mut size = SmcKeyData::SIZE;
-        // SAFETY: both structures are our own, fully initialised storage, and
-        // the sizes describe them exactly.
+    /// One 80-byte `SMCKeyData_t` round trip.
+    ///
+    /// Both the IOKit return code and the SMC's own `result` byte must say
+    /// success; anything else means "this machine would not say".
+    fn call(&self, input: &mut proto::SmcKeyData) -> Option<proto::SmcKeyData> {
+        let mut output = proto::SmcKeyData::default();
+        let size = std::mem::size_of::<proto::SmcKeyData>();
+        let mut out_size = size;
+        // SAFETY: both structures are our own, fully initialised, and exactly
+        // `size_of::<SmcKeyData>()` (80) bytes — asserted at compile time in
+        // the common module. The sizes are `usize`, the ABI this API actually
+        // takes; getting that width wrong is the SIGBUS this file exists to
+        // prevent.
         let rc = unsafe {
             IOConnectCallStructMethod(
                 self.connection,
-                SMC_USER_CLIENT_SELECTOR,
-                input as *const SmcKeyData as *const c_void,
-                SmcKeyData::SIZE,
-                &mut output as *mut SmcKeyData as *mut c_void,
-                &mut size,
+                proto::SMC_SELECTOR,
+                input as *const proto::SmcKeyData as *const c_void,
+                size,
+                &mut output as *mut proto::SmcKeyData as *mut c_void,
+                &mut out_size,
             )
         };
-        (rc == 0 && size >= SmcKeyData::SIZE).then_some(output)
-    }
-
-    /// Total number of keys the SMC holds, via the `#` info key.
-    fn key_count(&self) -> Option<u32> {
-        let response = self.call(&SmcKeyData::request(0x23, SMC_CMD_READ_KEYINFO))?;
-        u32::from_le_bytes([
-            response.bytes[0],
-            response.bytes[1],
-            response.bytes[2],
-            response.bytes[3],
-        ])
-        .into()
-    }
-
-    /// The name of the `index`th key.
-    fn key_name_at(&self, index: u32) -> Option<String> {
-        let mut request = SmcKeyData::request(0, SMC_CMD_READ_INDEX);
-        request.data8 = index;
-        let response = self.call(&request)?;
-        Some(four_char_code(u32::from_le_bytes([
-            response.bytes[0],
-            response.bytes[1],
-            response.bytes[2],
-            response.bytes[3],
-        ])))
-    }
-
-    /// Read one key, returning its type and bytes.
-    fn read_key(&self, key: u32) -> Option<(u32, [u8; 32])> {
-        let info = self.call(&SmcKeyData::request(key, SMC_CMD_READ_KEYINFO))?;
-        let size = info.data_size;
-        let data_type = info.data_type;
-        if size == 0 || size > 32 {
+        if rc != 0 || output.result != proto::SMC_RESULT_SUCCESS {
             return None;
         }
-        let mut request = SmcKeyData::request(key, SMC_CMD_READ_BYTES);
-        request.data_size = size;
-        request.data_type = data_type;
-        let response = self.call(&request)?;
-        Some((data_type, response.bytes))
+        Some(output)
+    }
+
+    /// Total number of keys the SMC holds, via the `#KEY` pseudo-key.
+    fn key_count(&self) -> Option<u32> {
+        let mut info_req = proto::SmcKeyData::default();
+        info_req.key = proto::pack_key("#KEY");
+        info_req.data8 = proto::SMC_CMD_READ_KEYINFO;
+        let info = self.call(&mut info_req)?;
+        let size = info.key_info.data_size;
+        if size == 0 || size as usize > proto::SmcKeyData::default().bytes.len() {
+            return None;
+        }
+        let mut read_req = proto::SmcKeyData::default();
+        read_req.key = info_req.key;
+        read_req.data8 = proto::SMC_CMD_READ_BYTES;
+        read_req.key_info.data_size = size;
+        let value = self.call(&mut read_req)?;
+        proto::decode_key_count(&value.bytes)
+    }
+
+    /// The name of the key at `index`.
+    fn key_name_at(&self, index: u32) -> Option<String> {
+        let mut req = proto::SmcKeyData::default();
+        req.data8 = proto::SMC_CMD_READ_INDEX;
+        req.data32 = index;
+        let out = self.call(&mut req)?;
+        Some(proto::key_name(out.key))
+    }
+
+    /// Read one key's type and payload.
+    fn read_key(&self, key: u32) -> Option<(u32, [u8; 32])> {
+        let mut info_req = proto::SmcKeyData::default();
+        info_req.key = key;
+        info_req.data8 = proto::SMC_CMD_READ_KEYINFO;
+        let info = self.call(&mut info_req)?;
+        let size = info.key_info.data_size;
+        if size == 0 || size as usize > info.bytes.len() {
+            return None;
+        }
+        let mut read_req = proto::SmcKeyData::default();
+        read_req.key = key;
+        read_req.data8 = proto::SMC_CMD_READ_BYTES;
+        read_req.key_info.data_size = size;
+        let value = self.call(&mut read_req)?;
+        Some((info.key_info.data_type, value.bytes))
     }
 }
 
-#[cfg(target_os = "macos")]
 impl Drop for Smc {
     fn drop(&mut self) {
-        // SAFETY: `connection` is the handle `IOServiceOpen` handed us and
-        // this is the only close, which drop runs exactly once.
+        // SAFETY: `connection` is the handle `IOServiceOpen` handed us, and
+        // drop runs exactly once.
         unsafe { IOServiceClose(self.connection) };
     }
 }
 
 /// The hottest CPU temperature this machine reports, in degrees Celsius.
 ///
-/// `Ok(None)` means the SMC either could not be opened without privileges, or
-/// exposed no CPU sensor this code recognises — both of which the caller
-/// reports honestly rather than as a number.
+/// `Ok(None)` means the SMC could not be opened, the read was refused, or no
+/// CPU sensor answered — all rendered downstream as "not exposed", none
+/// inferred from.
 pub fn cpu_temperature() -> Result<Option<f32>> {
     Ok(read_cpu_temperature())
 }
 
-/// The actual read, split out so the logic is testable without a Mac.
-#[cfg(target_os = "macos")]
 fn read_cpu_temperature() -> Option<f32> {
     let smc = Smc::open()?;
     let count = smc.key_count()?;
-    // A machine with an implausible key count is answering with something else
-    // entirely; enumerating it would be slow and meaningless.
+    // A machine claiming an implausible key count is answering with something
+    // other than a real SMC; enumerating it would be slow and meaningless.
     if count == 0 || count > 4096 {
         return None;
     }
@@ -236,16 +201,16 @@ fn read_cpu_temperature() -> Option<f32> {
         let Some(name) = smc.key_name_at(index) else {
             continue;
         };
-        if !is_cpu_temperature_key(&name) {
+        if !proto::is_cpu_temperature_key(&name) {
             continue;
         }
-        let Some((data_type, bytes)) = smc.read_key(four_char_code_to_u32(&name)) else {
+        let Some((data_type, bytes)) = smc.read_key(proto::pack_key(&name)) else {
             continue;
         };
-        if data_type != DATA_TYPE_SP78 {
+        if data_type != proto::DATA_TYPE_SP78 {
             continue;
         }
-        let Some(celsius) = decode_sp78(&bytes) else {
+        let Some(celsius) = proto::decode_sp78(&bytes) else {
             continue;
         };
         if hottest.is_none_or(|current| celsius > current) {
@@ -255,140 +220,21 @@ fn read_cpu_temperature() -> Option<f32> {
     hottest
 }
 
-/// A non-macOS build has no SMC to talk to.
-#[cfg(not(target_os = "macos"))]
-fn read_cpu_temperature() -> Option<f32> {
-    None
-}
-
-/// Whether an SMC key names a CPU temperature.
-///
-/// `TC0*` are Intel die sensors (`TC0P` proximity, `TC0D` die), `Tp0*` are
-/// Apple silicon performance cores and `Tm0*` its efficiency cores. The
-/// lowercase `m` matters: uppercase `TM0P` is the memory sensor, not a core.
-///
-/// The GPU (`TG0*`), ambient (`TA0*`) and battery (`TB0*`) sensors are
-/// deliberately excluded — they are not the CPU die temperature this reports.
-fn is_cpu_temperature_key(key: &str) -> bool {
-    key.starts_with("TC0") || key.starts_with("Tp0") || key.starts_with("Tm0")
-}
-
-/// Decode a `sp78` fixed point reading into Celsius.
-///
-/// `sp78` is 8.8 fixed point, so the value is the byte pair divided by 256.
-/// The signed markers the SMC uses for "no reading" land far outside any
-/// plausible CPU temperature and are rejected here rather than shown.
-fn decode_sp78(bytes: &[u8]) -> Option<f32> {
-    let pair = bytes.get(..2)?;
-    let raw = u16::from_le_bytes([pair[0], pair[1]]);
-    let celsius = raw as f32 / 256.0;
-    (celsius.is_finite() && (MIN_PLAUSIBLE_CELSIUS..=MAX_PLAUSIBLE_CELSIUS).contains(&celsius))
-        .then_some(celsius)
-}
-
-/// The SMC's packed four-character key, as a string.
-///
-/// Non-printable bytes become `.` so a garbage name shows up as obvious noise
-/// instead of control characters in a table cell.
-fn four_char_code(key: u32) -> String {
-    let bytes = key.to_le_bytes();
-    bytes
-        .iter()
-        .map(|&byte| {
-            if byte.is_ascii_graphic() {
-                byte as char
-            } else {
-                '.'
-            }
-        })
-        .collect()
-}
-
-/// A four-character name as the SMC packs it, least significant byte first.
-fn four_char_code_to_u32(name: &str) -> u32 {
-    let bytes = name.as_bytes();
-    let mut key = 0u32;
-    for (index, &byte) in bytes.iter().take(4).enumerate() {
-        key |= (byte as u32) << (index * 8);
-    }
-    key
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn sp78_decodes_the_published_shape() {
-        // 0x2E00 is 46.0 in 8.8 fixed point: (0x2E00 >> 8) = 46.
-        let bytes = [0x00, 0x2E, 0, 0];
-        assert_eq!(decode_sp78(&bytes), Some(46.0));
-        // 0x0BB8 is 3000/256 = 11.71875.
-        let bytes = [0xB8, 0x0B, 0, 0];
-        assert_eq!(decode_sp78(&bytes), Some(3000.0 / 256.0));
-    }
-
-    #[test]
-    fn sp78_decodes_a_room_temperature_reading() {
-        // 45.5 C, a value any idle Mac reports.
-        let raw = (45.5 * 256.0) as u16;
-        let bytes = raw.to_le_bytes();
-        assert_eq!(decode_sp78(&bytes), Some(45.5));
-    }
-
-    #[test]
-    fn sp78_rejects_the_invalid_marker_and_impossible_readings() {
-        // 0x7f7f is the SMC's "no reading" marker and decodes to 127.7 C, which
-        // is hotter than any CPU — it must not reach the user as a number.
-        assert_eq!(decode_sp78(&[0xFF, 0x7F]), None);
-        assert_eq!(decode_sp78(&[0xFF, 0xFF]), None, "65535 would be nonsense");
-        assert_eq!(decode_sp78(&[]), None, "a short buffer is not a reading");
-        assert_eq!(decode_sp78(&[0x00]), None);
-    }
-
-    #[test]
-    fn cpu_sensor_keys_are_told_from_gpu_and_memory_sensors() {
-        // Intel and Apple silicon naming.
-        for key in ["TC0P", "TC0D", "TC0E", "Tp01", "Tp0L", "Tm01", "Tm0P"] {
-            assert!(is_cpu_temperature_key(key), "{key} is a CPU sensor");
+    fn the_read_degrades_without_panicking() {
+        // On a runner whose SMC is missing or refuses the read this is None;
+        // on a real Mac it is a plausible die temperature. Either answer is
+        // fine — the regression this guards is the SIGBUS that used to come
+        // out of this call path instead.
+        if let Some(celsius) = read_cpu_temperature() {
+            assert!(
+                (proto::MIN_PLAUSIBLE_CELSIUS..=proto::MAX_PLAUSIBLE_CELSIUS).contains(&celsius),
+                "{celsius} is not a plausible CPU temperature"
+            );
         }
-        // GPU, ambient, battery, memory and platform sensors are not the CPU
-        // die temperature.
-        for key in [
-            "TG0P", "TG0D", "TA0P", "TB0T", "TM0P", "MHFA", "MSTP", "Th0H",
-        ] {
-            assert!(!is_cpu_temperature_key(key), "{key} is not a CPU sensor");
-        }
-    }
-
-    #[test]
-    fn a_key_name_round_trips_through_the_smc_packing() {
-        for name in ["TC0P", "Tp01", "Tm0P"] {
-            let packed = four_char_code_to_u32(name);
-            assert_eq!(four_char_code(packed), name);
-        }
-    }
-
-    #[test]
-    fn a_key_name_is_always_four_characters_of_printable_text() {
-        // A garbage name must read as obvious noise, never as control codes.
-        assert_eq!(four_char_code(u32::MAX), "....");
-        assert_eq!(four_char_code(0), "....");
-        assert_eq!(four_char_code(0x00_00_00_41), "A...");
-        assert_eq!(four_char_code(0x41_42_43_44).len(), 4);
-    }
-
-    #[test]
-    fn the_hottest_core_wins_over_a_mixed_set() {
-        // What `read_cpu_temperature` does with several cores: a parked
-        // efficiency core reads colder, and the user wants the hot one.
-        let samples = [("Tp01", 41.0), ("Tm01", 35.5), ("Tp02", 63.25)];
-        let hottest = samples
-            .iter()
-            .map(|(_, value)| *value)
-            .fold(None, |acc: Option<f32>, value| {
-                acc.map_or(Some(value), |current| Some(current.max(value)))
-            });
-        assert_eq!(hottest, Some(63.25));
     }
 }
