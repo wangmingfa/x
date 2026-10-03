@@ -35,10 +35,17 @@ iwr https://raw.githubusercontent.com/xsys/x/main/scripts/install.ps1 -OutFile i
 
 - **Homebrew**：见 [`Packaging/Homebrew/README.md`](Packaging/Homebrew/README.md)，
   `brew tap xsys/tap && brew install --head x`。
+- **直接下载**：GitHub Release 上每个 tag 带四个文件——`x-<tag>-Linux-x86_64.tar.gz`、
+  `x-<tag>-Linux-aarch64.tar.gz`、`x-<tag>-macOS-universal.tar.gz`（Apple Silicon 与
+  Intel 合在一个二进制里）、`x-<tag>-windows-x86_64-setup.exe`。
 - **Windows 安装包**：见 [`Packaging/Windows/x.iss`](Packaging/Windows/x.iss)
   （Inno Setup 脚本，CI 在打 tag 时自动编译成 `x-*-windows-x86_64-setup.exe`）。
-- 打 tag 触发 `.github/workflows/release.yml` 构建三平台二进制与 Windows 安装包并发布 GitHub Release；
+- 打 tag 触发 `.github/workflows/release.yml` 构建上面四个产物并发布 GitHub Release；
   Release 正文由 `scripts/changelog.sh --release` 生成，与 [`CHANGELOG.md`](CHANGELOG.md) 同源。
+  构建镜像是写死的版本号（`ubuntu-22.04` / `ubuntu-24.04-arm` / `macos-15` / `windows-2022`），
+  不是 `-latest`：产物能跑在哪些机器上，取决于构建机当年的 glibc 和 SDK，`-latest` 会在
+  你不改一行代码的时候把这个下限挪走。publish 作业会把正文里点名的文件和实际构建出的文件
+  逐一对比，不一致就不发布。
 
 ## 当前功能
 
@@ -417,8 +424,18 @@ tag 因此只会指向你看过并同意的那棵树。而生成器不会把 `do
 `.github/workflows/release.yml` 的 publish 作业跑
 `scripts/changelog.sh --release <tag> -o release-notes.md` 并把结果作为 Release
 正文；它的 checkout 带 `fetch-depth: 0` 与 `fetch-tags: true`，否则读不到 tag 区间。
+publish 还有一道自检：把正文里点名的产物与实际构建出的文件逐一对比，不一致就退出——
+说明里 promise 一个下载页上没有的文件，比构建失败更糟。
 Windows 安装包的 `ReleaseTag` 也由工作流传给 Inno，`x-v0.1.2-windows-x86_64-setup.exe`
 在文件系统和在说明里是同一个名字。
+
+构建矩阵的镜像是固定版本号而不是 `-latest`：`ubuntu-22.04`（x86_64）、
+`ubuntu-24.04-arm`（aarch64，GitHub 只给到这一档 ARM Linux runner）、`macos-15`
+（GitHub 已没有 Intel macOS runner，x86_64 那一半在同一台 arm64 机上交叉编译，再用
+`lipo` 合成 universal）、`windows-2022`。固定的是**构建机**，不是「产物要求的系统」——
+纯 Rust 二进制引用的 glibc 符号常常比构建机自带的那版更老，所以真正的下限别看镜像名，
+看构建日志：Linux 那一步会把产物里引用到的最高几个 `GLIBC_*` 打出来，macOS 那一步打
+`lipo -archs` 和产物自己声明的 `minos`。
 
 GitHub Actions CI 在 Ubuntu / macOS / Windows 三平台上跑格式、clippy
 （零警告）、全量测试，并交叉检查 `x-platform` 的另外两个目标。

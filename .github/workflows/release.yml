@@ -6,40 +6,140 @@ on:
       - "v*"
   workflow_dispatch:
 
+# Which machine a released binary runs on is decided by the machine that built
+# it, so the build images are pinned and named after what they are.
+# `-latest` would be wrong for a release even if it were convenient: it moves
+# without telling the tag that was built against it.
+#
+#   ubuntu-22.04       x86_64, glibc 2.35 build host
+#   ubuntu-24.04-arm   aarch64, glibc 2.39 build host (GitHub offers no older
+#                      Linux-on-ARM image)
+#   macos-15           universal binary, deployment target 11.0 - the Apple
+#                      Silicon floor
+#   windows-2022       MSVC x86_64; on Windows ARM the x64 binary runs under
+#                      emulation
+#
+# A pinned image is the build host, not the requirement - what a binary really
+# needs is the newest symbol version it references, so the steps below measure
+# that from the produced file instead of letting the image name stand as a
+# promise.
+#
+# GitHub no longer offers an Intel macOS runner, so the x86_64 half is
+# cross-compiled on the arm64 one and fused with `lipo` - same SDK, same
+# linker, no second machine needed.
+
 jobs:
   build:
-    name: build ${{ matrix.os }}
+    name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - name: linux-x86_64
+            os: ubuntu-22.04
+            asset: Linux-x86_64
+            targets: x86_64-unknown-linux-gnu
+            bindir: target/x86_64-unknown-linux-gnu/release
+            deployment_target: ""
+          - name: linux-aarch64
+            os: ubuntu-24.04-arm
+            asset: Linux-aarch64
+            targets: aarch64-unknown-linux-gnu
+            bindir: target/aarch64-unknown-linux-gnu/release
+            deployment_target: ""
+          - name: macos-universal
+            os: macos-15
+            asset: macOS-universal
+            targets: aarch64-apple-darwin x86_64-apple-darwin
+            bindir: target/universal
+            deployment_target: "11.0"
+
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Build release binary
-        run: cargo build --release --locked -p x-app
-
-      - name: Package (unix)
-        if: runner.os != 'Windows'
+      - name: Release stamp
+        id: stamp
+        shell: bash
         run: |
-          cd target/release
-          tar -czf "../x-${{ github.ref_name }}-${{ runner.os }}.tar.gz" x
+          # A workflow_dispatch run has no tag. Name those files after a
+          # clearly-marked development version rather than after whichever
+          # branch the run happened to start from.
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            echo "tag=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=v0.0.0-dev" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build
+        shell: bash
+        env:
+          TARGETS: ${{ matrix.targets }}
+          # Read by rustc for Apple targets only; empty elsewhere does nothing.
+          MACOSX_DEPLOYMENT_TARGET: ${{ matrix.deployment_target }}
+        run: |
+          for target in $TARGETS; do
+              rustup target add "$target"
+              cargo build --release --locked -p x-app --target "$target"
+          done
+
+      - name: Fuse the macOS halves
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          mkdir -p target/universal
+          lipo -create -output target/universal/x \
+              target/aarch64-apple-darwin/release/x \
+              target/x86_64-apple-darwin/release/x
+          # The notes promise "universal"; this line is the build's own evidence
+          # that the file really carries both arches.
+          lipo -archs target/universal/x
+          # And what each half declares as its own minimum system version.
+          otool -l target/universal/x | grep -E 'platform|minos' \
+              || printf 'the binary declares no minimum system version\n'
+
+      - name: Report the glibc versions the binary references
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          BINDIR: ${{ matrix.bindir }}
+        run: |
+          # The highest symbol versions in use are what a user's glibc has to
+          # provide. Read off the artifact, not off the image name; a binary
+          # that references none does not need glibc at all.
+          versions=$(objdump -T "$BINDIR/x" | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sort -V | uniq | tail -3) || true
+          if [ -n "$versions" ]; then
+              printf 'highest glibc symbol versions referenced:\n%s\n' "$versions"
+          else
+              printf 'no GLIBC_* symbols referenced\n'
+          fi
+
+      - name: Package
+        shell: bash
+        env:
+          TAG: ${{ steps.stamp.outputs.tag }}
+          ASSET: ${{ matrix.asset }}
+          BINDIR: ${{ matrix.bindir }}
+        run: |
+          mkdir -p stage
+          cp "$BINDIR/x" stage/x
+          tar -czf "x-${TAG}-${ASSET}.tar.gz" -C stage x
+          ls -l "x-${TAG}-${ASSET}.tar.gz"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: x-${{ matrix.os }}
-          path: |
-            target/release/x*
-            target/x-*.tar.gz
+          name: x-${{ matrix.asset }}
+          path: x-*.tar.gz
 
   windows-installer:
     name: windows installer
-    runs-on: windows-latest
-    needs: build
+    # Inno Setup reads the binary from target\release\x.exe, so this job builds
+    # for its own host rather than through the matrix above - and because it
+    # builds its own, it has no reason to wait for the matrix to finish.
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
 
@@ -60,7 +160,7 @@ jobs:
           } else {
             $tag = 'v0.0.0-dev'
           }
-          $num = $tag -replace '^v', ''
+          $num = $tag -replace '^v',''
           "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "num=$num" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
@@ -80,14 +180,18 @@ jobs:
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
-          name: x-windows-installer
-          path: "x-*.exe"
+          name: x-windows-x86_64-setup
+          path: x-*.exe
 
   publish:
     name: publish github release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [build, windows-installer]
     if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      # The runner's default token is read-only in repositories configured that
+      # way, and creating a release with assets needs write on contents.
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -104,6 +208,22 @@ jobs:
         with:
           merge-multiple: true
           path: artifacts
+
+      - name: The notes must name exactly what gets uploaded
+        run: |
+          # The notes are generated, and they spell out the asset names. If a
+          # build renames or drops one, publishing notes that promise a file
+          # nobody can download is worse than a failed job. The pattern is
+          # anchored on the tag so a commit subject that mentions some `x-...`
+          # in backticks cannot be mistaken for an asset.
+          pattern='`x-'"${GITHUB_REF_NAME}"'-[^`]+`'
+          expected=$(grep -oE "$pattern" release-notes.md | tr -d '`' | sort -u) || true
+          actual=$(find artifacts -maxdepth 1 -type f -printf '%f\n' | sort)
+          if [ "$expected" != "$actual" ]; then
+              printf 'the release notes promise:\n%s\n\nthis build produced:\n%s\n' "$expected" "$actual" >&2
+              exit 1
+          fi
+          printf 'assets named in the notes:\n%s\n' "$expected"
 
       - name: Create release
         uses: softprops/action-gh-release@v2
