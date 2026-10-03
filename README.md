@@ -385,6 +385,8 @@ cargo test --workspace
 
 提交前跑本地 CI 检查（Format / Clippy / Test，对应 `ci.yml`）：
 `scripts/check.sh`（bash）或 `scripts/check.ps1`（Windows PowerShell）。
+`check.ps1` 带 shebang，Git Bash 里 `./scripts/check.ps1` 会交给
+`powershell.exe -File` 执行，回传的退出码就是检查自己产生的那个。
 
 交叉编译检查：
 
