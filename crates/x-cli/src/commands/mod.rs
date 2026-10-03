@@ -48,6 +48,7 @@ pub fn version(renderer: &mut Renderer) -> Result<i32> {
     let info = serde_json::json!({
         "x": env!("CARGO_PKG_VERSION"),
         "contract": x_core::CONTRACT_VERSION,
+        "contract_doc": "docs/contract.md",
         "platform": x_platform::platform_name(),
     });
     renderer.always_json(&info)?;

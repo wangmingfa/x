@@ -749,9 +749,15 @@ fn version_info_needs_no_data_at_all() {
         .port
         .fail_with(StubFailure::new(ErrorKind::System, "must not be called"));
 
-    let out = x(&stubs, &["--version-info"], false);
+    let out = x(&stubs, &["--version-info", "--json"], false);
     assert_eq!(out.code, 0);
-    assert!(out.stdout.to_lowercase().contains("contract"));
+    let doc: serde_json::Value = serde_json::from_str(out.stdout.trim()).expect("one document");
+    assert_eq!(
+        doc["contract"],
+        serde_json::json!(x_core::CONTRACT_VERSION),
+        "the advertised contract version must track x-core"
+    );
+    assert_eq!(doc["contract_doc"], "docs/contract.md");
 }
 
 /// One firewall rule for the tests below.

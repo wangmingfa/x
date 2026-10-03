@@ -545,8 +545,9 @@ GitHub Actions CI 在 Ubuntu / macOS / Windows 三平台上跑格式、clippy
   top、bottom，如 `key_kill = "x"`）；方向键、Tab、Home/End、翻页、
   Enter、Esc、Ctrl+C、Ctrl+P 与数字跳页保持固定。未知动作名或非单字符
   值在状态行报 warning 并保留默认键位。
-- [ ] 退出码契约版本化：`--version-info` 已打印 contract 版本，把退出码与
-  输出格式纳入显式契约文档，避免破坏脚本。
+- [x] 退出码契约版本化：`docs/contract.md` 显式钉死退出码全表、破坏性
+  操作确认契约与 JSON 输出约定，含稳定性承诺；`--version-info` 的
+  `contract` 字段与文档版本一致，并新增 `contract_doc` 字段指向文档。
 - [ ] 性能基线：`x capability` 之外加一次「本机 1000 进程 / 10k 端口」
   规模的采样耗时基准，防止列表类命令随平台适配器变慢。
 - [ ] 发布流程与 CHANGELOG：`scripts/release-tag.sh` 已能打 tag 触发
