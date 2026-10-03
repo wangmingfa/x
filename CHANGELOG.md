@@ -6,6 +6,12 @@ produce is a claim nobody can trace back to a commit.
 
 ## v0.1.1-rc.1 (2026-10-03)
 
+### Fixes
+
+- make the installer script compile and stop the PATH guard being always true (e5d0df6)
+
+## v0.1.1-rc.1 (2026-10-03)
+
 ### Features
 
 - label DHCP-assigned addresses on Linux (b21755b)
