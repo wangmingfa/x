@@ -446,7 +446,7 @@ GitHub Actions CI 在 Ubuntu / macOS / Windows 三平台上跑格式、clippy
 - [x] 插件系统：`x plugins list/install`，可扩展命令、TUI 页签、系统提供器、输出格式化器
 - [x] MCP Server：暴露 find_port / find_process / list_services 等工具给 AI Agent，危险操作保留明确确认
 - [x] Agent 模式：`x explain <命令>` 解释输出；自然语言输入放最后，核心不依赖 AI
-- [x] 配置（`~/.config/x/config.toml`）：主题、刷新率、默认输出格式、默认排序
+- [x] 配置（`~/.config/x/config.toml`）：主题、刷新率、默认输出格式、默认排序、TUI 键位
 - [x] 主题：TUI 内置 Default / Dark / Light / Monochrome + 自定义
 - [x] 输出：`--jsonl`、`--csv`（human / json 已有）
 - [x] shell 补全：`x completion bash|zsh|fish|powershell|elvish`
@@ -540,8 +540,11 @@ GitHub Actions CI 在 Ubuntu / macOS / Windows 三平台上跑格式、clippy
   （dry-run 恒最先且绝不提问、JSON 不豁免确认、拒绝一律退出 130），
   契约矩阵测试（`tests/contract.rs`）按命令 × {dry-run, JSON dry-run,
   拒绝, JSON 拒绝} 钉死。
-- [ ] TUI 键位可配置：键位目前硬编码在 App 状态机（`Ctrl+P`、`/`、`k`…），
-  `config.toml` 已有主题/刷新率字段，键位映射同样可以走同一份配置。
+- [x] TUI 键位可配置：`config.toml` 里 `key_<动作> = "字符"` 覆盖默认键位
+  （可配置动作：quit、kill、search、filter、refresh、tree、sort、ports、
+  top、bottom，如 `key_kill = "x"`）；方向键、Tab、Home/End、翻页、
+  Enter、Esc、Ctrl+C、Ctrl+P 与数字跳页保持固定。未知动作名或非单字符
+  值在状态行报 warning 并保留默认键位。
 - [ ] 退出码契约版本化：`--version-info` 已打印 contract 版本，把退出码与
   输出格式纳入显式契约文档，避免破坏脚本。
 - [ ] 性能基线：`x capability` 之外加一次「本机 1000 进程 / 10k 端口」

@@ -25,6 +25,9 @@ pub struct Config {
     /// x-tui. Keys: `theme_fg`, `theme_accent`, `theme_warning`,
     /// `theme_danger`, `theme_dim`, `theme_header_bg`, `theme_header_fg`.
     pub theme_overrides: Vec<(String, String)>,
+    /// TUI key bindings (`key_quit = "Q"`, …), passed through to x-tui
+    /// verbatim; unknown action names are reported there, not here.
+    pub keys: Vec<(String, String)>,
 }
 
 /// Where the config file lives: `$XDG_CONFIG_HOME/x/config.toml`, else
@@ -119,6 +122,9 @@ pub fn load(path: &std::path::Path) -> (Config, Vec<String>) {
                     .theme_overrides
                     .push((other.to_string(), value.to_string()));
             }
+            other if other.starts_with("key_") => {
+                config.keys.push((other.to_string(), value.to_string()));
+            }
             other => warnings.push(format!(
                 "{}:{}: unknown key `{other}` (default_format, refresh_ms, theme, sort)",
                 path.display(),
@@ -175,6 +181,21 @@ mod tests {
             warnings.len(),
             3,
             "all three problems reported: {warnings:?}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn key_bindings_pass_through_verbatim() {
+        let path = write_config("keys", "key_quit = \"Q\"\nkey_kill = \"x\"\n");
+        let (config, warnings) = load(&path);
+        assert!(warnings.is_empty());
+        assert_eq!(
+            config.keys,
+            vec![
+                ("key_quit".to_string(), "Q".to_string()),
+                ("key_kill".to_string(), "x".to_string()),
+            ]
         );
         let _ = std::fs::remove_file(&path);
     }

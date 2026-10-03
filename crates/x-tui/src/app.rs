@@ -300,6 +300,8 @@ pub struct App {
 
     /// SSH hosts the remote page can jump to (from `~/.ssh/config`).
     remote_hosts: Vec<String>,
+    /// Effective key bindings (defaults overridden by config.toml).
+    keys: crate::keys::Keys,
     /// Host whose snapshot is currently displayed, if any.
     remote_host: Option<String>,
     /// Snapshot rows, already rendered to text.
@@ -316,6 +318,11 @@ impl App {
     /// The snapshot happens here so the first drawn frame is never empty, and so
     /// tests can assert on state without calling anything.
     pub fn new(context: SystemContext) -> Self {
+        Self::with_keys(context, crate::keys::Keys::default())
+    }
+
+    /// Build the interface with explicit key bindings (from config.toml).
+    pub fn with_keys(context: SystemContext, keys: crate::keys::Keys) -> Self {
         let mut app = Self {
             context,
             view: View::Dashboard,
@@ -355,10 +362,16 @@ impl App {
             remote_rows: Vec::new(),
             remote_error: None,
             remote_fetch: None,
+            keys,
         };
         app.load_remote_hosts();
         app.refresh();
         app
+    }
+
+    /// Show a message in the status line (config warnings, …).
+    pub fn set_status(&mut self, status: impl Into<String>) {
+        self.status = status.into();
     }
 
     /// SSH hosts the remote page offers, from `~/.ssh/config`.
@@ -905,32 +918,40 @@ impl App {
                 self.selected = 0;
                 self.scroll = 0;
             }
-            KeyCode::Char('q') | KeyCode::Esc => self.quit = true,
+            KeyCode::Esc => self.quit = true,
+            KeyCode::Char(c) if c == self.keys.key(crate::keys::Action::Quit) => self.quit = true,
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => self.quit = true,
-            KeyCode::Char('c') => self.confirm_kill_selection(),
-            KeyCode::Char('k') => self.confirm_kill_selection(),
-            KeyCode::Char('/') => self.open_search(),
-            KeyCode::Char('f') => self.open_filter(),
-            KeyCode::Char('r') => self.refresh(),
+            KeyCode::Char(c) if c == self.keys.key(crate::keys::Action::Kill) => {
+                self.confirm_kill_selection()
+            }
+            KeyCode::Char(c) if c == self.keys.key(crate::keys::Action::Search) => {
+                self.open_search()
+            }
+            KeyCode::Char(c) if c == self.keys.key(crate::keys::Action::Filter) => {
+                self.open_filter()
+            }
+            KeyCode::Char(c) if c == self.keys.key(crate::keys::Action::Refresh) => self.refresh(),
             KeyCode::Tab | KeyCode::Right => self.goto_view(self.view.next()),
             KeyCode::BackTab | KeyCode::Left => self.goto_view(self.view.previous()),
-            KeyCode::Char('t') => self.toggle_tree(),
-            KeyCode::Char('s') => self.cycle_sort(),
-            KeyCode::Char('p') => self.ports_of_selection(),
+            KeyCode::Char(c) if c == self.keys.key(crate::keys::Action::Tree) => self.toggle_tree(),
+            KeyCode::Char(c) if c == self.keys.key(crate::keys::Action::Sort) => self.cycle_sort(),
+            KeyCode::Char(c) if c == self.keys.key(crate::keys::Action::Ports) => {
+                self.ports_of_selection()
+            }
             KeyCode::Char(' ') => {
                 if self.view == View::Processes && self.tree_mode {
                     self.toggle_process_fold();
                 }
             }
-            KeyCode::Char('g') | KeyCode::Home => {
+            KeyCode::Char(c) if c == self.keys.key(crate::keys::Action::Top) => {
                 self.selected = 0;
                 self.scroll = 0;
             }
-            KeyCode::Char('G') | KeyCode::End => {
+            KeyCode::Char(c) if c == self.keys.key(crate::keys::Action::Bottom) => {
                 self.selected = self.row_count().saturating_sub(1);
                 self.clamp_scroll();
             }
-            // `j` and the arrows walk the list; `k` is reserved for killing,
+            // `j` and the arrows walk the list; killing owns the other key,
             // which is what this tool is mostly for.
             KeyCode::Down | KeyCode::Char('j') => self.move_by(1),
             KeyCode::Up => self.move_by(-1),
@@ -1068,7 +1089,7 @@ impl App {
         target: Option<Target>,
     ) {
         match key.code {
-            KeyCode::Char('k') => match target {
+            KeyCode::Char(c) if c == self.keys.key(crate::keys::Action::Kill) => match target {
                 Some(target) => {
                     let confirm_title = match &target {
                         Target::Sockets(plan) => match &plan.query {

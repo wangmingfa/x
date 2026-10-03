@@ -239,7 +239,7 @@ fn killing_a_socket_needs_confirmation_and_then_runs_the_plan() {
     let (stubs, mut app) = app_with_sockets(1);
     app.goto_view(View::Ports);
 
-    app.on_key(key(KeyCode::Char('k')));
+    app.on_key(key(KeyCode::Char('c')));
     let modal = app.modal().clone();
     let Modal::Confirm {
         title,
@@ -274,7 +274,7 @@ fn declining_the_dialog_kills_nothing() {
     let (stubs, mut app) = app_with_sockets(1);
     app.goto_view(View::Ports);
 
-    app.on_key(key(KeyCode::Char('k')));
+    app.on_key(key(KeyCode::Char('c')));
     app.on_key(key(KeyCode::Char('n')));
 
     assert!(stubs.port.killed().is_empty());
@@ -287,7 +287,7 @@ fn a_dialog_swallows_page_keys() {
     let (stubs, mut app) = app_with_sockets(2);
     app.goto_view(View::Ports);
 
-    app.on_key(key(KeyCode::Char('k')));
+    app.on_key(key(KeyCode::Char('c')));
     app.on_key(key(KeyCode::Tab));
     app.on_key(key(KeyCode::Char('j')));
 
@@ -301,7 +301,7 @@ fn killing_a_process_confirms_the_pid_and_name() {
     let stubs = Stubs::new().with_processes(vec![stub_process(4242, Some(1), "bluecode")]);
     let mut app = app_at(&stubs, View::Processes);
 
-    app.on_key(key(KeyCode::Char('k')));
+    app.on_key(key(KeyCode::Char('c')));
     let Modal::Confirm { target, .. } = app.modal() else {
         panic!("expected a confirmation dialog");
     };
@@ -322,7 +322,7 @@ fn pages_without_something_to_kill_say_so() {
     let (_stubs, mut app) = app_with_sockets(1);
     app.goto_view(View::System);
 
-    app.on_key(key(KeyCode::Char('k')));
+    app.on_key(key(KeyCode::Char('c')));
     assert_eq!(app.status(), "nothing to kill on this page");
     assert!(matches!(app.modal(), Modal::None));
 }
@@ -396,6 +396,49 @@ fn quit_keys_are_q_escape_and_control_c_but_not_a_bare_c() {
     assert!(!app.should_quit(), "a bare c kills the selection instead");
     assert!(matches!(app.modal(), Modal::Confirm { .. }));
     assert!(stubs.port.killed().is_empty());
+}
+
+#[test]
+fn default_keys_unchanged() {
+    let (_stubs, mut app) = app_with_sockets(1);
+    app.on_key(key(KeyCode::Char('r')));
+    assert!(
+        app.status.to_lowercase().contains("refresh")
+            || app.last_refresh.elapsed() < std::time::Duration::from_secs(1)
+    );
+
+    let (_stubs, mut app) = app_with_sockets(1);
+    app.on_key(key(KeyCode::Char('/')));
+    assert!(matches!(app.modal(), Modal::Search { .. }));
+
+    let (_stubs, mut app) = app_with_sockets(1);
+    app.on_key(key(KeyCode::Char('f')));
+    assert!(matches!(app.modal(), Modal::Prompt { .. }));
+}
+
+#[test]
+fn custom_keys_take_effect_and_defaults_stop_working() {
+    let keys = crate::keys::Keys::from_config(&x_core::config::Config {
+        keys: vec![("key_search".to_string(), "S".to_string())],
+        ..Default::default()
+    })
+    .0;
+    let stubs = Stubs::new();
+    let mut app = App::with_keys(stubs.context(), keys);
+    app.usage_root = std::env::temp_dir();
+
+    app.on_key(key(KeyCode::Char('/')));
+    assert!(
+        !matches!(app.modal(), Modal::Search { .. }),
+        "the old key must stop working"
+    );
+
+    app.on_key(key(KeyCode::Char('S')));
+    assert!(
+        matches!(app.modal(), Modal::Search { .. }),
+        "{}",
+        app.status
+    );
 }
 
 #[test]
@@ -650,7 +693,7 @@ fn the_socket_detail_shows_the_owner_and_keeps_the_kill_target() {
     );
     assert!(target.is_some(), "the socket can be freed");
 
-    app.on_key(key(KeyCode::Char('k')));
+    app.on_key(key(KeyCode::Char('c')));
     assert!(matches!(app.modal(), Modal::Confirm { .. }));
     app.on_key(key(KeyCode::Char('y')));
     assert_eq!(stubs.port.killed(), vec![42]);
@@ -673,7 +716,7 @@ fn the_process_detail_kill_flow_reaches_the_same_target() {
         })
     );
 
-    app.on_key(key(KeyCode::Char('k')));
+    app.on_key(key(KeyCode::Char('c')));
     app.on_key(key(KeyCode::Char('y')));
     assert_eq!(stubs.process.killed(), vec![4242]);
 }
@@ -690,7 +733,7 @@ fn the_service_detail_is_read_only() {
     assert_eq!(title, "service sshd");
     assert!(target.is_none());
 
-    app.on_key(key(KeyCode::Char('k')));
+    app.on_key(key(KeyCode::Char('c')));
     assert_eq!(app.status(), "nothing to kill here");
     assert!(matches!(app.modal(), Modal::None));
 }

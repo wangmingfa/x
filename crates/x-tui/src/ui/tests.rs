@@ -310,7 +310,7 @@ fn the_confirm_dialog_spells_out_the_plan() {
     let mut app = App::new(stubs.context());
 
     press(&mut app, KeyCode::Char('2'));
-    press(&mut app, KeyCode::Char('k'));
+    press(&mut app, KeyCode::Char('c'));
     let screen = render(&mut app, 100, 30);
 
     assert!(screen.contains("free port 8080"), "title:\n{screen}");

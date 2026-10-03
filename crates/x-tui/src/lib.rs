@@ -15,6 +15,7 @@
 
 pub mod app;
 pub mod event;
+pub mod keys;
 pub mod palette;
 pub mod theme;
 pub mod ui;
@@ -47,11 +48,17 @@ pub fn run(context: SystemContext) -> Result<()> {
         ));
     }
 
-    // Theme (and refresh cadence) come from config.toml before any drawing.
-    let (config, _) = x_core::config::load(&x_core::config::default_path());
+    // Theme, refresh cadence and key bindings come from config.toml before
+    // any drawing.
+    let (config, mut warnings) = x_core::config::load(&x_core::config::default_path());
     theme::init(config.theme.as_deref(), &config.theme_overrides);
+    let (keys, key_warnings) = keys::Keys::from_config(&config);
+    warnings.extend(key_warnings);
 
-    let mut app = app::App::new(context);
+    let mut app = app::App::with_keys(context, keys);
+    for warning in &warnings {
+        app.set_status(format!("config: {warning}"));
+    }
     let mut terminal = ratatui::init();
     let result = event_loop(&mut app, &mut terminal);
     ratatui::restore();
