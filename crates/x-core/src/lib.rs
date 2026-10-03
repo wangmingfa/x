@@ -37,6 +37,7 @@
 //! ```
 
 pub mod audit;
+pub mod bench;
 pub mod bluetooth;
 pub mod capability;
 pub mod clipboard;
@@ -76,6 +77,7 @@ pub mod user;
 pub mod window;
 
 pub use audit::{now_utc_rfc3339, rfc3339_utc, AuditEntry};
+pub use bench::{BenchConfig, BenchReport, BenchRow, BenchStatus, BenchTarget};
 pub use capability::{probe as probe_capabilities, Capability, CapabilityStatus};
 pub use context::{SystemContext, SystemContextBuilder};
 pub use disk::{walk_directory, DirUsage, DiskInfo, DiskManager, MediaType};

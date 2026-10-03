@@ -164,6 +164,9 @@ pub enum Command {
     /// What this host can actually do: supported / degraded / unsupported.
     Capability(commands::capability::CapabilityArgs),
 
+    /// Timing baseline for the listing reads: what each one costs on this host.
+    Bench(commands::bench::BenchArgs),
+
     /// Environment and system proxy.
     #[command(subcommand)]
     Proxy(commands::proxy::ProxyCommand),
@@ -429,6 +432,7 @@ fn dispatch(
             commands::devtools::dispatch_container(context, renderer, cmd)
         }
         Some(Command::Capability(args)) => commands::capability::dispatch(context, renderer, args),
+        Some(Command::Bench(args)) => commands::bench::dispatch(context, renderer, args),
         Some(Command::Proxy(cmd)) => commands::proxy::dispatch(context, renderer, cmd),
         Some(Command::Hosts(cmd)) => commands::hosts::dispatch(context, renderer, confirmer, cmd),
         Some(Command::Power(cmd)) => {

@@ -552,6 +552,202 @@ fn capability_json_is_a_row_array_with_snake_statuses() {
 }
 
 #[test]
+fn bench_reports_every_target_with_a_status() {
+    let stubs = populated();
+    let out = x(&stubs, &["bench", "--samples", "1"], false);
+    assert_eq!(out.code, 0);
+
+    for needle in [
+        "target",
+        "best ms",
+        "median ms",
+        "us/row",
+        "budget ms",
+        "process list (light)",
+        "process list (with usage)",
+        "process tree",
+        "socket list (all)",
+        "socket list (listening)",
+        "socket owners",
+        "service list",
+        "interfaces",
+        "disk list",
+    ] {
+        assert!(
+            out.stdout.contains(needle),
+            "missing {needle}:\n{}",
+            out.stdout
+        );
+    }
+    // Every stub read succeeds here, so nothing is slow or failed.
+    assert!(!out.stdout.contains("slow"), "{}", out.stdout);
+    assert!(!out.stdout.contains("failed"), "{}", out.stdout);
+    // The cpu sample window is part of the measurement, so it is said out loud.
+    assert!(out.stdout.contains("cpu sample window"), "{}", out.stdout);
+}
+
+#[test]
+fn bench_json_is_one_document_with_numeric_timings() {
+    let stubs = populated();
+    let out = x(&stubs, &["--json", "bench", "--samples", "2"], false);
+    assert_eq!(out.code, 0);
+    let value: serde_json::Value = serde_json::from_str(&out.stdout).expect("one json document");
+    assert_eq!(value["samples"], 2);
+
+    let rows = value["rows"].as_array().expect("rows");
+    assert_eq!(rows.len(), x_core::BenchTarget::ALL.len());
+    let sockets = rows
+        .iter()
+        .find(|row| row["target"] == "socket_list")
+        .expect("socket row");
+    assert_eq!(sockets["rows"], 2);
+    assert_eq!(sockets["domain"], "port");
+    assert_eq!(sockets["status"], "ok");
+    assert!(sockets["best_ms"].is_number(), "{sockets}");
+    assert!(sockets["us_per_row"].is_number(), "{sockets}");
+
+    // A read that returns no rows has no per-row cost to report.
+    let interfaces = rows
+        .iter()
+        .find(|row| row["target"] == "interfaces")
+        .expect("interfaces row");
+    assert_eq!(interfaces["rows"], 0);
+    assert!(
+        interfaces.get("us_per_row").is_none(),
+        "an empty read must not print a rate: {interfaces}"
+    );
+}
+
+#[test]
+fn bench_narrows_to_one_domain() {
+    let stubs = populated();
+    let out = x(
+        &stubs,
+        &["bench", "--domain", "port", "--samples", "1"],
+        false,
+    );
+    assert_eq!(out.code, 0);
+    assert!(out.stdout.contains("socket owners"), "{}", out.stdout);
+    assert!(
+        !out.stdout.contains("process list"),
+        "filter leaked other domains:\n{}",
+        out.stdout
+    );
+}
+
+#[test]
+fn bench_check_exits_non_zero_only_over_budget() {
+    let stubs = populated();
+
+    let ample = x(
+        &stubs,
+        &[
+            "bench",
+            "--samples",
+            "1",
+            "--check",
+            "--budget-ms",
+            "100000",
+        ],
+        false,
+    );
+    assert_eq!(ample.code, 0, "{}", ample.stdout);
+    assert!(!ample.stdout.contains("over budget"), "{}", ample.stdout);
+
+    let strict = x(
+        &stubs,
+        &[
+            "bench",
+            "--samples",
+            "1",
+            "--check",
+            "--budget-ms",
+            "0.0000001",
+        ],
+        false,
+    );
+    assert_eq!(
+        strict.code, 1,
+        "a breached budget is a failure\n{}",
+        strict.stdout
+    );
+    assert!(strict.stdout.contains("over budget"), "{}", strict.stdout);
+
+    // JSON mode still gets exactly one document: the status fields say the same
+    // thing the summary line says in text mode.
+    let json = x(
+        &stubs,
+        &[
+            "--json",
+            "bench",
+            "--samples",
+            "1",
+            "--check",
+            "--budget-ms",
+            "0.0000001",
+        ],
+        false,
+    );
+    assert_eq!(json.code, 1);
+    let value: serde_json::Value = serde_json::from_str(&json.stdout).expect("one document");
+    assert_eq!(value["rows"][0]["status"], "slow");
+}
+
+#[test]
+fn bench_marks_a_failing_adapter_failed_not_fast() {
+    let stubs = populated();
+    stubs.port.fail_with(StubFailure::new(
+        x_core::ErrorKind::Unsupported,
+        "no socket table on this host",
+    ));
+    let out = x(
+        &stubs,
+        &["bench", "--domain", "port", "--samples", "1"],
+        false,
+    );
+    assert_eq!(out.code, 0, "a degraded read is still a result");
+    assert!(out.stdout.contains("failed"), "{}", out.stdout);
+    assert!(
+        out.stdout.contains("no socket table on this host"),
+        "the adapter's own words must survive: {}",
+        out.stdout
+    );
+}
+
+#[test]
+fn bench_says_when_the_host_is_smaller_than_the_baseline_scale() {
+    let stubs = populated();
+    let out = x(
+        &stubs,
+        &["bench", "--domain", "port", "--samples", "1"],
+        false,
+    );
+    assert_eq!(out.code, 0);
+    assert!(
+        out.stdout.contains("the budget assumes 10000"),
+        "2 sockets is not the 10k scale the budget assumes:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("your own previous runs"),
+        "{}",
+        out.stdout
+    );
+}
+
+#[test]
+fn bench_rejects_zero_samples() {
+    let stubs = populated();
+    let out = x(&stubs, &["bench", "--samples", "0"], false);
+    assert_eq!(out.code, 5);
+    assert!(out.stderr.contains("--samples"), "{}", out.stderr);
+
+    let budget = x(&stubs, &["bench", "--budget-ms=-1"], false);
+    assert_eq!(budget.code, 5);
+    assert!(budget.stderr.contains("--budget-ms"), "{}", budget.stderr);
+}
+
+#[test]
 fn system_commands_render_the_stub_facts() {
     let stubs = populated();
 
