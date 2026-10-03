@@ -58,46 +58,28 @@ Name: "{commondesktop}\{#MyAppName}"; Filename: "{app}\x.exe"; Tasks: desktopico
 Name: "desktopicon"; Description: "Create a &desktop icon"; GroupDescription: "Additional icons:"
 Name: "path";        Description: "Add {#MyAppName} to your PATH"; GroupDescription: "Environment:"
 
-[Registry]
-; Append the install dir to the system PATH only when the "path" task is selected
-; and it is not already present.
-Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Control\Session Manager\Environment"; \
-  ValueType: expandsz; ValueName: "Path"; Tasks: path; Check: NeedsAddPath('{app}')
-
 [Code]
-function NeedsAddPath(Param: string): Boolean;
-var
-  OrigPath: string;
-begin
-  if RegQueryStringValue(HKLM, 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment', 'Path', OrigPath) then
-  begin
-    if Pos(Param, OrigPath) = 0 then
-      Result := True
-    else
-      Result := False;
-  end
-  else
-    Result := True;
-end;
-
+; PATH is written here, not from a [Registry] entry: an entry with a ValueName
+; but no ValueData creates the key and writes no value, so the two would be a
+; silent second route through the same registry value.
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   OrigPath: string;
   NewPath: string;
-  MsgResult: DWORD;
+  AppDir: string;
 begin
   if (CurStep = ssPostInstall) and IsTaskSelected('path') then
   begin
     if RegQueryStringValue(HKLM, 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment', 'Path', OrigPath) then
     begin
+      AppDir := ExpandConstant('{app}');
       NewPath := OrigPath;
-      if Pos('{app}', NewPath) = 0 then
+      if Pos(AppDir, NewPath) = 0 then
       begin
-        if (Length(NewPath) > 0) and (AnsiLastChar(NewPath) <> ';') then
+        if (Length(NewPath) > 0) and (Copy(NewPath, Length(NewPath), 1) <> ';') then
           NewPath := NewPath + ';';
-        NewPath := NewPath + ExpandConstant('{app}');
+        NewPath := NewPath + AppDir;
         RegWriteStringValue(HKLM, 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment', 'Path', NewPath);
-        SendMessageTimeout(HWND_BROADCAST, WM_SETTINGCHANGE, 0, LPARAM('Environment'), SMTO_ABORTIFHUNG, 5000, MsgResult);
       end;
     end;
   end;
