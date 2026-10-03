@@ -2,6 +2,10 @@
 # Tag the current HEAD and push the tag, which triggers the GitHub release
 # workflow (.github/workflows/release.yml).
 #
+# It refreshes CHANGELOG.md before the preflight checks and stops if that
+# changed the file: the script does not commit on your behalf, so a tag can only
+# ever point at a tree you looked at and approved yourself.
+#
 # Usage:
 #   scripts/release-tag.sh     # interactive menu (release kind, then version bump)
 #   scripts/release-tag.sh v0.1.2          # explicit version, no menu
@@ -193,6 +197,18 @@ case "$tag" in
         exit 1
         ;;
 esac
+
+step "CHANGELOG for $tag"
+./scripts/changelog.sh --heading "$tag" -o CHANGELOG.md
+if [ -n "$(git status --porcelain -- CHANGELOG.md)" ]; then
+    # Committing this file adds a commit, and the commit is the one thing the
+    # generator does not list, so the next run reproduces the file byte for byte.
+    printf 'error: CHANGELOG.md lists what this release contains but is not committed yet\n' >&2
+    printf '       git add CHANGELOG.md && git commit -m "docs: regenerate CHANGELOG for %s"\n' "$tag" >&2
+    printf '       then run this script again\n' >&2
+    exit 1
+fi
+printf 'CHANGELOG.md is up to date for %s\n' "$tag"
 
 step "Preflight checks"
 ./scripts/check.sh

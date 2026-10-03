@@ -48,11 +48,34 @@ jobs:
       - name: Build release binary
         run: cargo build --release --locked -p x-app
 
+      - name: Version from the tag
+        id: ver
+        shell: pwsh
+        run: |
+          # The installer is named after the release it belongs to. A
+          # workflow_dispatch run has no tag, so it builds a clearly-marked
+          # development installer instead of silently claiming a version.
+          if ($env:GITHUB_REF -like 'refs/tags/*') {
+            $tag = $env:GITHUB_REF_NAME
+          } else {
+            $tag = 'v0.0.0-dev'
+          }
+          $num = $tag -replace '^v', ''
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "num=$num" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
       - name: Install Inno Setup
         run: choco install innosetup --yes
 
       - name: Compile installer
-        run: iscc "Packaging/Windows/x.iss"
+        shell: pwsh
+        env:
+          # Passed through the environment rather than interpolated into the
+          # command line: the values come from a git tag, and a tag name must
+          # not be able to add arguments to the compiler invocation.
+          RELEASE_TAG: ${{ steps.ver.outputs.tag }}
+          APP_VERSION: ${{ steps.ver.outputs.num }}
+        run: iscc "/DMyAppVersion=$env:APP_VERSION" "/DReleaseTag=$env:RELEASE_TAG" "Packaging/Windows/x.iss"
 
       - name: Upload installer
         uses: actions/upload-artifact@v4
@@ -66,7 +89,18 @@ jobs:
     needs: [build, windows-installer]
     if: startsWith(github.ref, 'refs/tags/')
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v4
+        with:
+          # The release notes are generated from the history between this tag
+          # and the previous one, so the job needs the tags and the commits.
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Release notes
+        run: scripts/changelog.sh --release "${GITHUB_REF_NAME}" -o release-notes.md
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
         with:
           merge-multiple: true
           path: artifacts
@@ -75,4 +109,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: artifacts/**
+          body_path: release-notes.md
           prerelease: ${{ contains(github.ref_name, '-') }}

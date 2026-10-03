@@ -37,7 +37,8 @@ iwr https://raw.githubusercontent.com/xsys/x/main/scripts/install.ps1 -OutFile i
   `brew tap xsys/tap && brew install --head x`。
 - **Windows 安装包**：见 [`Packaging/Windows/x.iss`](Packaging/Windows/x.iss)
   （Inno Setup 脚本，CI 在打 tag 时自动编译成 `x-*-windows-x86_64-setup.exe`）。
-- 打 tag 触发 `.github/workflows/release.yml` 构建三平台二进制与 Windows 安装包并发布 GitHub Release。
+- 打 tag 触发 `.github/workflows/release.yml` 构建三平台二进制与 Windows 安装包并发布 GitHub Release；
+  Release 正文由 `scripts/changelog.sh --release` 生成，与 [`CHANGELOG.md`](CHANGELOG.md) 同源。
 
 ## 当前功能
 
@@ -392,6 +393,31 @@ cargo check --target x86_64-unknown-linux-gnu -p x-platform
 cargo check --target x86_64-pc-windows-msvc -p x-platform
 ```
 
+### 发布
+
+发布入口只有一个：`scripts/release-tag.sh`。CHANGELOG 与 GitHub Release 正文由
+`scripts/changelog.sh` 从提交历史生成，两者同源，所以仓库里的 CHANGELOG 与
+发布页面上的说明不会各自漂移：
+
+```sh
+scripts/changelog.sh                       # 整份历史，markdown 打到 stdout
+scripts/changelog.sh -o CHANGELOG.md       # 写文件
+scripts/changelog.sh --heading v0.1.2      # 把待发布一节命名为该版本号
+scripts/changelog.sh --release v0.1.2      # 只出这个 tag 区间的 Release 正文
+```
+
+`release-tag.sh` 在打 tag 之前先用 `--heading "$tag"` 刷新 `CHANGELOG.md`；文件
+因此变化就停下来，把该提交的命令原样打给你，等你提交后再跑一遍。脚本不替你提交，
+tag 因此只会指向你看过并同意的那棵树。而生成器不会把 `docs: regenerate CHANGELOG …`
+这条自己的产物列进条目——否则「提交 changelog → 多出一条 changelog → 又要提交」
+永远收不住。
+
+`.github/workflows/release.yml` 的 publish 作业跑
+`scripts/changelog.sh --release <tag> -o release-notes.md` 并把结果作为 Release
+正文；它的 checkout 带 `fetch-depth: 0` 与 `fetch-tags: true`，否则读不到 tag 区间。
+Windows 安装包的 `ReleaseTag` 也由工作流传给 Inno，`x-v0.1.2-windows-x86_64-setup.exe`
+在文件系统和在说明里是同一个名字。
+
 GitHub Actions CI 在 Ubuntu / macOS / Windows 三平台上跑格式、clippy
 （零警告）、全量测试，并交叉检查 `x-platform` 的另外两个目标。
 
@@ -581,5 +607,15 @@ GitHub Actions CI 在 Ubuntu / macOS / Windows 三平台上跑格式、clippy
   过滤型读（listening）行数少但计时的是整张表，它的行数也不是规模证据。适配器
   报错记 `failed` 并保留它自己的消息，不写成「0 行、很快」；`x ps` 的 usage 采样
   要等 CPU 采样窗口（≥120 ms），这件事写在 note 列里，而不是被读成适配器变慢。
-- [ ] 发布流程与 CHANGELOG：`scripts/release-tag.sh` 已能打 tag 触发
-  Release，缺自动生成的 CHANGELOG 与 release notes 模板。
+- [x] 发布流程与 CHANGELOG：新增 `scripts/changelog.sh`，从提交历史生成
+  `CHANGELOG.md`，`--release <tag>` 生成同一个 tag 区间的 GitHub Release 正文——
+  两处同源，措辞与列出的提交不会各自漂移。`release-tag.sh` 打 tag 前先刷新
+  `CHANGELOG.md`，文件变了就停下并把要提交的命令打给你：脚本不替你提交，tag 因此
+  只会指向确认过的树；生成器把 `docs: regenerate CHANGELOG …` 这条自己的产物排除
+  在外，否则「提交 changelog 又生出一条 changelog」永远收不住。分组只认得
+  `type:` 前缀，认不出的（`C4 …`、`P4 打包分发：…`）**原样**进「Other changes」，
+  不重写也不丢弃——一个看不出漏了什么的 changelog，比一个末尾不整洁的更糟。merge
+  提交跳过，`!` 保留 breaking 标记，scope 渲染成 `**port:**`。release.yml 的
+  publish 作业改为带 `fetch-depth: 0` + `fetch-tags: true` 检出，notes 才有区间
+  可读；Inno 的 `ReleaseTag` 由工作流从 tag 传入（本地编译用文件里的兜底值），
+  安装包文件名与 notes 里承诺的资产名因此是同一个。

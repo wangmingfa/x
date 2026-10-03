@@ -2,16 +2,28 @@
 ;
 ; Compile locally with the Inno Setup Compiler (ISCC):
 ;   ISCC.exe Packaging\Windows\x.iss
-; The CI release workflow compiles it automatically after a cargo build.
+; The CI release workflow compiles it automatically after a cargo build, passing
+; /DMyAppVersion and /DReleaseTag so the file it produces is named after the
+; release it belongs to; the fallbacks below are what a local compile gets.
 ;
 ; The built binary is expected at ..\..\target\release\x.exe relative to this
 ; script (i.e. the workspace target directory).
 
 #define MyAppName    "x"
-#define MyAppVersion "0.1.0"
 #define MyPublisher  "x contributors"
 #define MyURL        "https://github.com/xsys/x"
 #define SourcePath   "..\..\target\release\x.exe"
+
+; The file name comes from the git tag, not from MyAppVersion, so the asset the
+; workflow uploads is spelled exactly as the release notes spell it. MyAppVersion
+; carries the same number without the leading "v", because that is what
+; AppVersion is meant to show. The fallbacks are for local compiles only.
+#ifndef MyAppVersion
+  #define MyAppVersion "0.1.0"
+#endif
+#ifndef ReleaseTag
+  #define ReleaseTag "v0.1.0"
+#endif
 
 [Setup]
 AppId={{A1B2C3D4-E5F6-7890-ABCD-1234567890AB}
@@ -23,7 +35,7 @@ AppSupportURL={#MyURL}
 AppUpdatesURL={#MyURL}
 DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
-OutputBaseFilename=x-{#MyAppVersion}-windows-x86_64-setup
+OutputBaseFilename=x-{#ReleaseTag}-windows-x86_64-setup
 Compression=lzma2/ultra64
 SolidCompression=yes
 ArchitecturesInstallIn64BitMode=x64
