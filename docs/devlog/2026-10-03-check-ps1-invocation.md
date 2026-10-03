@@ -88,9 +88,10 @@ runner 上直接验过）。也就是说这个测试从来没有在「用户真�
   跑通过——但那个 `powershell.exe` 是 bash 起的，继承的还是 Git Bash 的 PATH，
   对 PATH 敏感的测试在这种「换了 shell、没换 PATH」的跑法里永远是绿的。判断
   PATH 相关的失败，必须以显式赋值后的那一次为准。
-- 真跑三条路径都是 EXIT=0：Git Bash `./scripts/check.ps1`、
+- 闸门的三条调用路径都是 EXIT=0：Git Bash `./scripts/check.ps1`、
   `powershell -NoProfile -File scripts/check.ps1`、`cd scripts && ./check.ps1`
-  （最后一条能过是因为 cargo 会自己往上找 workspace 根）。
+  （最后一条能过是因为 cargo 会自己往上找 workspace 根）。这一组只证明「怎么叫都能
+  跑、回来的码是检查自己的」；它对 PATH 依赖不作数——那三条全是从 Git Bash 起的。
 - 未覆盖：本机没装 `pwsh`（PowerShell 7），shebang 指向 `powershell`（5.1，每台
   Windows 都在）；Restricted 执行策略下直接 `.\scripts\check.ps1` 没测，本机是
   RemoteSigned 且文件是本地文件，不需要 Bypass。
