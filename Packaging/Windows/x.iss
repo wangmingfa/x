@@ -59,9 +59,9 @@ Name: "desktopicon"; Description: "Create a &desktop icon"; GroupDescription: "A
 Name: "path";        Description: "Add {#MyAppName} to your PATH"; GroupDescription: "Environment:"
 
 [Code]
-; PATH is written here, not from a [Registry] entry: an entry with a ValueName
-; but no ValueData creates the key and writes no value, so the two would be a
-; silent second route through the same registry value.
+{ PATH is written here, not from a [Registry] entry: an entry with a ValueName but }
+{ no ValueData creates the key and writes no value, so the two would be a silent  }
+{ second route through the same registry value.                                  }
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   OrigPath: string;
