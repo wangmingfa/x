@@ -126,45 +126,61 @@ impl Smc {
 
     /// Total number of keys the SMC holds, via the `#KEY` pseudo-key.
     fn key_count(&self) -> Option<u32> {
-        let mut info_req = proto::SmcKeyData::default();
-        info_req.key = proto::pack_key("#KEY");
-        info_req.data8 = proto::SMC_CMD_READ_KEYINFO;
+        let mut info_req = proto::SmcKeyData {
+            key: proto::pack_key("#KEY"),
+            data8: proto::SMC_CMD_READ_KEYINFO,
+            ..proto::SmcKeyData::default()
+        };
         let info = self.call(&mut info_req)?;
         let size = info.key_info.data_size;
         if size == 0 || size as usize > proto::SmcKeyData::default().bytes.len() {
             return None;
         }
-        let mut read_req = proto::SmcKeyData::default();
-        read_req.key = info_req.key;
-        read_req.data8 = proto::SMC_CMD_READ_BYTES;
-        read_req.key_info.data_size = size;
+        let mut read_req = proto::SmcKeyData {
+            key: info_req.key,
+            data8: proto::SMC_CMD_READ_BYTES,
+            key_info: proto::SmcKeyInfo {
+                data_size: size,
+                ..proto::SmcKeyInfo::default()
+            },
+            ..proto::SmcKeyData::default()
+        };
         let value = self.call(&mut read_req)?;
         proto::decode_key_count(&value.bytes)
     }
 
     /// The name of the key at `index`.
     fn key_name_at(&self, index: u32) -> Option<String> {
-        let mut req = proto::SmcKeyData::default();
-        req.data8 = proto::SMC_CMD_READ_INDEX;
-        req.data32 = index;
+        let mut req = proto::SmcKeyData {
+            data8: proto::SMC_CMD_READ_INDEX,
+            data32: index,
+            ..proto::SmcKeyData::default()
+        };
         let out = self.call(&mut req)?;
         Some(proto::key_name(out.key))
     }
 
     /// Read one key's type and payload.
     fn read_key(&self, key: u32) -> Option<(u32, [u8; 32])> {
-        let mut info_req = proto::SmcKeyData::default();
-        info_req.key = key;
-        info_req.data8 = proto::SMC_CMD_READ_KEYINFO;
+        let mut info_req = proto::SmcKeyData {
+            key,
+            data8: proto::SMC_CMD_READ_KEYINFO,
+            ..proto::SmcKeyData::default()
+        };
         let info = self.call(&mut info_req)?;
         let size = info.key_info.data_size;
         if size == 0 || size as usize > info.bytes.len() {
             return None;
         }
-        let mut read_req = proto::SmcKeyData::default();
-        read_req.key = key;
-        read_req.data8 = proto::SMC_CMD_READ_BYTES;
-        read_req.key_info.data_size = size;
+        let mut read_req = proto::SmcKeyData {
+            key,
+            data8: proto::SMC_CMD_READ_BYTES,
+            key_info: proto::SmcKeyInfo {
+                data_size: size,
+                ..proto::SmcKeyInfo::default()
+            },
+            ..proto::SmcKeyData::default()
+        };
         let value = self.call(&mut read_req)?;
         Some((info.key_info.data_type, value.bytes))
     }
