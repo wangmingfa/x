@@ -47,11 +47,47 @@ PowerShell 抛 `CommandNotFoundException`，但**不产生新的退出码**—�
 `exit N`，或者 `no command ran; is cargo on PATH?`。上一条里那个「FAILED (0)」
 这种看着像反话的输出，就是先改了一版但没清码留下的。
 
+## 闸门修好后立刻抓到的第一个失败：两个只在 PowerShell 下红的测试
+
+`.\scripts\check.ps1` 在 PowerShell 里报
+
+```
+common::process_sysinfo::tests::kills_a_process_it_started
+  panicked at crates\x-platform\src\common\process_sysinfo.rs:511: spawn sleep: Error { kind: NotFound, message: "program not found" }
+```
+
+`crates/x-platform/src/common/process_sysinfo.rs` 的两个进程测试 spawn 的是
+`sleep` 和 `true`——POSIX core。它们在 `D:\Apps\Git\usr\bin` 里，而这一目录只在
+**Git Bash 的 PATH** 上；PowerShell 的 PATH 没有，于是 `Command::new("sleep")`
+直接 NotFound。这两个测试没有 `#[cfg(unix)]`（对比 `common/identity.rs:302` 那个用
+`date` 的测试就正确地关在了 unix 里），所以它们测的是 Windows 也要跑的 kill 路径。
+
+**为什么本地一直没发现**：`bash scripts/check.sh` 起的是 bash，`cargo test` 继承了
+Git Bash 的 PATH——同一台机器、同一份代码，换个 shell 跑就是两种结果。CI 的
+windows-latest 也是绿的：那个作业没有写 `shell:`（用的默认 pwsh），测试却通过，
+说明 runner 镜像的 PATH 里带着 Git 的 `usr\bin`（这一条是从「CI 绿」反推的，没在
+runner 上直接验过）。也就是说这个测试从来没有在「用户真实的 Windows 环境」里跑过。
+
+处理：测试自己按平台挑程序（`stays_alive()` 用 `ping -n 30 127.0.0.1`，
+`exits_immediately()` 用 `cmd /c exit 0`；非 Windows 仍是 `sleep` / `true`），
+不再把「哪个 shell 启动了 cargo」当成测试前提。
+
 ## 验证
 
 - 合成闸门（三步分别换成 `cmd.exe /c exit 0` / 不存在的命令 / `exit 7`）：只有
   不存在命令那步报 `FAILED (no command ran; is cargo on PATH?)`，整体退出 1。
 - 三步全绿且每步都往 stderr 写噪音：`all checks passed`、退出 0。
+- 上面两条只验证了闸门本身。要验证那两个测试，得先把 PATH 换成 PowerShell
+  用户实际拿到的那一份：`$env:PATH` 只留
+  `C:\Windows\System32;C:\Windows;C:\Windows\System32\Wbem` + cargo + `git\cmd`，
+  实测 `sleep.exe` / `true.exe` 都不在其中（`ping.exe`、`cmd.exe` 在）。这个环境里
+  `cargo test --workspace` 退出 0，`kills_a_process_it_started` 与
+  `killing_a_dead_pid_reports_not_found` 都是 `ok`，x-platform 99 passed / 0 failed；
+  再跑 `& .\scripts\check.ps1` 同样三步全绿、退出 0。
+- **不作数的一版验证**：改完先在 Git Bash 里 `powershell -File scripts/check.ps1`
+  跑通过——但那个 `powershell.exe` 是 bash 起的，继承的还是 Git Bash 的 PATH，
+  对 PATH 敏感的测试在这种「换了 shell、没换 PATH」的跑法里永远是绿的。判断
+  PATH 相关的失败，必须以显式赋值后的那一次为准。
 - 真跑三条路径都是 EXIT=0：Git Bash `./scripts/check.ps1`、
   `powershell -NoProfile -File scripts/check.ps1`、`cd scripts && ./check.ps1`
   （最后一条能过是因为 cargo 会自己往上找 workspace 根）。

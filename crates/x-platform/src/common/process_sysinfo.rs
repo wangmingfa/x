@@ -503,12 +503,41 @@ mod tests {
         assert_eq!(err.kind(), ErrorKind::NotFound);
     }
 
+    /// A command that stays alive long enough to be killed, and one that exits
+    /// straight away. Asking for `sleep` and `true` by name made these tests
+    /// depend on which shell launched cargo: they pass wherever Git Bash's
+    /// coreutils are on the PATH and fail with "program not found" on a stock
+    /// Windows one. Windows ships `ping` (one echo per second, so it blocks) and
+    /// `cmd /c exit` instead.
+    fn stays_alive() -> std::process::Command {
+        let mut command = if cfg!(windows) {
+            let mut c = std::process::Command::new("ping");
+            c.args(["-n", "30", "127.0.0.1"]);
+            c
+        } else {
+            let mut c = std::process::Command::new("sleep");
+            c.arg("30");
+            c
+        };
+        command.stdout(std::process::Stdio::null());
+        command
+    }
+
+    fn exits_immediately() -> std::process::Command {
+        let mut command = if cfg!(windows) {
+            let mut c = std::process::Command::new("cmd");
+            c.args(["/c", "exit", "0"]);
+            c
+        } else {
+            std::process::Command::new("true")
+        };
+        command.stdout(std::process::Stdio::null());
+        command
+    }
+
     #[test]
     fn kills_a_process_it_started() {
-        let mut child = std::process::Command::new("sleep")
-            .arg("30")
-            .spawn()
-            .expect("spawn sleep");
+        let mut child = stays_alive().spawn().expect("spawn");
         let pid = child.id();
         let manager = SysinfoProcess::new();
         manager.kill(pid, KillSignal::Kill).expect("kill");
@@ -519,7 +548,7 @@ mod tests {
     #[test]
     fn killing_a_dead_pid_reports_not_found() {
         let manager = SysinfoProcess::new();
-        let child = std::process::Command::new("true").spawn().expect("spawn");
+        let child = exits_immediately().spawn().expect("spawn");
         let pid = child.id();
         child.wait_with_output().ok();
         std::thread::sleep(std::time::Duration::from_millis(200));
