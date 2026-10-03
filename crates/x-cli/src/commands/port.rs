@@ -548,6 +548,16 @@ fn kill(
         }
         return Ok(3);
     }
+    if crate::dry_run_guard(
+        renderer,
+        &format!(
+            "terminate {} process(es) to free {}",
+            plan.target_pids().len(),
+            describe(&query)
+        ),
+    )? {
+        return Ok(0);
+    }
     if !assume_yes {
         let question = format!("kill {} process(es)?", plan.target_pids().len());
         if !confirm_or_fail(confirmer, &question)? {
@@ -560,19 +570,8 @@ fn kill(
             } else {
                 renderer.line("aborted")?;
             }
-            return Ok(130);
+            return Ok(super::EXIT_DECLINED);
         }
-    }
-
-    if crate::dry_run_guard(
-        renderer,
-        &format!(
-            "terminate {} process(es) to free {}",
-            plan.target_pids().len(),
-            describe(&query)
-        ),
-    )? {
-        return Ok(0);
     }
 
     let killed = context.port.kill_plan(&plan, signal)?;

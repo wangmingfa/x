@@ -106,12 +106,10 @@ pub fn dispatch(
             render_devices(renderer, &rows, "no devices discovered in the last scan")?;
         }
         BluetoothCommand::Connect(args) => {
-            let address = verb(renderer, confirmer, bluetooth.as_ref(), args, "connect")?;
-            renderer.line(format!("connecting {address}"))?;
+            return verb(renderer, confirmer, bluetooth.as_ref(), args, "connect");
         }
         BluetoothCommand::Disconnect(args) => {
-            let address = verb(renderer, confirmer, bluetooth.as_ref(), args, "disconnect")?;
-            renderer.line(format!("disconnecting {address}"))?;
+            return verb(renderer, confirmer, bluetooth.as_ref(), args, "disconnect");
         }
     }
     Ok(0)
@@ -125,19 +123,28 @@ fn verb(
     bluetooth: &dyn BluetoothManager,
     args: &LinkArgs,
     action: &str,
-) -> Result<String> {
+) -> Result<i32> {
     let address = normalize_address(&args.address)?;
-    if !args.yes && renderer.format() != OutputFormat::Json {
-        renderer.line(format!("about to {action} {address}"))?;
-        if !confirmer.confirm("continue?")? {
-            return Err(Error::invalid_input("aborted by user"));
-        }
+    if crate::dry_run_guard(renderer, &format!("{action} {address}"))? {
+        return Ok(0);
+    }
+    // `--yes` skips the question; the output format never does. A piped
+    // stdin answers no, so a script that forgot `--yes` is refused, not
+    // surprised.
+    if !super::confirm(
+        renderer,
+        confirmer,
+        args.yes,
+        &format!("{action} {address}"),
+    )? {
+        return Ok(super::EXIT_DECLINED);
     }
     match action {
         "connect" => bluetooth.connect(&address)?,
         _ => bluetooth.disconnect(&address)?,
     }
-    Ok(address)
+    renderer.line(format!("{action}ing {address}"))?;
+    Ok(0)
 }
 
 /// The device table, shared by `devices` and `scan`.

@@ -205,16 +205,24 @@ fn apply(
     let name = args.name.as_str();
     let before = context.service.status(name)?;
 
+    if crate::dry_run_guard(renderer, &format!("{} service `{name}`", verb(action)))? {
+        return Ok(0);
+    }
+
     if is_disruptive(action) && !args.assume_yes() {
         let question = format!("{} service `{name}`?", verb(action));
         if !super::port::confirm_or_fail(confirmer, &question)? {
-            renderer.line("aborted")?;
-            return Ok(130);
+            if renderer.format() == OutputFormat::Json {
+                renderer.always_json(&serde_json::json!({
+                    "service": name,
+                    "action": verb(action),
+                    "aborted": true,
+                }))?;
+            } else {
+                renderer.line("aborted")?;
+            }
+            return Ok(super::EXIT_DECLINED);
         }
-    }
-
-    if crate::dry_run_guard(renderer, &format!("{} service `{name}`", verb(action)))? {
-        return Ok(0);
     }
 
     context.service.action(name, action)?;

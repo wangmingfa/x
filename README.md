@@ -316,7 +316,12 @@ System、Disks；侧边栏列页，数字 `1`–`7` 直达，`Tab`/左右键循�
 - 稳定退出码：0 成功（`port check`：端口被占用）、1 一般错误
   （`port check`：端口空闲）、3 未找到、4 权限不足、5 参数错误、
   130 用户拒绝确认
-- 破坏性操作（kill、服务操作）一律先展示计划并确认
+- 破坏性操作的确认契约（所有命令一致，契约测试钉死）：
+  1. `--dry-run` 恒最先——打印计划、退出 0、绝不提问；JSON 调用方得到
+     单个 JSON 文档（`{"dry_run": true, "would": …}`），不会有散文混进流
+  2. JSON 不豁免确认——输出格式与是否突变正交；JSON 模式下被拒的
+     操作返回单个 `{"aborted": true, …}` 文档
+  3. 拒绝确认一律退出 130——拒绝是脚本流程控制，不是输入错误
 - 提权建议按真实主机措辞：权限错误除退出码外还打印 `hint:` 一行，
   Windows 给控制台提权路径（Win+X → Terminal (Admin)、
   `net localgroup Administrators`），Linux 给 sudoers 补救
@@ -531,8 +536,10 @@ GitHub Actions CI 在 Ubuntu / macOS / Windows 三平台上跑格式、clippy
 
 **C 组 · 产品化收尾**
 
-- [ ] 破坏性操作的 `--yes` 语义统一化：确认/审计路径已统一，但各命令
-  `--yes` 与 `--dry-run` 的组合行为还没有钉死的契约测试，补矩阵测试。
+- [x] 破坏性操作的 `--yes` 语义统一化：12 个命令统一到同一契约
+  （dry-run 恒最先且绝不提问、JSON 不豁免确认、拒绝一律退出 130），
+  契约矩阵测试（`tests/contract.rs`）按命令 × {dry-run, JSON dry-run,
+  拒绝, JSON 拒绝} 钉死。
 - [ ] TUI 键位可配置：键位目前硬编码在 App 状态机（`Ctrl+P`、`/`、`k`…），
   `config.toml` 已有主题/刷新率字段，键位映射同样可以走同一份配置。
 - [ ] 退出码契约版本化：`--version-info` 已打印 contract 版本，把退出码与

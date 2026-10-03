@@ -76,38 +76,25 @@ pub fn dispatch(
             renderer.table(&table)?;
         }
         StartupCommand::Enable { name, yes } => {
-            confirm(renderer, confirmer, *yes, &format!("enable {name}"))?;
             if crate::dry_run_guard(renderer, &format!("enable startup item {name}"))? {
                 return Ok(0);
+            }
+            if !super::confirm(renderer, confirmer, *yes, &format!("enable {name}"))? {
+                return Ok(super::EXIT_DECLINED);
             }
             startup.enable(name)?;
             renderer.line(format!("enabled {name}"))?;
         }
         StartupCommand::Disable { name, yes } => {
-            confirm(renderer, confirmer, *yes, &format!("disable {name}"))?;
             if crate::dry_run_guard(renderer, &format!("disable startup item {name}"))? {
                 return Ok(0);
+            }
+            if !super::confirm(renderer, confirmer, *yes, &format!("disable {name}"))? {
+                return Ok(super::EXIT_DECLINED);
             }
             startup.disable(name)?;
             renderer.line(format!("disabled {name}"))?;
         }
     }
     Ok(0)
-}
-
-fn confirm(
-    renderer: &mut Renderer,
-    confirmer: &mut dyn Confirmer,
-    yes: bool,
-    action: &str,
-) -> Result<()> {
-    if yes || renderer.format() == OutputFormat::Json {
-        return Ok(());
-    }
-    renderer.line(format!("about to {action}"))?;
-    if confirmer.confirm("continue?")? {
-        Ok(())
-    } else {
-        Err(Error::invalid_input("aborted by user"))
-    }
 }

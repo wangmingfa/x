@@ -60,14 +60,18 @@ pub fn dispatch_power(
     confirmer: &mut dyn Confirmer,
     command: &PowerCommand,
 ) -> Result<i32> {
-    let power = context
-        .power
-        .as_ref()
-        .ok_or_else(|| Error::unsupported("power control is not available in this context"))?;
+    // Resolved lazily: `--dry-run` must print its plan even on a host that
+    // has no power control at all.
+    let power = || {
+        context
+            .power
+            .as_ref()
+            .ok_or_else(|| Error::unsupported("power control is not available in this context"))
+    };
 
     match command {
         PowerCommand::Battery => {
-            let battery = power.battery()?;
+            let battery = power()?.battery()?;
             if renderer.format() == OutputFormat::Json {
                 renderer.always_json(&battery)?;
                 return Ok(0);
@@ -98,50 +102,39 @@ pub fn dispatch_power(
             renderer.table(&table)?;
         }
         PowerCommand::Sleep { yes } => {
-            confirm(renderer, confirmer, *yes, "sleep")?;
             if crate::dry_run_guard(renderer, "put this machine to sleep")? {
                 return Ok(0);
             }
-            power.sleep()?;
+            if !super::confirm(renderer, confirmer, *yes, "sleep")? {
+                return Ok(super::EXIT_DECLINED);
+            }
+            power()?.sleep()?;
             renderer.line("sleep requested")?;
         }
         PowerCommand::Shutdown { delay, yes } => {
-            confirm(renderer, confirmer, *yes, &format!("shutdown in {delay}s"))?;
             if crate::dry_run_guard(renderer, &format!("shut this machine down in {delay}s"))? {
                 return Ok(0);
             }
-            power.shutdown(*delay)?;
+            if !super::confirm(renderer, confirmer, *yes, &format!("shutdown in {delay}s"))? {
+                return Ok(super::EXIT_DECLINED);
+            }
+            power()?.shutdown(*delay)?;
             renderer.line(format!(
                 "shutdown scheduled in {delay}s (cancel with the OS's own command)"
             ))?;
         }
         PowerCommand::Reboot { delay, yes } => {
-            confirm(renderer, confirmer, *yes, &format!("reboot in {delay}s"))?;
             if crate::dry_run_guard(renderer, &format!("reboot this machine in {delay}s"))? {
                 return Ok(0);
             }
-            power.reboot(*delay)?;
+            if !super::confirm(renderer, confirmer, *yes, &format!("reboot in {delay}s"))? {
+                return Ok(super::EXIT_DECLINED);
+            }
+            power()?.reboot(*delay)?;
             renderer.line(format!("reboot scheduled in {delay}s"))?;
         }
     }
     Ok(0)
-}
-
-fn confirm(
-    renderer: &mut Renderer,
-    confirmer: &mut dyn Confirmer,
-    yes: bool,
-    action: &str,
-) -> Result<()> {
-    if yes || renderer.format() == OutputFormat::Json {
-        return Ok(());
-    }
-    renderer.line(format!("about to {action}"))?;
-    if confirmer.confirm("continue?")? {
-        Ok(())
-    } else {
-        Err(Error::invalid_input("aborted by user"))
-    }
 }
 
 /// `x time` subcommands.
@@ -172,6 +165,7 @@ pub struct TimeArgs {
 pub fn dispatch_time(
     context: &SystemContext,
     renderer: &mut Renderer,
+    confirmer: &mut dyn Confirmer,
     command: &TimeCommand,
 ) -> Result<i32> {
     match command {
@@ -204,15 +198,16 @@ pub fn dispatch_time(
             renderer.table(&table)?;
         }
         TimeCommand::Sync { yes } => {
-            if !(*yes || renderer.format() == OutputFormat::Json) {
-                renderer.line("about to trigger a time sync (may need privileges)")?;
-                let mut stdin_confirmer = crate::format::StdinConfirmer;
-                if !Confirmer::confirm(&mut stdin_confirmer, "continue?")? {
-                    return Err(Error::invalid_input("aborted by user"));
-                }
-            }
             if crate::dry_run_guard(renderer, "trigger a time sync")? {
                 return Ok(0);
+            }
+            if !super::confirm(
+                renderer,
+                confirmer,
+                *yes,
+                "trigger a time sync (may need privileges)",
+            )? {
+                return Ok(super::EXIT_DECLINED);
             }
             sync_time(renderer)?;
         }

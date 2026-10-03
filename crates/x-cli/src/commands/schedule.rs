@@ -88,27 +88,31 @@ pub fn dispatch(
             command: job,
             yes,
         } => {
-            if !(*yes || renderer.format() == OutputFormat::Json) {
-                renderer.line(format!("about to schedule `{job}` as {name} ({spec})"))?;
-                if !confirmer.confirm("continue?")? {
-                    return Err(Error::invalid_input("aborted by user"));
-                }
-            }
             if crate::dry_run_guard(renderer, &format!("schedule `{job}` as {name} ({spec})"))? {
                 return Ok(0);
+            }
+            if !super::confirm(
+                renderer,
+                confirmer,
+                *yes,
+                &format!("schedule `{job}` as {name} ({spec})"),
+            )? {
+                return Ok(super::EXIT_DECLINED);
             }
             schedule.add(name, spec, job)?;
             renderer.line(format!("scheduled {name}"))?;
         }
         ScheduleCommand::Remove { name, yes } => {
-            if !(*yes || renderer.format() == OutputFormat::Json) {
-                renderer.line(format!("about to remove scheduled task {name}"))?;
-                if !confirmer.confirm("continue?")? {
-                    return Err(Error::invalid_input("aborted by user"));
-                }
-            }
             if crate::dry_run_guard(renderer, &format!("remove scheduled task {name}"))? {
                 return Ok(0);
+            }
+            if !super::confirm(
+                renderer,
+                confirmer,
+                *yes,
+                &format!("remove scheduled task {name}"),
+            )? {
+                return Ok(super::EXIT_DECLINED);
             }
             schedule.remove(name)?;
             renderer.line(format!("removed {name}"))?;

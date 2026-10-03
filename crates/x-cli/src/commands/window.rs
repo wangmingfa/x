@@ -66,12 +66,14 @@ pub fn dispatch(
     match command {
         WindowCommand::List => render_list(renderer, &windows.windows()?)?,
         WindowCommand::Active => render_active(renderer, windows.active()?.as_ref())?,
-        WindowCommand::Focus(args) => verb(renderer, confirmer, windows.as_ref(), args, "focus")?,
+        WindowCommand::Focus(args) => {
+            return verb(renderer, confirmer, windows.as_ref(), args, "focus");
+        }
         WindowCommand::Minimize(args) => {
-            verb(renderer, confirmer, windows.as_ref(), args, "minimize")?
+            return verb(renderer, confirmer, windows.as_ref(), args, "minimize");
         }
         WindowCommand::Maximize(args) => {
-            verb(renderer, confirmer, windows.as_ref(), args, "maximize")?
+            return verb(renderer, confirmer, windows.as_ref(), args, "maximize");
         }
     }
     Ok(0)
@@ -85,15 +87,16 @@ fn verb(
     windows: &dyn x_core::window::WindowManager,
     args: &TargetArgs,
     action: &str,
-) -> Result<()> {
+) -> Result<i32> {
     let rows = windows.windows()?;
     let target = select(&rows, &args.target)?;
     let label = target.label();
-    if !args.yes && renderer.format() != OutputFormat::Json {
-        renderer.line(format!("about to {action} {label}"))?;
-        if !confirmer.confirm("continue?")? {
-            return Err(Error::invalid_input("aborted by user"));
-        }
+    if crate::dry_run_guard(renderer, &format!("{action} {label}"))? {
+        return Ok(0);
+    }
+    // `--yes` skips the question; the output format never does.
+    if !super::confirm(renderer, confirmer, args.yes, &format!("{action} {label}"))? {
+        return Ok(super::EXIT_DECLINED);
     }
     match action {
         "focus" => windows.focus(target)?,
@@ -101,14 +104,14 @@ fn verb(
         _ => windows.maximize(target)?,
     }
     renderer.line(format!(
-        "{} {label}",
+        "{}ed {label}",
         match action {
-            "focus" => "focused",
-            "minimize" => "minimized",
-            _ => "maximized",
+            "focus" => "focus",
+            "minimize" => "minimiz",
+            _ => "maximiz",
         }
     ))?;
-    Ok(())
+    Ok(0)
 }
 
 /// The list table; the number column is the selection key for the verbs.

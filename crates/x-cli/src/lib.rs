@@ -19,6 +19,7 @@ pub mod commands;
 pub mod format;
 
 pub use commands::dry_run_guard;
+pub use commands::EXIT_DECLINED;
 
 use std::io::Write;
 use std::process::ExitCode;
@@ -429,11 +430,13 @@ fn dispatch(
         }
         Some(Command::Capability(args)) => commands::capability::dispatch(context, renderer, args),
         Some(Command::Proxy(cmd)) => commands::proxy::dispatch(context, renderer, cmd),
-        Some(Command::Hosts(cmd)) => commands::hosts::dispatch(context, renderer, cmd),
+        Some(Command::Hosts(cmd)) => commands::hosts::dispatch(context, renderer, confirmer, cmd),
         Some(Command::Power(cmd)) => {
             commands::powertime::dispatch_power(context, renderer, confirmer, cmd)
         }
-        Some(Command::Time(cmd)) => commands::powertime::dispatch_time(context, renderer, cmd),
+        Some(Command::Time(cmd)) => {
+            commands::powertime::dispatch_time(context, renderer, confirmer, cmd)
+        }
         Some(Command::Mount(cmd)) => commands::mount::dispatch(context, renderer, confirmer, cmd),
         Some(Command::Permission(cmd)) => commands::permission::dispatch(context, renderer, cmd),
         Some(Command::Startup(cmd)) => {

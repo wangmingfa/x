@@ -124,27 +124,26 @@ pub fn dispatch(
             target,
             yes,
         } => {
-            if !(*yes || renderer.format() == OutputFormat::Json) {
-                renderer.line(format!("about to mount {source} at {target}"))?;
-                if !confirmer.confirm("continue?")? {
-                    return Err(Error::invalid_input("aborted by user"));
-                }
-            }
             if crate::dry_run_guard(renderer, &format!("mount {source} at {target}"))? {
                 return Ok(0);
+            }
+            if !super::confirm(
+                renderer,
+                confirmer,
+                *yes,
+                &format!("mount {source} at {target}"),
+            )? {
+                return Ok(super::EXIT_DECLINED);
             }
             mount.mount(source, target)?;
             renderer.line(format!("mounted {source} at {target}"))?;
         }
         MountCommand::Unmount { target, yes } => {
-            if !(*yes || renderer.format() == OutputFormat::Json) {
-                renderer.line(format!("about to unmount {target}"))?;
-                if !confirmer.confirm("continue?")? {
-                    return Err(Error::invalid_input("aborted by user"));
-                }
-            }
             if crate::dry_run_guard(renderer, &format!("unmount {target}"))? {
                 return Ok(0);
+            }
+            if !super::confirm(renderer, confirmer, *yes, &format!("unmount {target}"))? {
+                return Ok(super::EXIT_DECLINED);
             }
             mount.unmount(target)?;
             renderer.line(format!("unmounted {target}"))?;

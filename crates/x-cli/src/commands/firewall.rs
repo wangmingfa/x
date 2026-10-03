@@ -116,54 +116,41 @@ pub fn dispatch(
             }
         }
         FirewallCommand::Allow(args) => {
-            confirm(
-                renderer,
-                confirmer,
-                args.yes,
-                &format!("open {} port {}", args.proto, args.port),
-            )?;
             if crate::dry_run_guard(
                 renderer,
                 &format!("allow inbound {} port {}", args.proto, args.port),
             )? {
                 return Ok(0);
             }
+            if !super::confirm(
+                renderer,
+                confirmer,
+                args.yes,
+                &format!("open {} port {}", args.proto, args.port),
+            )? {
+                return Ok(super::EXIT_DECLINED);
+            }
             firewall.allow(args.port, Some(&args.proto), args.name.as_deref())?;
             renderer.line(format!("allowed inbound {} port {}", args.proto, args.port))?;
         }
         FirewallCommand::Deny(args) => {
-            confirm(
-                renderer,
-                confirmer,
-                args.yes,
-                &format!("block {} port {}", args.proto, args.port),
-            )?;
             if crate::dry_run_guard(
                 renderer,
                 &format!("block inbound {} port {}", args.proto, args.port),
             )? {
                 return Ok(0);
             }
+            if !super::confirm(
+                renderer,
+                confirmer,
+                args.yes,
+                &format!("block {} port {}", args.proto, args.port),
+            )? {
+                return Ok(super::EXIT_DECLINED);
+            }
             firewall.deny(args.port, Some(&args.proto), args.name.as_deref())?;
             renderer.line(format!("blocked inbound {} port {}", args.proto, args.port))?;
         }
     }
     Ok(0)
-}
-
-fn confirm(
-    renderer: &mut Renderer,
-    confirmer: &mut dyn Confirmer,
-    yes: bool,
-    action: &str,
-) -> Result<()> {
-    if yes || renderer.format() == OutputFormat::Json {
-        return Ok(());
-    }
-    renderer.line(format!("about to {action}"))?;
-    if confirmer.confirm("continue?")? {
-        Ok(())
-    } else {
-        Err(Error::invalid_input("aborted by user"))
-    }
 }

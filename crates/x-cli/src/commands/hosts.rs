@@ -9,7 +9,7 @@ use x_core::error::{Error, Result};
 use x_core::SystemContext;
 
 use crate::{
-    format::{OutputFormat, Renderer, Table},
+    format::{Confirmer, OutputFormat, Renderer, Table},
     row,
 };
 
@@ -63,6 +63,7 @@ pub struct HostsArgs {
 pub fn dispatch(
     _context: &SystemContext,
     renderer: &mut Renderer,
+    confirmer: &mut dyn Confirmer,
     command: &HostsCommand,
 ) -> Result<i32> {
     let path = x_platform::common::hosts_os::default_path();
@@ -120,7 +121,10 @@ pub fn dispatch(
             )? {
                 return Ok(0);
             }
-            confirm_write(renderer, *yes, &path, &new_text)?;
+            let code = confirm_write(renderer, confirmer, *yes, &path, &new_text)?;
+            if code != 0 {
+                return Ok(code);
+            }
             renderer.line(format!("added {} -> {ip}", names.join(", ")))?;
         }
         HostsCommand::Remove { name, yes } => {
@@ -132,7 +136,10 @@ pub fn dispatch(
             if crate::dry_run_guard(renderer, &format!("remove {name} from {}", path.display()))? {
                 return Ok(0);
             }
-            confirm_write(renderer, *yes, &path, &new_text)?;
+            let code = confirm_write(renderer, confirmer, *yes, &path, &new_text)?;
+            if code != 0 {
+                return Ok(code);
+            }
             renderer.line(format!("removed {name}"))?;
         }
     }
@@ -144,22 +151,26 @@ fn load(path: &std::path::Path) -> Result<x_core::hostsfile::HostsFile> {
         .map_err(|e| Error::not_found(format!("cannot read {}: {e}", path.display())))
 }
 
+/// Confirm, then write. The confirmation follows the unified contract:
+/// `--yes` skips the question, the output format never does, and a decline is
+/// reported as [`super::EXIT_DECLINED`] rather than an input error.
 fn confirm_write(
     renderer: &mut Renderer,
+    confirmer: &mut dyn Confirmer,
     yes: bool,
     path: &std::path::Path,
     new_text: &str,
-) -> Result<()> {
-    renderer.line(format!("about to rewrite {}", path.display()))?;
-    if yes {
-        return write(path, new_text);
+) -> Result<i32> {
+    if !super::confirm(
+        renderer,
+        confirmer,
+        yes,
+        &format!("rewrite {}", path.display()),
+    )? {
+        return Ok(super::EXIT_DECLINED);
     }
-    let mut stdin_confirmer = crate::format::StdinConfirmer;
-    if crate::format::Confirmer::confirm(&mut stdin_confirmer, "continue?")? {
-        write(path, new_text)
-    } else {
-        Err(Error::invalid_input("aborted by user"))
-    }
+    write(path, new_text)?;
+    Ok(0)
 }
 
 fn write(path: &std::path::Path, text: &str) -> Result<()> {

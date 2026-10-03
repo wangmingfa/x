@@ -509,6 +509,13 @@ fn kill(
         renderer.table(&table)?;
     }
 
+    if crate::dry_run_guard(
+        renderer,
+        &format!("terminate {} process(es) with {:?}", pids.len(), signal),
+    )? {
+        return Ok(0);
+    }
+
     if !assume_yes {
         let question = format!("kill {} process(es)?", victims.len());
         if !super::port::confirm_or_fail(confirmer, &question)? {
@@ -522,15 +529,8 @@ fn kill(
             } else {
                 renderer.line("aborted")?;
             }
-            return Ok(130);
+            return Ok(super::EXIT_DECLINED);
         }
-    }
-
-    if crate::dry_run_guard(
-        renderer,
-        &format!("terminate {} process(es) with {:?}", pids.len(), signal),
-    )? {
-        return Ok(0);
     }
 
     let failures = context.process.kill_many(&pids, signal)?;

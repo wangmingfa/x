@@ -14,7 +14,7 @@ use x_core::testing::{stub_context, stub_process, stub_service, stub_socket, Stu
 use x_core::{CpuUsage, LoadAverage, MemoryUsage, SystemContext, SystemInfo};
 
 use x_cli::format::{Confirmer, OutputFormat, Renderer};
-use x_cli::{execute, Cli};
+use x_cli::{execute, Cli, EXIT_DECLINED};
 
 /// A confirmation that answers from a script and records what it was asked.
 struct ScriptedConfirmer {
@@ -142,6 +142,7 @@ fn x_in(context: &SystemContext, args: &[&str], answer: bool) -> Output {
 
     let stdout = Buffer::default();
     let mut renderer = Renderer::to_sink(format, false, stdout.clone());
+    renderer.set_dry_run(cli.dry_run);
     let (mut confirmer, _asked) = ScriptedConfirmer::new(answer);
 
     let outcome = execute(context, &cli, &mut renderer, &mut confirmer);
@@ -816,8 +817,11 @@ fn firewall_write_asks_first_and_changes_nothing_when_refused() {
     let stubs = Stubs::new().with_firewall(true, Vec::new());
 
     let refused = x(&stubs, &["firewall", "allow", "8080"], false);
-    assert_eq!(refused.code, ErrorKind::InvalidInput.exit_code());
-    assert!(refused.stderr.contains("aborted"));
+    assert_eq!(
+        refused.code, EXIT_DECLINED,
+        "a decline is not an input error"
+    );
+    assert!(refused.stdout.contains("aborted"), "{}", refused.stdout);
     assert!(stubs.firewall.changes().is_empty());
 }
 
@@ -1171,8 +1175,11 @@ fn bluetooth_connect_asks_before_touching_the_link() {
         &["bluetooth", "connect", "AA:BB:CC:DD:EE:FF"],
         false,
     );
-    assert_eq!(refused.code, ErrorKind::InvalidInput.exit_code());
-    assert!(refused.stderr.contains("aborted by user"));
+    assert_eq!(
+        refused.code, EXIT_DECLINED,
+        "a decline is not an input error"
+    );
+    assert!(refused.stdout.contains("aborted"), "{}", refused.stdout);
     assert!(stubs.bluetooth.verbs().is_empty(), "refusal must not act");
 
     let accepted = x(
@@ -1430,8 +1437,11 @@ fn window_verbs_resolve_the_target_and_record_it() {
 fn window_verbs_ask_before_acting() {
     let stubs = Stubs::new().with_windows(vec![window_row("Editor", true)]);
     let refused = x(&stubs, &["window", "maximize", "1"], false);
-    assert_eq!(refused.code, ErrorKind::InvalidInput.exit_code());
-    assert!(refused.stderr.contains("aborted by user"));
+    assert_eq!(
+        refused.code, EXIT_DECLINED,
+        "a decline is not an input error"
+    );
+    assert!(refused.stdout.contains("aborted"), "{}", refused.stdout);
     assert!(stubs.window.verbs().is_empty(), "refusal must not act");
 
     let accepted = x(&stubs, &["window", "maximize", "1"], true);

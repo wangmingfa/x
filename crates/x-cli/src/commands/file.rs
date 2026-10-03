@@ -161,53 +161,51 @@ pub fn dispatch(
             list(file.as_ref(), renderer, path)?;
         }
         FileCommand::Open { path, yes } => {
-            confirm(renderer, confirmer, *yes, "open", path)?;
             if crate::dry_run_guard(renderer, &format!("open {path}"))? {
                 return Ok(0);
+            }
+            if !super::confirm(renderer, confirmer, *yes, &format!("open {path}"))? {
+                return Ok(super::EXIT_DECLINED);
             }
             file.open(path.as_ref())?;
             renderer.line(format!("opened {path}"))?;
         }
         FileCommand::Reveal { path, yes } => {
-            confirm(renderer, confirmer, *yes, "reveal", path)?;
             if crate::dry_run_guard(renderer, &format!("reveal {path}"))? {
                 return Ok(0);
+            }
+            if !super::confirm(renderer, confirmer, *yes, &format!("reveal {path}"))? {
+                return Ok(super::EXIT_DECLINED);
             }
             file.reveal(path.as_ref())?;
             renderer.line(format!("revealed {path}"))?;
         }
         FileCommand::Trash { path, yes } => {
-            confirm(renderer, confirmer, *yes, "trash", path)?;
             if crate::dry_run_guard(renderer, &format!("move {path} to trash"))? {
                 return Ok(0);
+            }
+            if !super::confirm(renderer, confirmer, *yes, &format!("trash {path}"))? {
+                return Ok(super::EXIT_DECLINED);
             }
             file.trash(path.as_ref())?;
             renderer.line(format!("moved {path} to trash"))?;
         }
         FileCommand::Copy { from, to, yes } => {
-            confirm(
-                renderer,
-                confirmer,
-                *yes,
-                "copy",
-                &format!("{from} -> {to}"),
-            )?;
             if crate::dry_run_guard(renderer, &format!("copy {from} to {to}"))? {
                 return Ok(0);
+            }
+            if !super::confirm(renderer, confirmer, *yes, &format!("copy {from} to {to}"))? {
+                return Ok(super::EXIT_DECLINED);
             }
             file.copy(from.as_ref(), to.as_ref())?;
             renderer.line(format!("copied {from} to {to}"))?;
         }
         FileCommand::Move { from, to, yes } => {
-            confirm(
-                renderer,
-                confirmer,
-                *yes,
-                "move",
-                &format!("{from} -> {to}"),
-            )?;
             if crate::dry_run_guard(renderer, &format!("move {from} to {to}"))? {
                 return Ok(0);
+            }
+            if !super::confirm(renderer, confirmer, *yes, &format!("move {from} to {to}"))? {
+                return Ok(super::EXIT_DECLINED);
             }
             file.move_path(from.as_ref(), to.as_ref())?;
             renderer.line(format!("moved {from} to {to}"))?;
@@ -217,43 +215,22 @@ pub fn dispatch(
             new_name,
             yes,
         } => {
-            confirm(
+            if crate::dry_run_guard(renderer, &format!("rename {path} to {new_name}"))? {
+                return Ok(0);
+            }
+            if !super::confirm(
                 renderer,
                 confirmer,
                 *yes,
-                "rename",
-                &format!("{path} -> {new_name}"),
-            )?;
-            if crate::dry_run_guard(renderer, &format!("rename {path} to {new_name}"))? {
-                return Ok(0);
+                &format!("rename {path} to {new_name}"),
+            )? {
+                return Ok(super::EXIT_DECLINED);
             }
             file.rename(path.as_ref(), new_name)?;
             renderer.line(format!("renamed {path} to {new_name}"))?;
         }
     }
     Ok(0)
-}
-
-fn confirm(
-    renderer: &mut Renderer,
-    confirmer: &mut dyn Confirmer,
-    assume_yes: bool,
-    action: &str,
-    target: &str,
-) -> Result<()> {
-    if assume_yes {
-        return Ok(());
-    }
-    if renderer.format() == OutputFormat::Json {
-        // Scripts pass --yes; refusing silently in JSON mode would hide it.
-        return Ok(());
-    }
-    renderer.line(format!("about to {action}: {target}"))?;
-    if confirmer.confirm("continue?")? {
-        Ok(())
-    } else {
-        Err(Error::invalid_input("aborted by user"))
-    }
 }
 
 fn info(file: &dyn x_core::file::FileManager, renderer: &mut Renderer, path: &str) -> Result<i32> {

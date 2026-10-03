@@ -41,7 +41,7 @@ pub mod window;
 
 use x_core::error::Result;
 
-use crate::format::Renderer;
+use crate::format::{Confirmer, OutputFormat, Renderer};
 
 /// Print adapter and contract versions, useful when reporting a bug.
 pub fn version(renderer: &mut Renderer) -> Result<i32> {
@@ -54,17 +54,66 @@ pub fn version(renderer: &mut Renderer) -> Result<i32> {
     Ok(0)
 }
 
+/// Exit code for a destructive action the user declined.
+pub const EXIT_DECLINED: i32 = 130;
+
 /// Dry-run gate for destructive commands.
 ///
 /// Returns `Ok(true)` when `--dry-run` is on: the command has printed what it
 /// *would* do and must stop without mutating anything. `Ok(false)` means
 /// proceed. Read-only commands never call this.
+///
+/// The gate runs BEFORE any confirmation, without exception: `--dry-run` is a
+/// question about the future, not an action, so a piped
+/// `x --dry-run ps kill 42` must print its plan and exit 0 instead of being
+/// refused by a confirmation it can never answer.
 pub fn dry_run_guard(renderer: &mut Renderer, action: &str) -> Result<bool> {
     if renderer.dry_run() {
-        renderer.line(format!(
-            "dry-run: would {action} (pass --yes and drop --dry-run to execute)"
-        ))?;
+        if renderer.format() == OutputFormat::Json {
+            // A JSON script gets one document, not prose in its stream.
+            renderer.always_json(&serde_json::json!({ "dry_run": true, "would": action }))?;
+        } else {
+            renderer.line(format!(
+                "dry-run: would {action} (pass --yes and drop --dry-run to execute)"
+            ))?;
+        }
         return Ok(true);
+    }
+    Ok(false)
+}
+
+/// Ask for confirmation under the unified destructive-action contract.
+///
+/// - `--yes` skips the question entirely.
+/// - The output format never skips the question: JSON is a format, not a
+///   permission. Scripts driving destructive commands pass `--yes`; a
+///   non-interactive stdin (a pipe) always answers no, so a script that
+///   forgot `--yes` is refused, never surprises its author.
+/// - A decline prints `aborted` (text mode) and the caller returns
+///   [`EXIT_DECLINED`]. Kill commands with a JSON report shape emit their own
+///   `aborted: true` document instead of the bare line.
+///
+/// Returns `Ok(true)` to proceed. Callers run the [`dry_run_guard`] first, so
+/// `--dry-run` never reaches a question.
+pub(crate) fn confirm(
+    renderer: &mut Renderer,
+    confirmer: &mut dyn Confirmer,
+    yes: bool,
+    action: &str,
+) -> Result<bool> {
+    if yes {
+        return Ok(true);
+    }
+    if renderer.format() != OutputFormat::Json {
+        renderer.line(format!("about to {action}"))?;
+    }
+    if confirmer.confirm("continue?")? {
+        return Ok(true);
+    }
+    if renderer.format() == OutputFormat::Json {
+        renderer.always_json(&serde_json::json!({ "aborted": true, "would": action }))?;
+    } else {
+        renderer.line("aborted")?;
     }
     Ok(false)
 }
