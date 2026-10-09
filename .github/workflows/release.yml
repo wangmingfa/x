@@ -181,7 +181,11 @@ jobs:
         uses: actions/upload-artifact@v5
         with:
           name: x-windows-x86_64-setup
-          path: x-*.exe
+          # iscc writes to an Output\ directory next to the .iss script, not to
+          # the repository root.
+          path: Packaging/Windows/Output/x-*.exe
+          # A wrong path must fail the job, not publish a release minus one asset.
+          if-no-files-found: error
 
   publish:
     name: publish github release
