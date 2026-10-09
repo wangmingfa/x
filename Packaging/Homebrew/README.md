@@ -28,11 +28,11 @@ The formula ships a `head` (main-branch) build so it works before any release
 exists. Once you cut a tag such as `v0.2.0`:
 
 1. Edit `Formula/x.rb`: uncomment the `url`/`sha256` lines and point `url` at
-   `https://github.com/xsys/x/archive/refs/tags/v0.2.0.tar.gz`.
+   `https://github.com/wangmingfa/x/archive/refs/tags/v0.2.0.tar.gz`.
 2. Compute the checksum:
 
    ```sh
-   curl -fsSL https://github.com/xsys/x/archive/refs/tags/v0.2.0.tar.gz | sha256sum
+   curl -fsSL https://github.com/wangmingfa/x/archive/refs/tags/v0.2.0.tar.gz | sha256sum
    ```
 
 3. Paste the checksum into `sha256`.

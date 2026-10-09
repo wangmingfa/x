@@ -11,7 +11,7 @@
 
 #define MyAppName    "x"
 #define MyPublisher  "x contributors"
-#define MyURL        "https://github.com/xsys/x"
+#define MyURL        "https://github.com/wangmingfa/x"
 #define SourcePath   "..\..\target\release\x.exe"
 
 ; The file name comes from the git tag, not from MyAppVersion, so the asset the

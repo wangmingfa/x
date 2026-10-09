@@ -3,12 +3,12 @@
 # Install `x` by downloading the latest (or a pinned) release binary from
 # GitHub Releases. No Rust toolchain required.
 #
-#   curl -fsSL https://raw.githubusercontent.com/xsys/x/main/scripts/install-release.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/wangmingfa/x/main/scripts/install-release.sh | sh
 #
 # Environment / flags:
 #   PREFIX=DIR        install prefix (default /usr/local)
 #   X_VERSION=TAG     release tag to install (default: latest release)
-#   X_REPO=OWNER/NAME GitHub repository (default xsys/x)
+#   X_REPO=OWNER/NAME GitHub repository (default wangmingfa/x)
 #   --prefix=DIR      same as PREFIX
 #   X_VERSION=v0.1.2  same as the environment variable
 #   -y, --yes         skip the confirmation prompt
@@ -20,7 +20,7 @@
 set -euo pipefail
 
 X_VERSION="${X_VERSION:-}"
-X_REPO="${X_REPO:-xsys/x}"
+X_REPO="${X_REPO:-wangmingfa/x}"
 PREFIX="/usr/local"
 ASSUME_YES=0
 

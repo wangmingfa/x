@@ -26,14 +26,13 @@ cargo build -p x-app
 macOS / Linux：
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/xsys/x/main/scripts/install-release.sh | sh
+curl -fsSL https://raw.githubusercontent.com/wangmingfa/x/main/scripts/install-release.sh | sh
 ```
 
 Windows (PowerShell)：
 
 ```powershell
-iwr https://raw.githubusercontent.com/xsys/x/main/scripts/install.ps1 -OutFile install.ps1
-.\install.ps1 -FromRelease -AddToPath
+iwr https://raw.githubusercontent.com/wangmingfa/x/main/scripts/install-release.ps1 -OutFile install-release.ps1; .\install-release.ps1
 ```
 
 - 脚本按平台自动选产物：macOS 用 universal 包（Apple Silicon 与 Intel 合在一个
@@ -49,13 +48,13 @@ iwr https://raw.githubusercontent.com/xsys/x/main/scripts/install.ps1 -OutFile i
 macOS / Linux：
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/xsys/x/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/wangmingfa/x/main/scripts/install.sh | sh
 ```
 
 Windows (PowerShell)：
 
 ```powershell
-iwr https://raw.githubusercontent.com/xsys/x/main/scripts/install.ps1 -OutFile install.ps1
+iwr https://raw.githubusercontent.com/wangmingfa/x/main/scripts/install.ps1 -OutFile install.ps1
 .\install.ps1 -AddToPath
 ```
 

@@ -1,7 +1,7 @@
 # Install x on Windows by building from source (cargo) and copying x.exe, or,
 # with -FromRelease, by downloading the release installer - no Rust toolchain.
 #
-#   iwr https://raw.githubusercontent.com/xsys/x/main/scripts/install.ps1 -OutFile install.ps1; .\install.ps1 -AddToPath
+#   iwr https://raw.githubusercontent.com/wangmingfa/x/main/scripts/install.ps1 -OutFile install.ps1; .\install.ps1 -AddToPath
 #   .\install.ps1 -FromRelease -AddToPath
 param(
     [string]$Prefix = "$env:LOCALAPPDATA\x",
@@ -16,14 +16,14 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$Repo    = 'https://github.com/xsys/x'
+$Repo    = 'https://github.com/wangmingfa/x'
 $Version = '0.1.0'
 $SrcDir  = "$env:TEMP\x-src"
 
 function Info($msg) { Write-Host "==> $msg" }
 
 if ($FromRelease) {
-    $repo = 'xsys/x'
+    $repo = 'wangmingfa/x'
     if (-not $Version) {
         Info "resolving the latest release of $repo"
         $rel = Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest"

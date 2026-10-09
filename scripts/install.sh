@@ -2,18 +2,18 @@
 #
 # Install `x` by building from source (cargo) and copying the binary into PREFIX/bin.
 #
-#   curl -fsSL https://raw.githubusercontent.com/xsys/x/main/scripts/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/wangmingfa/x/main/scripts/install.sh | sh
 #
 # Environment / flags:
 #   PREFIX=DIR        install prefix (default /usr/local)
 #   X_VERSION=0.1.0   git ref to check out (tag, branch or sha)
-#   X_REPO=URL        git repository (default https://github.com/xsys/x)
+#   X_REPO=URL        git repository (default https://github.com/wangmingfa/x)
 #   --prefix=DIR      same as PREFIX
 #   -y, --yes         skip the confirmation prompt
 set -euo pipefail
 
 X_VERSION="${X_VERSION:-0.1.0}"
-X_REPO="${X_REPO:-https://github.com/xsys/x}"
+X_REPO="${X_REPO:-https://github.com/wangmingfa/x}"
 PREFIX="/usr/local"
 ASSUME_YES=0
 
