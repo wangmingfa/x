@@ -55,10 +55,13 @@ case "$(uname -s)" in
 esac
 
 # --- resolve which release to download ---------------------------------------
+# /releases/latest only answers for stable releases - a repo whose newest
+# release is marked prerelease gets a 404. List releases and take the first
+# non-draft entry: GitHub returns them newest-first, prereleases included.
 if [ -z "$X_VERSION" ]; then
   info "resolving the latest release of $X_REPO"
   X_VERSION=$(
-    curl -fsSL "https://api.github.com/repos/$X_REPO/releases/latest" |
+    curl -fsSL "https://api.github.com/repos/$X_REPO/releases" |
       sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1
   )
   [ -n "$X_VERSION" ] || fail "could not determine the latest release (check your network or set X_VERSION=v0.1.2)"

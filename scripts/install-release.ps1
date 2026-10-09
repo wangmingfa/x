@@ -17,9 +17,12 @@ $repo = 'wangmingfa/x'
 function Info($msg) { Write-Host "==> $msg" }
 
 if (-not $Version) {
+    # /releases/latest only answers for stable releases - a repo whose newest
+    # release is marked prerelease gets a 404. List releases and take the
+    # first entry: GitHub returns them newest-first, prereleases included.
     Info "resolving the latest release of $repo"
-    $rel = Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest"
-    $Version = $rel.tag_name
+    $rel = Invoke-RestMethod "https://api.github.com/repos/$repo/releases"
+    $Version = $rel[0].tag_name
 }
 $asset = "x-$Version-windows-x86_64-setup.exe"
 $url = "https://github.com/$repo/releases/download/$Version/$asset"
