@@ -67,3 +67,9 @@ Thumbs.db
 ehthumbs.db
 @eaDir/
 Desktop.ini
+
+# ===== WorkBuddy 本地工作区数据 =====
+# 代理运行期在本机产生的记忆（daily log / MEMORY.md 等），属本地状态而非项目
+# 源码，不同步进仓库；与 .idea/、.vscode/ 同性质。若要共享项目级技能
+# (.workbuddy/skills/)，把它收窄成 .workbuddy/memory/ 即可。
+.workbuddy/
