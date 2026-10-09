@@ -16,6 +16,64 @@ step() {
     printf '==> %s\n' "$1"
 }
 
+# Derive owner/repo slug from the origin remote (handles ssh and https URLs).
+gh_repo_slug() {
+    git remote get-url origin 2>/dev/null \
+        | sed -E 's#^[a-z]+://##; s#^[^@]*@##; s#^[^/:]*[:/]##; s#\.git$##'
+}
+
+# delete_github_release <tag>
+# When retagging, removing the git tag downgrades the matching GitHub release
+# to a draft; action-gh-release cannot publish over an existing (even draft)
+# release and fails with `already_exists`. This deletes any release (published
+# or draft) tied to <tag> so the re-publish starts clean.
+#   - gh present and authenticated -> delete automatically
+#   - otherwise                    -> warn and ask the user to delete manually
+delete_github_release() {
+    local tag=$1
+    if ! command -v gh >/dev/null 2>&1; then
+        printf 'warning: `gh` (GitHub CLI) is not installed, so the GitHub release for %s\n' "$tag" >&2
+        printf '         cannot be deleted automatically. Go to\n' >&2
+        printf '           https://github.com/%s/releases\n' "$(gh_repo_slug)" >&2
+        printf '         and delete the release (and any draft) for %s manually, otherwise the\n' "$tag" >&2
+        printf '         re-published release will fail with `already_exists`.\n' >&2
+        return 0
+    fi
+    if ! gh auth status >/dev/null 2>&1; then
+        printf 'warning: `gh` is installed but not authenticated (run `gh auth login` or set GH_TOKEN),\n' >&2
+        printf '         so the GitHub release for %s cannot be deleted automatically. Go to\n' "$tag" >&2
+        printf '           https://github.com/%s/releases\n' "$(gh_repo_slug)" >&2
+        printf '         and delete the release (and any draft) for %s manually, otherwise the\n' "$tag" >&2
+        printf '         re-published release will fail with `already_exists`.\n' >&2
+        return 0
+    fi
+
+    step "Deleting existing GitHub release for $tag (if any)"
+    # Fast path: a single release (published or draft) for the tag.
+    if gh release delete "$tag" --yes >/dev/null 2>&1; then
+        printf 'deleted GitHub release for %s via gh\n' "$tag"
+        return 0
+    fi
+    # Fallback: the failed run can leave several drafts sharing one tag_name;
+    # gh release delete then balks, so delete every matching release via API.
+    local ids
+    ids=$(gh api "repos/$(gh_repo_slug)/releases" --jq \
+        ".[] | select(.tag_name==\"$tag\") | .id" 2>/dev/null) || true
+    if [ -n "$ids" ]; then
+        local deleted=0
+        for id in $ids; do
+            if gh api -X DELETE "repos/$(gh_repo_slug)/releases/$id" >/dev/null 2>&1; then
+                deleted=$((deleted + 1))
+            fi
+        done
+        if [ "$deleted" -gt 0 ]; then
+            printf 'deleted %d GitHub release(s) for %s via API\n' "$deleted" "$tag"
+            return 0
+        fi
+    fi
+    printf 'no GitHub release found for %s (or delete failed); continuing\n' "$tag"
+}
+
 assume_yes=0
 tag=""
 for arg in "$@"; do
@@ -273,7 +331,9 @@ if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
         step "Deleting existing tag $tag (local + remote)"
         git tag -d "$tag"
         git push origin ":refs/tags/$tag"
-        printf 'note: the old GitHub release for %s (if any) becomes draft; delete or re-publish it manually\n' "$tag"
+        # Deleting the git tag downgrades the matching GitHub release to a draft;
+        # remove it so the re-publish (action-gh-release) does not hit already_exists.
+        delete_github_release "$tag"
     fi
 fi
 
