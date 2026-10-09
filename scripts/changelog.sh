@@ -277,6 +277,10 @@ emit_document() {
 if [ -n "$output" ]; then
     # Write through a temporary file so a failure leaves the old document
     # intact instead of half written.
+    # Drop orphaned temp files left by previous runs killed before their EXIT
+    # trap ran (e.g. Ctrl+C); otherwise they trip release-tag.sh's clean-tree
+    # guard as untracked files.
+    rm -f "$output".tmp.*
     temporary="$output.tmp.$$"
     trap 'rm -f "$temporary"' EXIT
     emit_document >"$temporary"
