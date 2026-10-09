@@ -19,13 +19,19 @@ cargo build -p x-app
 
 ## 安装
 
-一条命令从 GitHub Release 下载最新版并装进 PATH（无需 Rust 工具链）：
+### 从 GitHub Release 安装（推荐）
+
+一条命令下载最新版并装进 PATH（无需 Rust 工具链）：
+
+macOS / Linux：
 
 ```sh
-# macOS / Linux
 curl -fsSL https://raw.githubusercontent.com/xsys/x/main/scripts/install-release.sh | sh
+```
 
-# Windows (PowerShell)
+Windows (PowerShell)：
+
+```powershell
 iwr https://raw.githubusercontent.com/xsys/x/main/scripts/install.ps1 -OutFile install.ps1
 .\install.ps1 -FromRelease -AddToPath
 ```
@@ -36,13 +42,19 @@ iwr https://raw.githubusercontent.com/xsys/x/main/scripts/install.ps1 -OutFile i
   Windows 由安装包落位到 `%LOCALAPPDATA%\x`），`-AddToPath` 把该目录写进用户 PATH。
 - 装指定版本：`X_VERSION=v0.1.2`（bash）或 `-Version v0.1.2`（PowerShell）。
 
-从源码构建并安装（需要 Rust 工具链）：
+### 从源码构建安装
+
+需要 Rust 工具链：
+
+macOS / Linux：
 
 ```sh
-# macOS / Linux
 curl -fsSL https://raw.githubusercontent.com/xsys/x/main/scripts/install.sh | sh
+```
 
-# Windows (PowerShell)
+Windows (PowerShell)：
+
+```powershell
 iwr https://raw.githubusercontent.com/xsys/x/main/scripts/install.ps1 -OutFile install.ps1
 .\install.ps1 -AddToPath
 ```
