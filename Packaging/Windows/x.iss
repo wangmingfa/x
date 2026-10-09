@@ -33,14 +33,14 @@ AppPublisher={#MyPublisher}
 AppPublisherURL={#MyURL}
 AppSupportURL={#MyURL}
 AppUpdatesURL={#MyURL}
-DefaultDirName={autopf}\{#MyAppName}
+DefaultDirName={localappdata}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 OutputBaseFilename=x-{#ReleaseTag}-windows-x86_64-setup
 Compression=lzma2/ultra64
 SolidCompression=yes
 ArchitecturesInstallIn64BitMode=x64
 ChangesEnvironment=yes
-PrivilegesRequired=admin
+PrivilegesRequired=lowest
 WizardStyle=modern
 UninstallDisplayName={#MyAppName}
 
@@ -56,12 +56,14 @@ Name: "{commondesktop}\{#MyAppName}"; Filename: "{app}\x.exe"; Tasks: desktopico
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a &desktop icon"; GroupDescription: "Additional icons:"
-Name: "path";        Description: "Add {#MyAppName} to your PATH"; GroupDescription: "Environment:"
+Name: "path";        Description: "Add {#MyAppName} to your PATH"; GroupDescription: "Environment:"; Flags: checkedonce
 
 [Code]
-{ PATH is written here, not from a [Registry] entry: an entry with a ValueName but }
-{ no ValueData creates the key and writes no value, so the two would be a silent  }
-{ second route through the same registry value.                                  }
+{ PATH is written to the per-user (HKCU) environment here, not from a [Registry] }
+{ entry: an entry with a ValueName but no ValueData creates the key and writes   }
+{ no value, so the two would be a silent second route through the same registry  }
+{ value. The install is per-user (LocalAppData, no admin), so we must target      }
+{ HKCU rather than HKLM.                                                         }
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   OrigPath: string;
@@ -70,7 +72,7 @@ var
 begin
   if (CurStep = ssPostInstall) and IsTaskSelected('path') then
   begin
-    if RegQueryStringValue(HKLM, 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment', 'Path', OrigPath) then
+    if RegQueryStringValue(HKCU, 'Environment', 'Path', OrigPath) then
     begin
       AppDir := ExpandConstant('{app}');
       NewPath := OrigPath;
@@ -79,7 +81,7 @@ begin
         if (Length(NewPath) > 0) and (Copy(NewPath, Length(NewPath), 1) <> ';') then
           NewPath := NewPath + ';';
         NewPath := NewPath + AppDir;
-        RegWriteStringValue(HKLM, 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment', 'Path', NewPath);
+        RegWriteStringValue(HKCU, 'Environment', 'Path', NewPath);
       end;
     end;
   end;

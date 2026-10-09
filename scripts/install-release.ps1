@@ -36,8 +36,11 @@ if (-not (Test-Path $setup) -or (Get-Item $setup).Length -eq 0) {
 }
 
 Info "running the installer (silently)"
-# Inno Setup silent flags; the installer places x.exe on disk itself.
-Start-Process -FilePath $setup -ArgumentList '/VERYSILENT', '/NORESTART' -Wait
+# Inno Setup silent flags. The installer is a per-user build (LocalAppData, no
+# admin), so we pin the directory explicitly to match the path we verify below
+# and avoid any fallback to a different drive layout.
+$dir = "$env:LOCALAPPDATA\x"
+Start-Process -FilePath $setup -ArgumentList '/VERYSILENT', '/NORESTART', '/SUPPRESSMSGBOXES', "/DIR=$dir" -Wait
 
 $x = "$env:LOCALAPPDATA\x\x.exe"
 if (-not (Test-Path $x)) {
