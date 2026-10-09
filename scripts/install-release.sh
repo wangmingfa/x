@@ -101,6 +101,6 @@ chmod 0755 "$BIN_DIR/x"
 info "installed: $("$BIN_DIR/x" --version 2>/dev/null || echo x)"
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
-  *) warn "add $BIN_DIR to your PATH (e.g. export PATH=$BIN_DIR:\$PATH)" ;;
+  *) warn "add $BIN_DIR to your PATH (e.g. export PATH=$BIN_DIR:\$PATH), then open a new terminal" ;;
 esac
 info "done"

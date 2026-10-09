@@ -40,6 +40,8 @@ powershell -c "irm https://raw.githubusercontent.com/wangmingfa/x/main/scripts/i
   Windows 下载 Inno 安装包静默安装。装到 `PREFIX/bin`（默认 `/usr/local/bin`；
   Windows 由安装包落位到 `%LOCALAPPDATA%\x`），`-AddToPath` 把该目录写进用户 PATH。
 - 装指定版本：`X_VERSION=v0.1.2`（bash）或 `-Version v0.1.2`（PowerShell）。
+- 注：把安装目录写进用户 PATH 后，**需重开终端（或新开一个窗口）**，`x` 命令才会
+  生效——已打开的终端不会自动读取新的 PATH。Windows 安装脚本结束时也会打印该提示。
 
 ### 从源码构建安装
 
