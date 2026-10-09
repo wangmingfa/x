@@ -203,6 +203,19 @@ step "CHANGELOG for $tag"
 if [ -n "$(git status --porcelain -- CHANGELOG.md)" ]; then
     # Committing this file adds a commit, and the commit is the one thing the
     # generator does not list, so the next run reproduces the file byte for byte.
+    if [ "$interactive" = 1 ]; then
+        printf 'CHANGELOG.md lists what this release contains but is not committed yet.\n'
+        printf 'Commit it and continue? [Y/n]: '
+        read -r answer
+        case "$answer" in
+            n|N|no|No)
+                printf 'aborted\n'
+                exit 1
+                ;;
+        esac
+        git add CHANGELOG.md
+        git commit -m "docs: regenerate CHANGELOG for $tag"
+    fi
     printf 'error: CHANGELOG.md lists what this release contains but is not committed yet\n' >&2
     printf '       git add CHANGELOG.md && git commit -m "docs: regenerate CHANGELOG for %s"\n' "$tag" >&2
     printf '       then run this script again\n' >&2
