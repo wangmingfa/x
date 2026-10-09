@@ -15,6 +15,7 @@ produce is a claim nobody can trace back to a commit.
 
 ### Fixes
 
+- **release:** retag 时自动删除同名 GitHub release，避免重发 already_exists 重发已存在 tag 时，删 git tag 会把对应 GitHub release 降级成 draft， action-gh-release 无法在其上重发，finalize 阶段报 already_exists。 (1762b2c)
 - **packaging:** Windows 安装包落位到 LocalAppData 且免管理员，对齐安装脚本 README 的 irm|iex 一行命令失败：x.iss 旧配置把程序装到 C:\Program Files 并要求管理员，而 install-release.ps1 检测的是 %LOCALAPPDATA%\x 且未提权启动安装器，导致路径不匹配、无权限写入。 (5ad331a)
 - **scripts:** resolve the latest release from /releases, not /releases/latest /releases/latest 404s when the repo's newest release is a prerelease (e.g. v0.1.0-rc.1), so the install scripts could never pick a tag. List /releases and take the first entry instead - GitHub returns them newest-first, prereleases included. Applied to install-release.sh, install-release.ps1 and install.ps1 -FromRelease alike. (db1270e)
 - point install URLs and repo references at wangmingfa/x The scripts, README, Cargo.toml and packaging files referenced a xsys/x repository that does not exist; the actual repository is wangmingfa/x. Also add scripts/install-release.ps1 so the Windows release install is a single command (download + silent install + PATH), matching install-release.sh on macOS/Linux. (9cfc536)
@@ -151,18 +152,30 @@ Subjects with no recognised `type:` prefix, kept verbatim.
 
 ### Fixes
 
+- **packaging:** Windows 安装包落位到 LocalAppData 且免管理员，对齐安装脚本 README 的 irm|iex 一行命令失败：x.iss 旧配置把程序装到 C:\Program Files 并要求管理员，而 install-release.ps1 检测的是 %LOCALAPPDATA%\x 且未提权启动安装器，导致路径不匹配、无权限写入。 (5ad331a)
+- **scripts:** resolve the latest release from /releases, not /releases/latest /releases/latest 404s when the repo's newest release is a prerelease (e.g. v0.1.0-rc.1), so the install scripts could never pick a tag. List /releases and take the first entry instead - GitHub returns them newest-first, prereleases included. Applied to install-release.sh, install-release.ps1 and install.ps1 -FromRelease alike. (db1270e)
+- point install URLs and repo references at wangmingfa/x The scripts, README, Cargo.toml and packaging files referenced a xsys/x repository that does not exist; the actual repository is wangmingfa/x. Also add scripts/install-release.ps1 so the Windows release install is a single command (download + silent install + PATH), matching install-release.sh on macOS/Linux. (9cfc536)
 - **release:** upload the installer from iscc's Output directory iscc writes to Packaging/Windows/Output/, but the upload step looked in the repository root, matched nothing and only warned - so the release published without the Windows installer and the publish job's asset-name check failed. Point the path at the real location and fail the job when no file matches instead of publishing minus one asset. (29d9d5c)
 - use Pascal comments in the installer [Code] section (22602e7)
+
+### Documentation
+
+- split install commands per OS under release/source headings One code block per operating system (macOS/Linux share the sh block, Windows gets its own powershell block), and separate ### sections for release-binary install and source build. (ef7dd11)
 
 ### CI
 
 - bump actions to v5 to silence Node.js 20 deprecation warning actions/checkout@v4 targets Node.js 20, which runners now force onto Node.js 24 with a deprecation warning. Move checkout, upload-artifact and download-artifact to v5, which targets Node.js 24 natively. (5a99b0e)
 - pin runner images to the ones release.yml builds on ubuntu-latest/macOS-latest/windows-latest drift over time; use ubuntu-22.04, macos-15 and windows-2022 to match the release build images. (e6bb1bf)
 
+### Chores
+
+- 将 .workbuddy/ 加入 .gitignore .workbuddy/ 是代理在本机产生的本地工作区记忆（daily log / MEMORY.md），属 本地状态而非项目源码，与 .idea/、.vscode/ 同性质，不应进版本库；忽略后 文件夹仍保留在磁盘上。 (fbc4adb)
+
 ### Other changes
 
 Subjects with no recognised `type:` prefix, kept verbatim.
 
+- docs+fix: irm|iex install commands, AddToPath on by default Document the Windows install as a single powershell -c "irm ...|iex" one-liner for both release and source installs, leaving no local script file. install.ps1 now enables AddToPath by default (turn off with -AddToPath:\$false), so the parameterless irm|iex invocation still lands x on the PATH; install-release.ps1 already did. (20d122d)
 - macOS SMC 占位温度：本机随机交替取证，并按回答内容实现防护 - 取证用随机交替破混淆（只有一台 Mac，换机不可行）：独立 C 探针五种条件   A1 新开 client+枚举 / A2 同 client 再读一遍 / B 长命复用 client /   C 新开 client 跳过枚举 / D 空闲 12-16s 后读，两轮 147 个样本。结论：   占位是持续数秒的全局窗口，窗口内所有条件同时中——候选 ①（每样本多读   一轮）作废，A1/A2 配对 37 次里 36 次同判，那 0.25s 白花；候选 ②（复用   长命 client）作废，B 在窗口里同样中招，D 反而 5 次里 4 次是真值 - 只剩候选 ③ 并已实现：common/smc.rs 新增纯函数   hottest_when_differentiated(&[f32])，distinct >= ceil(matched/2) 才给最热值。   实测区分度很宽：占位组 1 个或 5 个不同值，真读数 44-45；五值组   {-4.0, 0.0, 2.5, 4.0, 5.2} 每个单独都落在 −40…150 合理窗口内，所以光靠   窗口拦不住，塌缩的是整组。单键机器 ceil(1/2)=1 不误伤 - macos/smc.rs 读循环改成先收齐全组再判：边读边折最大值看不见塌缩，   一个孤立热核单独看永远合理。Linux 的 thermal_zone/hwmon 不动——另一个   来源另一种失效方式，强行统一是假统一。判断函数在平台无关模块，这段   逻辑 CI 三平台都真跑 - 测试：4 个新夹具（45 键同 40.0、五值量化组、实测真读数、43 占位+热核的   过渡行）+ 把原来手写 fold 自己跟自己一致的 the_hottest_core_wins_over_a_mixed_set   改成调用真函数；x-platform 125 → 129 - README P5 段加「整组没分化就不给数」条目：写清实测窗口、被排除的两种解释、   阈值与代价（窗口内打印「本平台未暴露」而不是一个数字），机制仍未定论 - devlog 2026-10-09 第三个坑改为已取证 + 已实现，含实验设计、三条结论、   活体 30 样本（21 给温度、9 整段无 temp 字段、不再出现 5.2 / 平坦 40.0） - 门禁：cargo fmt --check 0、clippy --workspace --all-targets -D warnings 干净、   cargo test --workspace 全绿。分析器初版漏解析 below20= 0（%2d 前导空格），   把 82 行只读成 10 行、算出 87.5% 的假污染率；补 \s* 并加「解析行数 ==   ROW 行数」自检后重算才得到上面的数字 (8cfa3ee)
 - macOS SMC 温度：修一个数据符号误声明，按声明类型分发解码 - mach_task_self_ 按数据符号读（macos/smc.rs）：原先声明成 fn 让   IOServiceOpen 跳进 __DATA 页，真机 SIGBUS（exit 138），x sys cpu /   x sys watch / TUI 仪表盘全中止，项目自己的测试也在 Mac 上 abort，   本地门禁原本不可满足 - common/smc.rs 加 DATA_TYPE_FLT 与 decode_temperature 分发：本机 45 个   Tp0* 传感器全是 flt 而非 sp78，只认 sp78 会静默返回 None；同一串字节   两种解法差 500 倍且都落在 −40…150 合理窗口内，错了无法察觉，所以按   SMC 声明的类型选解码器，未知类型拒绝而不是猜 - x sys watch 的温度加 temp 标签，并与 x sys cpu 统一成 `temp NN.N C`：   紧跟负载三元的裸数字读起来像第四个 load 数；.1 精度顺带让占位读数   （5.2 C）现形。3 个单测 + 1 个 E2E，E2E 用 stub 走真实命令路径把两处   钉在同一字面量上，红→绿已验 - README 三处与实现相反的条目如实回写：Linux DHCP 其实已实现（ip -4 addr   show 的 dynamic ∪ nmcli 的 auto，两者都没提的接口留空而非 static）；   HDR 是三态读取，Windows 走 DisplayConfig，macOS/Linux 是「没说话」不是   「关」；P5 macOS CPU 温度段重写，写明类型口径、两个 ABI 坑，以及这条   路径在 CI（VM 无 AppleSMC）上必然空跑 - devlog 2026-10-09 记录排查证据链；其中「第三个坑」（同进程内 75.4 C 与   5.2 C 交替，占位读数落在合理窗口内被透传）只留数据与三个候选方案，   未处理，等定方向 - 门禁：cargo fmt --check 0、clippy --workspace --all-targets -D warnings   干净、cargo test --workspace 全绿（x-cli lib 50 / E2E 94、x-core 171、   x-platform 125）；本机活体 x sys cpu、x sys watch 退出码 0 且温度可读 (d553b4a)
 
