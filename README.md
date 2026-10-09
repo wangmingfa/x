@@ -43,6 +43,20 @@ powershell -c "irm https://raw.githubusercontent.com/wangmingfa/x/main/scripts/i
 - 注：把安装目录写进用户 PATH 后，**需重开终端（或新开一个窗口）**，`x` 命令才会
   生效——已打开的终端不会自动读取新的 PATH。Windows 安装脚本结束时也会打印该提示。
 
+### 升级
+
+`x upgrade` 从 GitHub Release 拉取最新版本并替换自身（无需重新跑安装脚本）：
+
+```sh
+x upgrade
+```
+
+- 自动按平台选产物（macOS universal / Linux 按架构 / Windows 安装包），与
+  安装脚本同一套逻辑；最新 release 是预发布版时同样可取。
+- 已是最新版则提示 "already up to date"；`--force` 强制重装同版本。
+- 替换自身属破坏性动作，先确认（`--yes` 跳过，拒绝退出码 130）。
+- Windows 上通过重命名技巧替换运行中的 `x.exe`（旧文件改名 `x.exe.old`）。
+
 ### 从源码构建安装
 
 需要 Rust 工具链：

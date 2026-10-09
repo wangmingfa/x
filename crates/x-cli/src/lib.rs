@@ -271,6 +271,9 @@ pub enum Command {
 
     /// Response headers of one HTTP request.
     Headers(commands::netdiag::HttpArgs),
+
+    /// Replace this binary with the newest GitHub release.
+    Upgrade(commands::upgrade::UpgradeArgs),
 }
 
 /// Signal to deliver to a process.
@@ -480,6 +483,7 @@ fn dispatch(
         Some(Command::Headers(args)) => {
             commands::netdiag::dispatch_headers(context, renderer, args)
         }
+        Some(Command::Upgrade(args)) => commands::upgrade::dispatch(renderer, confirmer, args),
     }
 }
 

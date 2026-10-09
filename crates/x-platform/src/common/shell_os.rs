@@ -9,6 +9,8 @@ use std::process::Command;
 use x_core::error::Error;
 use x_core::error::Result;
 use x_core::shell::{ShellInfo, ShellManager};
+#[cfg(windows)]
+use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
 /// The platform shell adapter.
 pub struct PlatformShell;
@@ -30,8 +32,13 @@ impl ShellManager for PlatformShell {
         }
         #[cfg(windows)]
         {
-            // COMSPEC points at cmd.exe; PowerShell spawns are invisible to us
-            // without polling the parent process, so report the default.
+            // Prefer the shell that actually spawned us (powershell/pwsh/cmd) by
+            // walking the parent process chain. COMSPEC always points at cmd.exe
+            // and hides which host is really running, so only fall back to it
+            // when no shell is found on the chain.
+            if let Some(shell) = parent_shell() {
+                return Ok(describe(shell));
+            }
             let comspec = std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".into());
             Ok(describe(comspec))
         }
@@ -136,6 +143,39 @@ impl ShellManager for PlatformShell {
         #[cfg(not(any(unix, windows)))]
         return Err(Error::unsupported("shell detection is not supported here"));
     }
+}
+
+/// Name of the shell binary that spawned this process, when readable.
+///
+/// Windows: walk the parent chain with `sysinfo` and return the first real
+/// shell (powershell.exe / pwsh.exe / cmd.exe). Terminal hosts such as
+/// conhost.exe, WindowsTerminal.exe or explorer.exe sit above the shell and are
+/// skipped, so we report the shell itself rather than its container.
+#[cfg(windows)]
+fn parent_shell() -> Option<String> {
+    let mut system = System::new();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing()
+            .with_exe(UpdateKind::OnlyIfNotSet)
+            .with_cmd(UpdateKind::OnlyIfNotSet),
+    );
+    let mut pid = std::process::id();
+    for _ in 0..16 {
+        let process = system.process(Pid::from_u32(pid))?;
+        let name = process.name().to_string_lossy().into_owned();
+        let lower = name.to_ascii_lowercase();
+        if matches!(lower.as_str(), "powershell.exe" | "pwsh.exe" | "cmd.exe") {
+            let path = process
+                .exe()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or(name);
+            return Some(path);
+        }
+        pid = process.parent()?.as_u32();
+    }
+    None
 }
 
 /// Name of the shell binary that spawned this process, when readable.

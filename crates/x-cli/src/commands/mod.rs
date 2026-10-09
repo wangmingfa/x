@@ -37,6 +37,7 @@ pub mod shell;
 pub mod ssh;
 pub mod startup;
 pub mod sys;
+pub mod upgrade;
 pub mod usergroup;
 pub mod window;
 
