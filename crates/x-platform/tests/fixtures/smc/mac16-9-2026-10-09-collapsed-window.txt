@@ -1,0 +1,62 @@
+# Recorded from the same real AppleSMC moments later, on 2026-10-09.
+#
+#   machine: Mac16,9 (arm64), macOS 15.6, same C probe (see the header of
+#            mac16-9-2026-10-09-differentiated.txt for the format).
+#
+# This capture landed inside one of the undifferentiated windows: the 45 `Tp0*`
+# keys answer only four values {-4.0, 0.0, 4.0, 40.0}, repeating in key order.
+# Every one of them sits inside the plausible temperature range, so nothing
+# except the collapse of the set says "this is not a temperature".
+#
+# Only DATA lines are kept. The probe also enumerated the full key table in this
+# read and `diff` of the `KEY` lines between the two captures reported no
+# difference, as well as no difference in any key's type or size: the table does
+# not change during a window, only the sensor payloads. The tests rebuild the
+# enumeration from the differentiated file.
+
+DATA #KEY 75693332 4 0000083d
+DATA Tp00 666c7420 4 000080c0
+DATA Tp01 666c7420 4 00008040
+DATA Tp02 666c7420 4 00000000
+DATA Tp04 666c7420 4 00002042
+DATA Tp05 666c7420 4 00002042
+DATA Tp06 666c7420 4 00002042
+DATA Tp08 666c7420 4 000080c0
+DATA Tp09 666c7420 4 00008040
+DATA Tp0A 666c7420 4 00000000
+DATA Tp0C 666c7420 4 00002042
+DATA Tp0D 666c7420 4 00002042
+DATA Tp0E 666c7420 4 00002042
+DATA Tp0G 666c7420 4 00002042
+DATA Tp0H 666c7420 4 00002042
+DATA Tp0I 666c7420 4 00002042
+DATA Tp0K 666c7420 4 00002042
+DATA Tp0L 666c7420 4 00002042
+DATA Tp0M 666c7420 4 00002042
+DATA Tp0O 666c7420 4 00002042
+DATA Tp0P 666c7420 4 00002042
+DATA Tp0Q 666c7420 4 00002042
+DATA Tp0S 666c7420 4 00002042
+DATA Tp0T 666c7420 4 00002042
+DATA Tp0U 666c7420 4 00002042
+DATA Tp0W 666c7420 4 000080c0
+DATA Tp0X 666c7420 4 00008040
+DATA Tp0Y 666c7420 4 00000000
+DATA Tp0a 666c7420 4 00002042
+DATA Tp0b 666c7420 4 00002042
+DATA Tp0c 666c7420 4 00002042
+DATA Tp0d 666c7420 4 000080c0
+DATA Tp0e 666c7420 4 00008040
+DATA Tp0f 666c7420 4 00000000
+DATA Tp0g 666c7420 4 00002042
+DATA Tp0i 666c7420 4 00002042
+DATA Tp0k 666c7420 4 00002042
+DATA Tp0l 666c7420 4 00002042
+DATA Tp0m 666c7420 4 00002042
+DATA Tp0n 666c7420 4 00002042
+DATA Tp0o 666c7420 4 00002042
+DATA Tp0q 666c7420 4 00002042
+DATA Tp0t 666c7420 4 00002042
+DATA Tp0u 666c7420 4 00002042
+DATA Tp0v 666c7420 4 00002042
+DATA Tp0w 666c7420 4 00002042

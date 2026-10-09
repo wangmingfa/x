@@ -1,10 +1,18 @@
-# Install x on Windows by building from source (cargo) and copying x.exe.
+# Install x on Windows by building from source (cargo) and copying x.exe, or,
+# with -FromRelease, by downloading the release installer - no Rust toolchain.
 #
 #   iwr https://raw.githubusercontent.com/xsys/x/main/scripts/install.ps1 -OutFile install.ps1; .\install.ps1 -AddToPath
+#   .\install.ps1 -FromRelease -AddToPath
 param(
     [string]$Prefix = "$env:LOCALAPPDATA\x",
     [switch]$AddToPath,
-    [switch]$Yes
+    [switch]$Yes,
+    # Download the x-*-windows-x86_64-setup.exe from GitHub Releases and run it
+    # silently instead of building from source. -Prefix is ignored: the
+    # installer decides where x.exe goes.
+    [switch]$FromRelease,
+    # Release tag to install; empty means the latest release.
+    [string]$Version = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -13,6 +21,48 @@ $Version = '0.1.0'
 $SrcDir  = "$env:TEMP\x-src"
 
 function Info($msg) { Write-Host "==> $msg" }
+
+if ($FromRelease) {
+    $repo = 'xsys/x'
+    if (-not $Version) {
+        Info "resolving the latest release of $repo"
+        $rel = Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest"
+        $Version = $rel.tag_name
+    }
+    $asset = "x-$Version-windows-x86_64-setup.exe"
+    $url = "https://github.com/$repo/releases/download/$Version/$asset"
+    $setup = Join-Path $env:TEMP $asset
+
+    Info "downloading $url"
+    Invoke-WebRequest -Uri $url -OutFile $setup
+    if (-not (Test-Path $setup) -or (Get-Item $setup).Length -eq 0) {
+        Write-Error "download failed: $setup is missing or empty"
+        exit 1
+    }
+
+    Info "running the installer (silently)"
+    # Inno Setup silent flags; the installer places x.exe on disk itself.
+    Start-Process -FilePath $setup -ArgumentList '/VERYSILENT', '/NORESTART' -Wait
+
+    $x = "$env:LOCALAPPDATA\x\x.exe"
+    if (-not (Test-Path $x)) {
+        Write-Error "installer did not produce $x"
+        exit 1
+    }
+    Info "installed: $(& $x --version 2>$null)"
+
+    if ($AddToPath) {
+        $dir = Split-Path $x
+        $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+        if ($userPath -notlike "*$dir*") {
+            [Environment]::SetEnvironmentVariable('Path', "$userPath;$dir", 'User')
+            Info "added $dir to user PATH (restart the terminal to apply)"
+        }
+    } else {
+        Info "hint: run with -AddToPath, or add $(Split-Path $x) to your PATH manually"
+    }
+    exit 0
+}
 
 if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
     Write-Error "cargo (Rust toolchain) is required. Install from https://rustup.rs"

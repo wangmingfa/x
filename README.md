@@ -19,6 +19,23 @@ cargo build -p x-app
 
 ## 安装
 
+一条命令从 GitHub Release 下载最新版并装进 PATH（无需 Rust 工具链）：
+
+```sh
+# macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/xsys/x/main/scripts/install-release.sh | sh
+
+# Windows (PowerShell)
+iwr https://raw.githubusercontent.com/xsys/x/main/scripts/install.ps1 -OutFile install.ps1
+.\install.ps1 -FromRelease -AddToPath
+```
+
+- 脚本按平台自动选产物：macOS 用 universal 包（Apple Silicon 与 Intel 合在一个
+  二进制里，无需判架构）；Linux 按 `uname -m` 取 `Linux-x86_64` / `Linux-aarch64`；
+  Windows 下载 Inno 安装包静默安装。装到 `PREFIX/bin`（默认 `/usr/local/bin`；
+  Windows 由安装包落位到 `%LOCALAPPDATA%\x`），`-AddToPath` 把该目录写进用户 PATH。
+- 装指定版本：`X_VERSION=v0.1.2`（bash）或 `-Version v0.1.2`（PowerShell）。
+
 从源码构建并安装（需要 Rust 工具链）：
 
 ```sh
@@ -561,11 +578,16 @@ GitHub Actions CI 在 Ubuntu / macOS / Windows 三平台上跑格式、clippy
 **B 组 · 补齐已知留空项**
 
 - [x] macOS CPU 温度：`x sys cpu` 的温度此前仅 Linux 有（thermal_zone/hwmon），
-  现经 IOKit 连接 `AppleSMC` 用户客户端读取 die 传感器。**枚举键名而不是硬编码**：
-  Intel 是 `TC0*`、Apple silicon 是 `Tp0*`/`Tm0*`，任何固定清单都只在部分机型上
-  成立；GPU（`TG0*`）、环境（`TA0*`）、电池（`TB0*`）、内存（大写 `TM0P`）都被
-  排除——那是别的传感器，不是 CPU 温度。**按 `keyInfo` 声明的类型分流解码**：`sp78` 是
-  **大端有符号** 8.8 定点，`flt ` 是**小端 IEEE-754 单精度**——本机实测 45 个 `Tp0*`
+  现经 IOKit 连接 `AppleSMC` 用户客户端读取 CPU 传感器。**枚举键名而不是硬编码**：
+  Intel 是 `TC0*`/`Tm0*`；本机（Mac16,9）在 2109 个键的实测键表里是四个 die 簇
+  `Tp0*`(45)/`Tp1*`(14)/`Tp2*`(31)/`Tpx*`(12) 加 `Ts0*`(30) 热管簇，共 132 个键。任何
+  固定清单都只在部分机型上成立，而只认 `Tp0*` 会少报：同一时刻 `Tp1o` 比最高的 `Tp0*`
+  高 3.84 ℃（82.109375 对 78.265625）。GPU（`TG0*`）、环境（`TA0*`）、电池（`TB0*`）、
+  内存（大写 `TM0P`）都排除——那是别的传感器；形近的 `TPD0`/`TPMp`/`TPSD`/`TS0p`/`TSV*`/
+  `TMVR`/`TH0x`/`TCDX`/`TCMb`/`TCMz` 同样排除，大小写在这里有意义（小写 `Tm0` 是核心，
+  大写 `TM0P` 是内存）。`Tsx0`/`Tsx1` 读数与 `Ts0*` 同段但不在这次的口径决定里，不读。
+  **按 `keyInfo` 声明的类型分流解码**：`sp78` 是
+  **大端有符号** 8.8 定点，`flt ` 是**小端 IEEE-754 单精度**——本机实测 132 个 CPU 键
   清一色 `flt `、`sp78` 键一个都没有，只认一种类型就等于在 Apple silicon 上永远读不到。
   类型不是装饰：同一串 `00 20 83 42` 按 `flt ` 是 65.5625 ℃、按 `sp78` 是 0.125 ℃，两个
   都落在 −40…150 ℃ 的窗口里，选错解码器拿到的是一个看不出破绽的错数。认不出的类型
@@ -577,16 +599,25 @@ GitHub Actions CI 在 Ubuntu / macOS / Windows 三平台上跑格式、clippy
   `mach_task_self_` 是 libsystem_kernel 的**数据符号**（C 里 `mach_task_self()` 只是读它
   的宏），声明成函数照样链接通过，运行时跳进 `__DATA` 把 task port 的数值当指令执行。
   两处共同点：都不返回错误码，直接把内存或控制流改掉，所以「调用失败」这种期待本身
-  不成立；协议结构按权威定义写成 80 字节、抽到平台无关模块全平台测试，布局用编译期
-  断言钉死。**这条链路在 CI 上是空跑的**：GitHub 的 macOS runner 是虚拟机，没有
-  `AppleSMC` 服务，`Smc::open()` 在匹配服务那步就返回 `None`，后面几行从未执行——真机
-  取证过程见 `docs/devlog/2026-10-09-macos-smc-mach-task-self.md`。**整组没分化就不给数**：
-  本机实测某些持续数秒的窗口里 45 个 `Tp0*` 键同时刻回答同一个 40.0，或整组落在
-  {−4.0, 0.0, 2.5, 4.0, 5.2} 上，这些值全在合理窗口内、单独看都像真读数；随机交替实验
-  （147 个样本）排除了「新开 client 的前几轮」和「空闲后缓存过期」两种解释（同一 client
-  内再读一遍、复用长命 client 都不能避免），所以防护按**回答的内容**判——整组不同值不足
-  键数一半时返回 `None`（单键机器不受影响），窗口内打印「本平台未暴露」而不是一个数字。
-  判断函数在平台无关模块里，三平台都编译、CI 都真跑；机制本身仍未定论，见同一篇 devlog。
+  不成立；协议结构按权威定义写成 80 字节，布局用编译期断言钉死。**IOKit 那一层在 CI 上
+  仍是空跑的**：GitHub 的 macOS runner 是虚拟机，没有 `AppleSMC` 服务，`Smc::open()` 在
+  匹配服务那步就返回 `None`。所以缝抽在**一次 80 字节交换**上（`RoundTrip`）：计数、枚举、
+  过滤、按类型分流、按簇聚合判断整条循环都搬进平台无关模块，用这台机器录下的真实 transcript
+  回放（`crates/x-platform/tests/fixtures/smc/`：`#KEY`=2109 与全部 2109 个键名，加 132 个
+  CPU 键的 keyinfo 与原始载荷；三份捕获分别是一次全簇分化、一次四个 die 簇全占位而热管簇照旧
+  报温度、一次 45 键整组同值 40.0 的塌缩窗口）——CI 三平台跑的就是
+  产品代码里的那条循环，`macos/smc.rs` 只剩 FFI。真机取证过程见
+  `docs/devlog/2026-10-09-macos-smc-mach-task-self.md`。**按簇判分化，没分化的那一簇一个数都
+  不留**：占位是**一簇一簇**发生的——实测同一次读取里 `Tp0*` 45 键只有 5 个不同值、`Tp1*` 4/14、
+  `Tp2*` 5/31、`Tpx*` 1/12，而 `Ts0*` 同期报 20 个不同温度；这些占位值全在合理窗口内（本机
+  见过的形状是 ≤5.2 ℃ 和整组 40.0），单独看都像真读数。随机交替实验（147 个样本）排除了
+  「新开 client 的前几轮」和「空闲后缓存过期」两种解释（同一 client 内再读一遍、复用长命 client
+  都不能避免），所以防护按**回答的内容**判——某簇的不同值不足该簇键数一半时整簇丢弃（单键机器
+  不受影响）。口径放宽后不能再「全机一把判」：132 键合并阈值是 66 个不同值，而 50 次真实捕获里
+  最省的一次只数到 69——3 个值的余量；分簇判之后每个簇对自己的一半都有至少 4 的余量（最紧的是
+  `Ts0*`：需要 15，实测 19–20）。可见后果：die 簇全占位时 x 不再沉默，而是报热管簇那 46–54 ℃，
+  且本机 50 次捕获里 `Ts0*` 每次都分化，所以「本平台未暴露」在这台机器上此后基本只在无特权或
+  虚拟机上出现。判断与它喂进去的真实载荷都在平台无关模块里，CI 三平台都真跑；机制本身仍未定论，见同一篇 devlog。
 - [x] 容器统一到 `x container`：新增 `x container ps/images/ports/port/logs`，
   自动发现本机引擎（docker → podman → nerdctl），`x container engines` 列出可用
   与当前引擎，`X_CONTAINER_ENGINE` 可钉住。三套 CLI 各一个适配，**不强行合并成假

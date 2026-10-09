@@ -2,11 +2,13 @@
 //! lives in [`crate::common::smc`].
 //!
 //! Nothing about the SMC protocol is decided here — struct layout, command
-//! codes, key packing, the per-type temperature decoders and the rule that
-//! refuses an undifferentiated group of readings are all in the common module
-//! and tested on every platform. This file is only the Mach
-//! plumbing, and it exists mostly to carry the ABI facts that a mistake in does
-//! not fail a call but corrupts memory:
+//! codes, key packing, the per-type temperature decoders, the rule that refuses
+//! an undifferentiated group of readings and the read loop that ties them
+//! together are all in the common module, replayed against real hardware
+//! transcripts and tested on every platform. This file is the Mach plumbing and
+//! nothing else: open the user client, answer one 80-byte call, close it on
+//! drop. It exists mostly to carry the ABI facts that a mistake in does not
+//! fail a call but corrupts memory:
 //!
 //! - `IOConnectCallStructMethod` takes its input and output sizes as
 //!   `size_t` (`usize`), not `u32`. The wrong width leaves the upper register
@@ -101,12 +103,16 @@ impl Smc {
         }
         Some(Self { connection })
     }
+}
 
-    /// One 80-byte `SMCKeyData_t` round trip.
+impl proto::RoundTrip for Smc {
+    /// One 80-byte `SMCKeyData_t` round trip over the user client.
     ///
-    /// Both the IOKit return code and the SMC's own `result` byte must say
-    /// success; anything else means "this machine would not say".
-    fn call(&self, input: &mut proto::SmcKeyData) -> Option<proto::SmcKeyData> {
+    /// Only the transport's own failure is reported here (a kern return that is
+    /// not success); the SMC's `result` byte is read by
+    /// [`proto::SmcClient::call`], so a replay can produce either kind of
+    /// failure and the protocol code sees the same shape either way.
+    fn round_trip(&self, input: &proto::SmcKeyData) -> Option<proto::SmcKeyData> {
         let mut output = proto::SmcKeyData::default();
         let size = std::mem::size_of::<proto::SmcKeyData>();
         let mut out_size = size;
@@ -125,71 +131,10 @@ impl Smc {
                 &mut out_size,
             )
         };
-        if rc != 0 || output.result != proto::SMC_RESULT_SUCCESS {
+        if rc != 0 {
             return None;
         }
         Some(output)
-    }
-
-    /// Total number of keys the SMC holds, via the `#KEY` pseudo-key.
-    fn key_count(&self) -> Option<u32> {
-        let mut info_req = proto::SmcKeyData {
-            key: proto::pack_key("#KEY"),
-            data8: proto::SMC_CMD_READ_KEYINFO,
-            ..proto::SmcKeyData::default()
-        };
-        let info = self.call(&mut info_req)?;
-        let size = info.key_info.data_size;
-        if size == 0 || size as usize > proto::SmcKeyData::default().bytes.len() {
-            return None;
-        }
-        let mut read_req = proto::SmcKeyData {
-            key: info_req.key,
-            data8: proto::SMC_CMD_READ_BYTES,
-            key_info: proto::SmcKeyInfo {
-                data_size: size,
-                ..proto::SmcKeyInfo::default()
-            },
-            ..proto::SmcKeyData::default()
-        };
-        let value = self.call(&mut read_req)?;
-        proto::decode_key_count(&value.bytes)
-    }
-
-    /// The name of the key at `index`.
-    fn key_name_at(&self, index: u32) -> Option<String> {
-        let mut req = proto::SmcKeyData {
-            data8: proto::SMC_CMD_READ_INDEX,
-            data32: index,
-            ..proto::SmcKeyData::default()
-        };
-        let out = self.call(&mut req)?;
-        Some(proto::key_name(out.key))
-    }
-
-    /// Read one key's type and payload.
-    fn read_key(&self, key: u32) -> Option<(u32, [u8; 32])> {
-        let mut info_req = proto::SmcKeyData {
-            key,
-            data8: proto::SMC_CMD_READ_KEYINFO,
-            ..proto::SmcKeyData::default()
-        };
-        let info = self.call(&mut info_req)?;
-        let size = info.key_info.data_size;
-        if size == 0 || size as usize > info.bytes.len() {
-            return None;
-        }
-        let mut read_req = proto::SmcKeyData {
-            key,
-            data8: proto::SMC_CMD_READ_BYTES,
-            key_info: proto::SmcKeyInfo {
-                data_size: size,
-                ..proto::SmcKeyInfo::default()
-            },
-            ..proto::SmcKeyData::default()
-        };
-        let value = self.call(&mut read_req)?;
-        Some((info.key_info.data_type, value.bytes))
     }
 }
 
@@ -212,32 +157,10 @@ pub fn cpu_temperature() -> Result<Option<f32>> {
 
 fn read_cpu_temperature() -> Option<f32> {
     let smc = Smc::open()?;
-    let count = smc.key_count()?;
-    // A machine claiming an implausible key count is answering with something
-    // other than a real SMC; enumerating it would be slow and meaningless.
-    if count == 0 || count > 4096 {
-        return None;
-    }
-
-    let mut samples: Vec<f32> = Vec::new();
-    for index in 0..count {
-        let Some(name) = smc.key_name_at(index) else {
-            continue;
-        };
-        if !proto::is_cpu_temperature_key(&name) {
-            continue;
-        }
-        let Some((data_type, bytes)) = smc.read_key(proto::pack_key(&name)) else {
-            continue;
-        };
-        if let Some(celsius) = proto::decode_temperature(data_type, &bytes) {
-            samples.push(celsius);
-        }
-    }
-    // The whole group is considered, not folded as it goes: an
-    // undifferentiated answer only shows in the spread across keys, and a
-    // single hot core read on its own looks plausible.
-    proto::hottest_when_differentiated(&samples)
+    // Everything past the open — counting, enumerating, filtering, the per-type
+    // decode and the group judgement — is [`proto::SmcClient`], replayed against
+    // real transcripts in the common module on every platform.
+    proto::SmcClient::new(smc).cpu_temperature()
 }
 
 #[cfg(test)]
