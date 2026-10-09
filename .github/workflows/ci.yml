@@ -11,7 +11,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+# Pin the same images release.yml builds on, so CI verifies the OS the
+# released binaries actually come from instead of a `-latest` that moves.
+        os: [ubuntu-22.04, macos-15, windows-2022]
 
     steps:
       - uses: actions/checkout@v4
@@ -52,7 +54,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-22.04, macos-15, windows-2022]
 
     steps:
       - uses: actions/checkout@v4
