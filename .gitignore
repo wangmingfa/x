@@ -73,3 +73,8 @@ Desktop.ini
 # 源码，不同步进仓库；与 .idea/、.vscode/ 同性质。若要共享项目级技能
 # (.workbuddy/skills/)，把它收窄成 .workbuddy/memory/ 即可。
 .workbuddy/
+
+# ===== 生成器临时文件 =====
+# scripts/changelog.sh 用 CHANGELOG.md.tmp.<PID> 作写中转文件，正常退出会清理；
+# 但进程被杀时可能残留，且历史上曾被误提交进仓库，故显式忽略。
+CHANGELOG.md.tmp.*
