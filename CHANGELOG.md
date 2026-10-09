@@ -8,6 +8,7 @@ produce is a claim nobody can trace back to a commit.
 
 ### Features
 
+- 优化发布ta (38c2a5e)
 - release-tag支持跳过check (3b98f6a)
 - **scripts:** commit the regenerated CHANGELOG with one Enter release-tag.sh stopped with an error telling you to commit CHANGELOG.md by hand and re-run. In interactive mode it now offers to commit and continue in place: pressing Enter runs the commit and flows straight into preflight, keeping the tag chosen in the menus. (70a32f1)
 - **scripts:** one-command install from GitHub Releases Add scripts/install-release.sh (bash) that resolves the latest release, picks the asset per platform (macOS universal, Linux by uname -m) and installs it into PREFIX/bin without a Rust toolchain. Extend install.ps1 with -FromRelease to download and silently run the Inno Setup installer instead of building from source. (74f9ef3)
