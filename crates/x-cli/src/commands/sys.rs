@@ -278,7 +278,10 @@ fn sample_line(cpu: &Result<CpuUsage>, memory: &Result<MemoryUsage>) -> String {
                 text.push_str(&format!(" load {load}"));
             }
             if let Some(temp) = usage.temperature_celsius {
-                text.push_str(&format!(" {temp:.0}C"));
+                // Labeled, because a bare number right after the load triple
+                // reads as a fourth load average. Spelled exactly as `x sys cpu`
+                // spells it, so one quantity has one rendering.
+                text.push_str(&format!(" temp {temp:.1} C"));
             }
             parts.push(text);
         }
@@ -300,4 +303,52 @@ fn bar(percent: f32, width: usize) -> String {
     let ratio = (percent.clamp(0.0, 100.0) / 100.0) as f64;
     let filled = (ratio * width as f64).round() as usize;
     format!("[{}{}]", "#".repeat(filled), "-".repeat(width - filled))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use x_core::system::LoadAverage;
+
+    fn cpu(with_load: bool, temperature: Option<f32>) -> CpuUsage {
+        CpuUsage {
+            total_percent: 12.5,
+            load_average: with_load.then_some(LoadAverage {
+                one: 1.0,
+                five: 2.0,
+                fifteen: 3.0,
+            }),
+            temperature_celsius: temperature,
+            ..CpuUsage::default()
+        }
+    }
+
+    fn memory() -> MemoryUsage {
+        MemoryUsage {
+            percent: 40.0,
+            used_bytes: 4096,
+            ..MemoryUsage::default()
+        }
+    }
+
+    #[test]
+    fn the_temperature_is_labeled_so_it_is_not_a_fourth_load_number() {
+        let line = sample_line(&Ok(cpu(true, Some(73.4))), &Ok(memory()));
+        assert!(line.contains("load 1.00 2.00 3.00"), "{line}");
+        assert!(line.contains("temp 73.4 C"), "{line}");
+    }
+
+    #[test]
+    fn a_sample_without_a_sensor_says_nothing_about_temperature() {
+        let line = sample_line(&Ok(cpu(true, None)), &Ok(memory()));
+        assert!(!line.contains("temp"), "{line}");
+    }
+
+    #[test]
+    fn a_failing_family_is_named_without_blinding_the_other() {
+        let failure: Result<CpuUsage> = Err(Error::new(x_core::ErrorKind::System, "smc refused"));
+        let line = sample_line(&failure, &Ok(memory()));
+        assert!(line.contains("cpu unavailable (smc refused)"), "{line}");
+        assert!(line.contains("mem 40.0%"), "{line}");
+    }
 }

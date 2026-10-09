@@ -832,6 +832,19 @@ fn sys_cpu_renders_the_detail_the_platform_reports() {
 }
 
 #[test]
+fn sys_watch_spells_the_temperature_as_cpu_does() {
+    let stubs = populated();
+
+    let watch = x(&stubs, &["sys", "watch", "--count", "1"], false);
+    assert_eq!(watch.code, 0);
+    assert!(
+        watch.stdout.contains("temp 54.5 C"),
+        "the same quantity must read the same in both views: {}",
+        watch.stdout
+    );
+}
+
+#[test]
 fn sys_cpu_stays_silent_about_what_the_platform_cannot_see() {
     let stubs = Stubs::new();
 

@@ -16,7 +16,10 @@
 //! - Four-character keys pack **big-endian**: `TC0P` is `0x54433050`, first
 //!   character in the most significant byte.
 //! - `sp78` samples are **big-endian and signed**: byte 0 holds the integer
-//!   part including the sign, byte 1 the fraction.
+//!   part including the sign, byte 1 the fraction. `flt ` samples — what Apple
+//!   silicon's `Tp0*` die sensors report — are a **little-endian IEEE-754
+//!   single**. The declared type is what picks the decoder; the same four bytes
+//!   read under the other type give a plausible-looking wrong temperature.
 
 /// The `IOConnectCallStructMethod` selector the SMC user client answers on
 /// (`KERNEL_INDEX_SMC` in the classic tools).
@@ -36,6 +39,10 @@ pub const SMC_RESULT_KEY_NOT_FOUND: u8 = 132;
 
 /// `sp78` as a packed FourCharCode; the SMC stores type names big-endian too.
 pub const DATA_TYPE_SP78: u32 = 0x7370_3738;
+
+/// `flt ` as a packed FourCharCode: the type Apple silicon's die sensors
+/// actually carry.
+pub const DATA_TYPE_FLT: u32 = 0x666c_7420;
 
 /// A CPU die reading outside this window is not a temperature. Unconnected
 /// sensors answer with the `sp78` floor (-128.0) or similar noise rather than
@@ -163,6 +170,30 @@ pub fn decode_sp78(bytes: &[u8]) -> Option<f32> {
     ((MIN_PLAUSIBLE_CELSIUS..=MAX_PLAUSIBLE_CELSIUS).contains(&celsius)).then_some(celsius)
 }
 
+/// Decode an `flt ` sample: a little-endian IEEE-754 single, four bytes.
+///
+/// There is no documented sentinel here the way `sp78` has its floor, so the
+/// same plausible window is the only guard — and it drops NaN and the
+/// infinities for free, since they fail every comparison.
+pub fn decode_flt(bytes: &[u8]) -> Option<f32> {
+    let quad = bytes.get(..4)?;
+    let celsius = f32::from_le_bytes([quad[0], quad[1], quad[2], quad[3]]);
+    ((MIN_PLAUSIBLE_CELSIUS..=MAX_PLAUSIBLE_CELSIUS).contains(&celsius)).then_some(celsius)
+}
+
+/// Read one sample as the temperature type the SMC declared for it.
+///
+/// A type we cannot decode (`ioft`, `ui8 `, anything unlisted) is refused
+/// rather than approximated: guessing a decoder for a payload whose shape we do
+/// not know is how a wrong number gets printed as a temperature.
+pub fn decode_temperature(data_type: u32, bytes: &[u8]) -> Option<f32> {
+    match data_type {
+        DATA_TYPE_SP78 => decode_sp78(bytes),
+        DATA_TYPE_FLT => decode_flt(bytes),
+        _ => None,
+    }
+}
+
 /// The total key count the `#KEY` pseudo-key reports: a big-endian `ui32`.
 pub fn decode_key_count(bytes: &[u8]) -> Option<u32> {
     let quad = bytes.get(..4)?;
@@ -226,6 +257,45 @@ mod tests {
         assert_eq!(decode_sp78(&[0x81, 0x00]), None, "-127.0 is noise too");
         assert_eq!(decode_sp78(&[]), None, "a short buffer is not a reading");
         assert_eq!(decode_sp78(&[0x2E]), None);
+    }
+
+    #[test]
+    fn flt_decodes_little_endian_ieee754() {
+        // Payloads captured from a real Apple silicon SMC: `Tp02` and `Tp06`.
+        // Both are exact in binary, so the expectations are pinned to the
+        // IEEE-754 value rather than to whatever this decoder computes.
+        assert_eq!(decode_flt(&[0x00, 0x20, 0x83, 0x42]), Some(65.5625));
+        assert_eq!(decode_flt(&[0x00, 0xf8, 0x99, 0x42]), Some(76.984375));
+        // 0x41C00000 is 24.0 by definition of the format.
+        assert_eq!(decode_flt(&[0x00, 0x00, 0xc0, 0x41]), Some(24.0));
+        assert_eq!(
+            decode_flt(&[0x00, 0x00, 0xc0]),
+            None,
+            "three bytes of noise"
+        );
+    }
+
+    #[test]
+    fn flt_rejects_what_is_not_a_temperature() {
+        // The window catches NaN and the infinities without naming them: both
+        // fail every comparison, `contains` included.
+        assert_eq!(decode_flt(&[0x00, 0x00, 0xc0, 0x7f]), None, "NaN");
+        assert_eq!(decode_flt(&[0x00, 0x00, 0x80, 0x7f]), None, "infinity");
+        assert_eq!(decode_flt(&[0x00, 0x24, 0x74, 0x49]), None, "1e6");
+    }
+
+    #[test]
+    fn the_declared_type_picks_the_decoder() {
+        // The four bytes of `Tp02` are 65.5625 C as `flt ` and 0.125 C as
+        // `sp78` — both inside the plausible window, one of them a lie. The
+        // type from keyInfo is therefore load-bearing, not decoration.
+        let bytes = [0x00, 0x20, 0x83, 0x42];
+        assert_eq!(decode_temperature(DATA_TYPE_FLT, &bytes), Some(65.5625));
+        assert_eq!(decode_temperature(DATA_TYPE_SP78, &bytes), Some(0.125));
+        // Types we do not decode are refused, not approximated.
+        assert_eq!(decode_temperature(pack_key("ioft"), &bytes), None);
+        assert_eq!(decode_temperature(pack_key("ui8 "), &bytes), None);
+        assert_eq!(decode_temperature(0, &bytes), None);
     }
 
     #[test]

@@ -77,7 +77,7 @@ iwr https://raw.githubusercontent.com/xsys/x/main/scripts/install.ps1 -OutFile i
 | 命令 | 说明 |
 | --- | --- |
 | `x sys info` | 操作系统、内核、架构、主机名、CPU 型号、核数（含 P/E 核心划分）、内存、运行时长、上次重启、时区、locale、用户 / shell / 终端 |
-| `x sys cpu` | 聚合与每核 CPU 利用率，负载均值、当前/最大频率（平台提供时）、温度（Linux）、governor（Linux） |
+| `x sys cpu` | 聚合与每核 CPU 利用率，负载均值、当前/最大频率（平台提供时）、温度（Linux thermal_zone/hwmon、macOS SMC）、governor（Linux） |
 | `x sys mem` | 内存利用率 |
 | `x sys watch` | 持续采样 CPU / 内存，每采样一行（`--interval`、`--count`） |
 
@@ -455,7 +455,7 @@ GitHub Actions CI 在 Ubuntu / macOS / Windows 三平台上跑格式、clippy
 - [x] 端口：远程地址展示；按进程反查端口（`x port find <name>`）；`x port watch` 持续监视、只在变化时输出
 - [x] 网络：网卡链路速度、网关；`x net connections`（统一 netstat / ss / lsof -i，支持按进程/端口过滤）；DNS 解析 / 反查 / 刷缓存；ping / trace / resolve
 - [x] 磁盘：物理盘 / 分区 / UUID / 标签 / 只读标志；目录占用（`x disk usage <path> [--depth N]`，du 风格，TUI disk 页签树形展开/折叠）；网卡收发流量统计
-- [x] `x net addresses` 的 DHCP 标记（Windows/macOS 已接入；Linux 内核不记录地址来源，诚实留空）
+- [x] `x net addresses` 的 DHCP 标记（Windows/macOS 已接入；Linux 内核不记录地址来源，改取用户态的权威来源——`ip -4 addr show` 的 `dynamic` 与 `nmcli` 的 `auto` 取并集，两者都没提到的接口留空而不是当成静态）
 - [x] 服务：`x service logs <name> [--lines N]`（journalctl / macOS 统一日志 / Windows 事件日志）；平台原生操作逃生舱 `x service native <args>…`（systemctl / launchctl / sc 直通）
 - [x] 能力探测（`x capability`）：按平台报告各能力 支持/降级/不支持（实测环回 + 只读探测，破坏性项不执行）
 - [x] 审计：破坏性操作（进程 kill、端口回收、服务动作、原生逃生舱）逐条写入本地 JSON-lines 日志；`X_AUDIT_PATH` 改路径、`X_AUDIT=off` 关闭
@@ -494,7 +494,7 @@ GitHub Actions CI 在 Ubuntu / macOS / Windows 三平台上跑格式、clippy
 
 - [x] 设备（`x device list/usb/audio/display/…`）：USB、蓝牙、音频、显示、摄像头、键鼠（HID）、网卡；三平台原文透传 + 保守归类
 - [x] 蓝牙（`x bluetooth devices/scan/connect/disconnect`）：读三平台原文透传，动词 Linux 全量、Windows/macOS 如实不支持；确认 + 审计
-- [x] 显示（`x display list/info`）：分辨率、刷新率、缩放、主显示器、位置；HDR 未提供（Windows 需再过 QueryDisplayConfig，macOS/Linux 口径不一，留待后续如实读取）
+- [x] 显示（`x display list/info`）：分辨率、刷新率、缩放、主显示器、位置；HDR 按三态如实读取（Windows 再过一次 DisplayConfig 取 `GET_ADVANCED_COLOR_INFO`，macOS / Linux 取决于 EDID 与合成器、x 无从得知，留「没说」而不是「没开」）
 - [x] 窗口（`x window list/active/focus/minimize/maximize`）：Windows user32 原生全量；Linux 借 wmctrl/xprop；macOS 免权限列窗口 + System Events 动词（屏幕录制 / 辅助功能按需索取，拒绝原样透出）；动词确认 + 审计
 - [x] 事件（`x events`）：进程启停、网络连接、USB 插拔、磁盘挂载、服务状态变化；快照对拍而非内核订阅（x-core 零平台 cfg），家族采样失败如实报告并重置基线，USB 因 Windows 采样约 1.6s 缺省按需开启
 - [x] TUI 增强：Dashboard 首页（CPU / 内存 / 磁盘 / 端口概览 + 侧边导航）
@@ -564,14 +564,23 @@ GitHub Actions CI 在 Ubuntu / macOS / Windows 三平台上跑格式、clippy
   现经 IOKit 连接 `AppleSMC` 用户客户端读取 die 传感器。**枚举键名而不是硬编码**：
   Intel 是 `TC0*`、Apple silicon 是 `Tp0*`/`Tm0*`，任何固定清单都只在部分机型上
   成立；GPU（`TG0*`）、环境（`TA0*`）、电池（`TB0*`）、内存（大写 `TM0P`）都被
-  排除——那是别的传感器，不是 CPU 温度。`sp78` 是**大端有符号** 8.8 定点，只接受
-  落在 −40…150 ℃ 的读数：未接传感器的典型回答是下限 `0x8000`（−128.0 ℃），按窗口
-  丢弃。多数机器上无特权会被拒绝、虚拟机可能没有 CPU 传感器键，都如实返回 `None`，
-  `x capability` 早已把 `None` 渲染成「本平台未暴露」——不猜值、不估算。CI 上一次
-  SIGBUS 的教训值得留档：`IOConnectCallStructMethod` 的大小参数是 `size_t` 不是
-  `u32`，传窄了高半截寄存器是垃圾值，内核按错的尺寸往 56 字节的结构体里拷 80 字节
-  ——这种错不报错，直接打穿栈；协议结构体现在按权威定义写成 80 字节并抽到平台无关
-  模块全平台测试，布局用编译期断言钉死。
+  排除——那是别的传感器，不是 CPU 温度。**按 `keyInfo` 声明的类型分流解码**：`sp78` 是
+  **大端有符号** 8.8 定点，`flt ` 是**小端 IEEE-754 单精度**——本机实测 45 个 `Tp0*`
+  清一色 `flt `、`sp78` 键一个都没有，只认一种类型就等于在 Apple silicon 上永远读不到。
+  类型不是装饰：同一串 `00 20 83 42` 按 `flt ` 是 65.5625 ℃、按 `sp78` 是 0.125 ℃，两个
+  都落在 −40…150 ℃ 的窗口里，选错解码器拿到的是一个看不出破绽的错数。认不出的类型
+  （`ioft`、`ui8 `…）不解码，宁缺不猜；未接传感器的典型回答（`sp78` 下限 `0x8000`，即
+  −128.0 ℃）按窗口丢弃。多数机器上无特权会被拒绝、虚拟机可能没有 CPU 传感器键，都如实
+  返回 `None`，`x capability` 早已把 `None` 渲染成「本平台未暴露」——不猜值、不估算。
+  两笔 SIGBUS 的教训值得留档：`IOConnectCallStructMethod` 的大小参数是 `size_t` 不是
+  `u32`，传窄了高半截寄存器是垃圾值，内核按错的尺寸往 56 字节的结构体里拷 80 字节；
+  `mach_task_self_` 是 libsystem_kernel 的**数据符号**（C 里 `mach_task_self()` 只是读它
+  的宏），声明成函数照样链接通过，运行时跳进 `__DATA` 把 task port 的数值当指令执行。
+  两处共同点：都不返回错误码，直接把内存或控制流改掉，所以「调用失败」这种期待本身
+  不成立；协议结构按权威定义写成 80 字节、抽到平台无关模块全平台测试，布局用编译期
+  断言钉死。**这条链路在 CI 上是空跑的**：GitHub 的 macOS runner 是虚拟机，没有
+  `AppleSMC` 服务，`Smc::open()` 在匹配服务那步就返回 `None`，后面几行从未执行——真机
+  取证过程见 `docs/devlog/2026-10-09-macos-smc-mach-task-self.md`。
 - [x] 容器统一到 `x container`：新增 `x container ps/images/ports/port/logs`，
   自动发现本机引擎（docker → podman → nerdctl），`x container engines` 列出可用
   与当前引擎，`X_CONTAINER_ENGINE` 可钉住。三套 CLI 各一个适配，**不强行合并成假

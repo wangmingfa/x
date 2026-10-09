@@ -2,23 +2,28 @@
 //! lives in [`crate::common::smc`].
 //!
 //! Nothing about the SMC protocol is decided here — struct layout, command
-//! codes, key packing and `sp78` decoding are all in the common module and
-//! tested on every platform. This file is only the Mach plumbing, and it
-//! exists mostly to carry the two ABI facts that a mistake in does not fail a
-//! call but corrupts memory:
+//! codes, key packing and the per-type temperature decoders are all in the
+//! common module and tested on every platform. This file is only the Mach
+//! plumbing, and it exists mostly to carry the ABI facts that a mistake in does
+//! not fail a call but corrupts memory:
 //!
 //! - `IOConnectCallStructMethod` takes its input and output sizes as
 //!   `size_t` (`usize`), not `u32`. The wrong width leaves the upper register
 //!   half uninitialised; the kernel then copies the wrong number of bytes and
 //!   the test binary dies with SIGBUS on the way out.
+//! - `mach_task_self_` is a **data symbol** holding the current task's port —
+//!   `mach_task_self()` in C is a macro that *reads* it. Declaring it as a
+//!   function still links, then jumps into `__DATA`: the first four bytes
+//!   there are the port value itself, which is not an instruction.
 //! - `IOServiceGetMatchingService` **consumes** the reference to the matching
 //!   dictionary it is handed, so there is deliberately no `CFRelease` of it
 //!   here — releasing would be an over-release of memory we no longer own.
 //!
 //! Every failure path degrades to `None`: the service may be absent, the read
-//! may be refused without privileges, and a virtualised runner may have an SMC
-//! that answers for none of the CPU keys. "Nothing said" is the honest
-//! answer for all of those, and none of them may crash.
+//! may be refused without privileges, a virtualised runner may have an SMC that
+//! answers for none of the CPU keys, and a sensor may carry a type x does not
+//! decode. "Nothing said" is the honest answer for all of those, and none of
+//! them may crash.
 
 use crate::common::smc as proto;
 use std::os::raw::{c_char, c_void};
@@ -52,10 +57,10 @@ extern "C" {
     fn IOObjectRelease(object: IoObject) -> KernReturn;
 }
 
-// The task port for "this process": `mach_task_self()` in C is a macro for
-// the exported `mach_task_self_` symbol, so that is what we link against.
+// The task port for "this process". `mach_task_self_` is a variable exported
+// by libsystem_kernel, so it is declared as one and read, never called.
 extern "C" {
-    fn mach_task_self_() -> MachPort;
+    static mach_task_self_: MachPort;
 }
 
 /// `kIOMainPortDefault` (historically `kIOMasterPortDefault`): the current
@@ -84,8 +89,9 @@ impl Smc {
             return None;
         }
         let mut connection: IoConnect = 0;
-        // SAFETY: `connection` is our own storage, filled in by the kernel.
-        let rc = unsafe { IOServiceOpen(service, mach_task_self_(), 0, &mut connection) };
+        // SAFETY: `connection` is our own storage, filled in by the kernel, and
+        // `mach_task_self_` is the process-wide task port libsystem_kernel set.
+        let rc = unsafe { IOServiceOpen(service, mach_task_self_, 0, &mut connection) };
         // SAFETY: `service` came from `IOServiceGetMatchingService` and we hold
         // its one reference.
         unsafe { IOObjectRelease(service) };
@@ -223,10 +229,7 @@ fn read_cpu_temperature() -> Option<f32> {
         let Some((data_type, bytes)) = smc.read_key(proto::pack_key(&name)) else {
             continue;
         };
-        if data_type != proto::DATA_TYPE_SP78 {
-            continue;
-        }
-        let Some(celsius) = proto::decode_sp78(&bytes) else {
+        let Some(celsius) = proto::decode_temperature(data_type, &bytes) else {
             continue;
         };
         if hottest.is_none_or(|current| celsius > current) {
