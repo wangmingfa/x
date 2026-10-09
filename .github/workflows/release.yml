@@ -54,6 +54,12 @@ jobs:
             targets: aarch64-apple-darwin x86_64-apple-darwin
             bindir: target/universal
             deployment_target: "11.0"
+          - name: windows-x86_64
+            os: windows-2022
+            asset: windows-x86_64
+            targets: x86_64-pc-windows-msvc
+            bindir: target/release
+            deployment_target: ""
 
     steps:
       - uses: actions/checkout@v5
@@ -124,7 +130,13 @@ jobs:
           BINDIR: ${{ matrix.bindir }}
         run: |
           mkdir -p stage
-          cp "$BINDIR/x" stage/x
+          # Windows builds produce x.exe; the archive always packs it as the
+          # bare name so `x upgrade` finds the same entry on every platform.
+          if [ -f "$BINDIR/x.exe" ]; then
+            cp "$BINDIR/x.exe" stage/x
+          else
+            cp "$BINDIR/x" stage/x
+          fi
           tar -czf "x-${TAG}-${ASSET}.tar.gz" -C stage x
           ls -l "x-${TAG}-${ASSET}.tar.gz"
 

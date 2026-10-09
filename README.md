@@ -78,9 +78,10 @@ powershell -c "irm https://raw.githubusercontent.com/wangmingfa/x/main/scripts/i
 
 - **Homebrew**：见 [`Packaging/Homebrew/README.md`](Packaging/Homebrew/README.md)，
   `brew tap xsys/tap && brew install --head x`。
-- **直接下载**：GitHub Release 上每个 tag 带四个文件——`x-<tag>-Linux-x86_64.tar.gz`、
+- **直接下载**：GitHub Release 上每个 tag 带五个文件——`x-<tag>-Linux-x86_64.tar.gz`、
   `x-<tag>-Linux-aarch64.tar.gz`、`x-<tag>-macOS-universal.tar.gz`（Apple Silicon 与
-  Intel 合在一个二进制里）、`x-<tag>-windows-x86_64-setup.exe`。
+  Intel 合在一个二进制里）、`x-<tag>-windows-x86_64.tar.gz`（裸二进制，供 `x upgrade`
+  自我升级）、`x-<tag>-windows-x86_64-setup.exe`。
 - **Windows 安装包**：见 [`Packaging/Windows/x.iss`](Packaging/Windows/x.iss)
   （Inno Setup 脚本，CI 在打 tag 时自动编译成 `x-*-windows-x86_64-setup.exe`）。
 - 打 tag 触发 `.github/workflows/release.yml` 构建上面四个产物并发布 GitHub Release；

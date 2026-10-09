@@ -222,7 +222,7 @@ emit_release() {
     printf -- '- Linux: `x-%s-Linux-x86_64.tar.gz` (built on Ubuntu 22.04), `x-%s-Linux-aarch64.tar.gz` (built on Ubuntu 24.04, ARM)\n' \
         "$release_tag" "$release_tag"
     printf -- '- macOS: `x-%s-macOS-universal.tar.gz` (Apple Silicon and Intel in one binary)\n' "$release_tag"
-    printf -- '- Windows: `x-%s-windows-x86_64-setup.exe` (Inno Setup installer)\n' "$release_tag"
+    printf -- '- Windows: `x-%s-windows-x86_64-setup.exe` (Inno Setup installer), `x-%s-windows-x86_64.tar.gz` (bare binary, for `x upgrade`)\n' "$release_tag" "$release_tag"
     printf -- '- Every name above is what the workflow produced on the pinned image named in its header, and the publish job refuses to go out if the two ever disagree.\n'
     printf -- '- From source: `scripts/install.sh` / `scripts/install.ps1` (they build a release binary and place it on your PATH)\n\n'
     printf 'Exit codes, output formats and the destructive-action confirmation behaviour are pinned by `docs/contract.md`; `x --version-info` prints the contract version this build follows.\n'
