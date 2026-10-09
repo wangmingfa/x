@@ -10,7 +10,9 @@
 #   X_REPO=URL        git repository (default https://github.com/wangmingfa/x)
 #   --prefix=DIR      same as PREFIX
 #   -y, --yes         skip the confirmation prompt
-set -euo pipefail
+# POSIX-only: `pipefail` is bash-only and breaks under dash (the default /bin/sh
+# on Debian/Ubuntu when invoked as `curl ... | sh`).
+set -eu
 
 X_VERSION="${X_VERSION:-0.1.0}"
 X_REPO="${X_REPO:-https://github.com/wangmingfa/x}"

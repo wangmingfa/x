@@ -17,7 +17,10 @@
 # The macOS asset is a universal binary (Apple Silicon and Intel in one
 # file), so Darwin needs no architecture check; Linux ships one asset per
 # architecture, chosen from `uname -m`.
-set -euo pipefail
+# POSIX-only: `pipefail` is bash-only and breaks under dash (the default /bin/sh
+# on Debian/Ubuntu when invoked as `curl ... | sh`); the one critical pipeline
+# below is guarded by an explicit check, so plain `set -eu` is enough.
+set -eu
 
 X_VERSION="${X_VERSION:-}"
 X_REPO="${X_REPO:-wangmingfa/x}"
