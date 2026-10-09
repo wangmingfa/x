@@ -56,7 +56,7 @@ jobs:
             deployment_target: "11.0"
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -129,7 +129,7 @@ jobs:
           ls -l "x-${TAG}-${ASSET}.tar.gz"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: x-${{ matrix.asset }}
           path: x-*.tar.gz
@@ -141,7 +141,7 @@ jobs:
     # builds its own, it has no reason to wait for the matrix to finish.
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -178,7 +178,7 @@ jobs:
         run: iscc "/DMyAppVersion=$env:APP_VERSION" "/DReleaseTag=$env:RELEASE_TAG" "Packaging/Windows/x.iss"
 
       - name: Upload installer
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: x-windows-x86_64-setup
           path: x-*.exe
@@ -193,7 +193,7 @@ jobs:
       # way, and creating a release with assets needs write on contents.
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           # The release notes are generated from the history between this tag
           # and the previous one, so the job needs the tags and the commits.
@@ -204,7 +204,7 @@ jobs:
         run: scripts/changelog.sh --release "${GITHUB_REF_NAME}" -o release-notes.md
 
       - name: Download artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           merge-multiple: true
           path: artifacts
