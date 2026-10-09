@@ -2,8 +2,9 @@
 //! lives in [`crate::common::smc`].
 //!
 //! Nothing about the SMC protocol is decided here — struct layout, command
-//! codes, key packing and the per-type temperature decoders are all in the
-//! common module and tested on every platform. This file is only the Mach
+//! codes, key packing, the per-type temperature decoders and the rule that
+//! refuses an undifferentiated group of readings are all in the common module
+//! and tested on every platform. This file is only the Mach
 //! plumbing, and it exists mostly to carry the ABI facts that a mistake in does
 //! not fail a call but corrupts memory:
 //!
@@ -218,7 +219,7 @@ fn read_cpu_temperature() -> Option<f32> {
         return None;
     }
 
-    let mut hottest: Option<f32> = None;
+    let mut samples: Vec<f32> = Vec::new();
     for index in 0..count {
         let Some(name) = smc.key_name_at(index) else {
             continue;
@@ -229,14 +230,14 @@ fn read_cpu_temperature() -> Option<f32> {
         let Some((data_type, bytes)) = smc.read_key(proto::pack_key(&name)) else {
             continue;
         };
-        let Some(celsius) = proto::decode_temperature(data_type, &bytes) else {
-            continue;
-        };
-        if hottest.is_none_or(|current| celsius > current) {
-            hottest = Some(celsius);
+        if let Some(celsius) = proto::decode_temperature(data_type, &bytes) {
+            samples.push(celsius);
         }
     }
-    hottest
+    // The whole group is considered, not folded as it goes: an
+    // undifferentiated answer only shows in the spread across keys, and a
+    // single hot core read on its own looks plausible.
+    proto::hottest_when_differentiated(&samples)
 }
 
 #[cfg(test)]

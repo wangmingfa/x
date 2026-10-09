@@ -580,7 +580,13 @@ GitHub Actions CI 在 Ubuntu / macOS / Windows 三平台上跑格式、clippy
   不成立；协议结构按权威定义写成 80 字节、抽到平台无关模块全平台测试，布局用编译期
   断言钉死。**这条链路在 CI 上是空跑的**：GitHub 的 macOS runner 是虚拟机，没有
   `AppleSMC` 服务，`Smc::open()` 在匹配服务那步就返回 `None`，后面几行从未执行——真机
-  取证过程见 `docs/devlog/2026-10-09-macos-smc-mach-task-self.md`。
+  取证过程见 `docs/devlog/2026-10-09-macos-smc-mach-task-self.md`。**整组没分化就不给数**：
+  本机实测某些持续数秒的窗口里 45 个 `Tp0*` 键同时刻回答同一个 40.0，或整组落在
+  {−4.0, 0.0, 2.5, 4.0, 5.2} 上，这些值全在合理窗口内、单独看都像真读数；随机交替实验
+  （147 个样本）排除了「新开 client 的前几轮」和「空闲后缓存过期」两种解释（同一 client
+  内再读一遍、复用长命 client 都不能避免），所以防护按**回答的内容**判——整组不同值不足
+  键数一半时返回 `None`（单键机器不受影响），窗口内打印「本平台未暴露」而不是一个数字。
+  判断函数在平台无关模块里，三平台都编译、CI 都真跑；机制本身仍未定论，见同一篇 devlog。
 - [x] 容器统一到 `x container`：新增 `x container ps/images/ports/port/logs`，
   自动发现本机引擎（docker → podman → nerdctl），`x container engines` 列出可用
   与当前引擎，`X_CONTAINER_ENGINE` 可钉住。三套 CLI 各一个适配，**不强行合并成假

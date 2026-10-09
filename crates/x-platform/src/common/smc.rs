@@ -194,6 +194,39 @@ pub fn decode_temperature(data_type: u32, bytes: &[u8]) -> Option<f32> {
     }
 }
 
+/// The hottest sample, but only once the group has differentiated itself.
+///
+/// Apple silicon answers these keys in whole-group states rather than key by
+/// key: a measured window several seconds long had all 45 `Tp0*` keys at exactly
+/// `40.0`, and another had them on {−4.0, 0.0, 2.5, 4.0, 5.2}. Both sit inside
+/// the plausible range, so neither the type dispatch nor that range can catch
+/// them — the collapse of the *set* is the only signal available. Real readings
+/// of the same 45 keys measured 44–45 distinct values, so asking for half of
+/// them to differ leaves a wide margin; half-switched windows (measured 7–16
+/// distinct) are refused along with them, because a hot core appearing among
+/// still-undifferentiated neighbours is the table partway through a switch, not
+/// a reading to print.
+///
+/// Exact float equality is the point: the placeholder repeats byte-identically
+/// across keys, and that repetition is what is being detected.
+///
+/// One sample is never censored — a single key cannot show a collapse, and
+/// refusing it would silence machines that only expose one die sensor.
+pub fn hottest_when_differentiated(samples: &[f32]) -> Option<f32> {
+    let mut distinct: Vec<f32> = Vec::new();
+    let mut hottest: Option<f32> = None;
+    for &sample in samples {
+        hottest = Some(hottest.map_or(sample, |current| current.max(sample)));
+        if !distinct.contains(&sample) {
+            distinct.push(sample);
+        }
+    }
+    if distinct.len() < samples.len().div_ceil(2) {
+        return None;
+    }
+    hottest
+}
+
 /// The total key count the `#KEY` pseudo-key reports: a big-endian `ui32`.
 pub fn decode_key_count(bytes: &[u8]) -> Option<u32> {
     let quad = bytes.get(..4)?;
@@ -318,15 +351,70 @@ mod tests {
 
     #[test]
     fn the_hottest_core_wins_over_a_mixed_set() {
-        // What the enumeration loop does with several cores: a parked
-        // efficiency core reads colder, and the user wants the hot one.
-        let samples = [("Tp01", 41.0), ("Tm01", 35.5), ("Tp02", 63.25)];
-        let hottest = samples
-            .iter()
-            .map(|(_, value)| *value)
-            .fold(None, |acc: Option<f32>, value| {
-                acc.map_or(Some(value), |current| Some(current.max(value)))
-            });
-        assert_eq!(hottest, Some(63.25));
+        // What the read loop gets with several cores: a parked efficiency core
+        // reads colder, and the user wants the hot one.
+        let samples = [41.0, 35.5, 63.25];
+        assert_eq!(hottest_when_differentiated(&samples), Some(63.25));
+    }
+
+    #[test]
+    fn a_group_that_has_not_differentiated_is_not_a_temperature() {
+        // Measured on a real machine: for seconds at a time all 45 `Tp0*` keys
+        // answer the same 40.0. It is inside the plausible window, so only the
+        // collapse of the set gives it away.
+        let flat = [40.0; 45];
+        assert_eq!(
+            hottest_when_differentiated(&flat),
+            None,
+            "45 keys on one value is the sensor table not yet saying"
+        );
+
+        // The other measured shape: the whole set lands on five quantized
+        // values, repeating every four keys.
+        let pattern = [-4.0, 0.0, 2.5, 4.0, 5.2];
+        let quantized: Vec<f32> = (0..45).map(|i| pattern[i % pattern.len()]).collect();
+        assert_eq!(hottest_when_differentiated(&quantized), None);
+        assert!(
+            quantized
+                .iter()
+                .all(|&t| (MIN_PLAUSIBLE_CELSIUS..=MAX_PLAUSIBLE_CELSIUS).contains(&t)),
+            "each placeholder passes the plausibility window on its own"
+        );
+    }
+
+    #[test]
+    fn a_real_reading_of_the_same_keys_passes() {
+        // The measured value set of one real read (16 distinct across the keys,
+        // spanning more than 25 degrees).
+        let real = [
+            50.70, 58.70, 67.64, 53.38, 59.88, 76.08, 49.53, 57.53, 64.44, 52.44, 58.94, 73.20,
+            48.54, 56.54, 65.45, 50.15,
+        ];
+        assert_eq!(hottest_when_differentiated(&real), Some(76.08));
+    }
+
+    #[test]
+    fn a_window_partway_through_a_switch_is_refused_too() {
+        // Measured transition row: 43 keys still on the placeholder set while
+        // two cores already answer real temperatures. The hot core looks
+        // perfectly reasonable in isolation, which is exactly why the group is
+        // judged together.
+        let mut mixed: Vec<f32> = (0..43).map(|i| [-4.0, 0.0, 2.5, 4.0, 5.2][i % 5]).collect();
+        mixed.extend_from_slice(&[66.609375, 44.978]);
+        assert_eq!(hottest_when_differentiated(&mixed), None);
+        assert_eq!(
+            mixed.iter().copied().fold(f32::MIN, f32::max),
+            66.609375,
+            "the hot core was there; refusing it is the point of the rule"
+        );
+    }
+
+    #[test]
+    fn a_machine_with_one_sensor_is_never_censored() {
+        // One key cannot show a collapse, so the rule must not silence Intel
+        // machines that expose a single die sensor.
+        assert_eq!(hottest_when_differentiated(&[37.0]), Some(37.0));
+        assert_eq!(hottest_when_differentiated(&[40.0, 40.0]), Some(40.0));
+        assert_eq!(hottest_when_differentiated(&[]), None, "no answer at all");
     }
 }
