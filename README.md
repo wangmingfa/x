@@ -32,7 +32,7 @@ curl -fsSL https://raw.githubusercontent.com/wangmingfa/x/main/scripts/install-r
 Windows (PowerShell)：
 
 ```powershell
-iwr https://raw.githubusercontent.com/wangmingfa/x/main/scripts/install-release.ps1 -OutFile install-release.ps1; .\install-release.ps1
+powershell -c "irm https://raw.githubusercontent.com/wangmingfa/x/main/scripts/install-release.ps1|iex"
 ```
 
 - 脚本按平台自动选产物：macOS 用 universal 包（Apple Silicon 与 Intel 合在一个
@@ -54,8 +54,7 @@ curl -fsSL https://raw.githubusercontent.com/wangmingfa/x/main/scripts/install.s
 Windows (PowerShell)：
 
 ```powershell
-iwr https://raw.githubusercontent.com/wangmingfa/x/main/scripts/install.ps1 -OutFile install.ps1
-.\install.ps1 -AddToPath
+powershell -c "irm https://raw.githubusercontent.com/wangmingfa/x/main/scripts/install.ps1|iex"
 ```
 
 脚本会克隆仓库、`cargo build --release -p x-app` 并把二进制拷到 `PREFIX/bin`

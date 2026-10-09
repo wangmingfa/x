@@ -1,11 +1,11 @@
 # Install x on Windows by building from source (cargo) and copying x.exe, or,
 # with -FromRelease, by downloading the release installer - no Rust toolchain.
 #
-#   iwr https://raw.githubusercontent.com/wangmingfa/x/main/scripts/install.ps1 -OutFile install.ps1; .\install.ps1 -AddToPath
-#   .\install.ps1 -FromRelease -AddToPath
+#   powershell -c "irm https://raw.githubusercontent.com/wangmingfa/x/main/scripts/install.ps1|iex"
+#   (AddToPath is on by default; turn it off with -AddToPath:$false)
 param(
     [string]$Prefix = "$env:LOCALAPPDATA\x",
-    [switch]$AddToPath,
+    [switch]$AddToPath = $true,
     [switch]$Yes,
     # Download the x-*-windows-x86_64-setup.exe from GitHub Releases and run it
     # silently instead of building from source. -Prefix is ignored: the
@@ -59,7 +59,7 @@ if ($FromRelease) {
             Info "added $dir to user PATH (restart the terminal to apply)"
         }
     } else {
-        Info "hint: run with -AddToPath, or add $(Split-Path $x) to your PATH manually"
+        Info "hint: add $(Split-Path $x) to your PATH manually (-AddToPath is on by default)"
     }
     exit 0
 }
@@ -102,5 +102,5 @@ if ($AddToPath) {
         Info "added $Prefix to user PATH (restart the terminal to apply)"
     }
 } else {
-    Info "hint: run with -AddToPath, or add $Prefix to your PATH manually"
+    Info "hint: add $Prefix to your PATH manually (or -AddToPath:$false to skip this message)"
 }

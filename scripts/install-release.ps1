@@ -1,11 +1,10 @@
 # Install x on Windows from GitHub Releases - download the Inno Setup
 # installer, run it silently, add the install directory to the user PATH.
 #
-#   iwr https://raw.githubusercontent.com/wangmingfa/x/main/scripts/install.ps1 -OutFile install.ps1; .\install.ps1 -FromRelease -AddToPath
+#   powershell -c "irm https://raw.githubusercontent.com/wangmingfa/x/main/scripts/install-release.ps1|iex"
 #
-# (the one-liner above is the documented install command: download + run in a
-# single line, no parameters to remember - the release mode and the PATH step
-# are the defaults of this script)
+# (no local file left behind: the script is fetched and executed in memory,
+# release mode and the PATH step are the defaults)
 param(
     # Release tag to install; empty means the latest release.
     [string]$Version = '',
