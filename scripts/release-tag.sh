@@ -224,7 +224,24 @@ fi
 printf 'CHANGELOG.md is up to date for %s\n' "$tag"
 
 step "Preflight checks"
-./scripts/check.sh
+# Full check takes a while; Enter skips it, -p/--preflight (or P at the prompt)
+# runs it. CI runs the same checks on every push, so skipping is safe-ish.
+do_preflight=0
+if [ "${1:-}" = "-p" ] || [ "${1:-}" = "--preflight" ]; then
+    do_preflight=1
+fi
+if [ "$interactive" = 1 ] && [ "$do_preflight" = 0 ]; then
+    printf 'Run preflight checks (fmt/clippy/test, slow)? [y/N]: '
+    read -r answer
+    case "$answer" in
+        y|Y|yes|Yes) do_preflight=1 ;;
+    esac
+fi
+if [ "$do_preflight" = 1 ]; then
+    ./scripts/check.sh
+else
+    printf 'skipped (CI will run them on push; use --preflight to force)\n'
+fi
 
 if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
     # Tag already exists — offer to retag (delete local + remote first), which
