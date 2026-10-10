@@ -12,8 +12,40 @@
 #   scripts/release-tag.sh --yes v0.1.2-rc.1  # skip the final confirmation
 set -euo pipefail
 
+# --- colors (disabled when stdout is not a terminal) -----------------------------
+if [ -t 1 ]; then
+    C_RESET=$'\e[0m'
+    C_BOLD=$'\e[1m'
+    C_STEP=$'\e[1;36m'   # bold cyan: step banners
+    C_ASK=$'\e[1;33m'    # bold yellow: interactive prompts
+    C_OK=$'\e[1;32m'     # bold green: success lines
+    C_WARN=$'\e[1;31m'   # bold red: warnings (red reads as "attention" best)
+    C_ERR=$'\e[1;31m'    # bold red: errors
+    C_DIM=$'\e[2m'
+else
+    C_RESET='' C_BOLD='' C_STEP='' C_ASK='' C_OK='' C_WARN='' C_ERR='' C_DIM=''
+fi
+
 step() {
-    printf '==> %s\n' "$1"
+    printf '\n%s==> %s%s%s\n' "$C_STEP" "$C_BOLD" "$1" "$C_RESET"
+}
+
+# An interactive question. The prompt goes to the terminal without a trailing
+# newline so the answer lands on the same line.
+prompt() {
+    printf '%s? %s%s' "$C_ASK" "$1" "$C_RESET"
+}
+
+warn() {
+    printf '%swarning:%s %s\n' "$C_WARN" "$C_RESET" "$1" >&2
+}
+
+err() {
+    printf '%serror:%s %s\n' "$C_ERR" "$C_RESET" "$1" >&2
+}
+
+ok() {
+    printf '%s%s%s\n' "$C_OK" "$1" "$C_RESET"
 }
 
 # Derive owner/repo slug from the origin remote (handles ssh and https URLs).
@@ -32,19 +64,19 @@ gh_repo_slug() {
 delete_github_release() {
     local tag=$1
     if ! command -v gh >/dev/null 2>&1; then
-        printf 'warning: `gh` (GitHub CLI) is not installed, so the GitHub release for %s\n' "$tag" >&2
+        warn "\`gh\` (GitHub CLI) is not installed, so the GitHub release for $tag"
         printf '         cannot be deleted automatically. Go to\n' >&2
         printf '           https://github.com/%s/releases\n' "$(gh_repo_slug)" >&2
         printf '         and delete the release (and any draft) for %s manually, otherwise the\n' "$tag" >&2
-        printf '         re-published release will fail with `already_exists`.\n' >&2
+        printf '         re-published release will fail with \`already_exists\`.\n' >&2
         return 0
     fi
     if ! gh auth status >/dev/null 2>&1; then
-        printf 'warning: `gh` is installed but not authenticated (run `gh auth login` or set GH_TOKEN),\n' >&2
+        warn "\`gh\` is installed but not authenticated (run \`gh auth login\` or set GH_TOKEN),"
         printf '         so the GitHub release for %s cannot be deleted automatically. Go to\n' "$tag" >&2
         printf '           https://github.com/%s/releases\n' "$(gh_repo_slug)" >&2
         printf '         and delete the release (and any draft) for %s manually, otherwise the\n' "$tag" >&2
-        printf '         re-published release will fail with `already_exists`.\n' >&2
+        printf '         re-published release will fail with \`already_exists\`.\n' >&2
         return 0
     fi
 
@@ -143,7 +175,7 @@ if [ -z "$tag" ]; then
     step "Reading version from Cargo.toml [workspace.package]"
     version=$(sed -n '/^\[workspace\.package\]/,/^\[/{s/^version[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p}' Cargo.toml | head -1)
     if [ -z "$version" ]; then
-        printf 'error: could not read version from Cargo.toml\n' >&2
+        err "could not read version from Cargo.toml"
         exit 1
     fi
     tag="v$version"
@@ -208,12 +240,12 @@ if [ -z "$tag" ]; then
                 if [ -n "$last_num" ]; then
                     pre_num=$((last_num + 1))
                 fi
-                printf 'Pre-release number for %s-%s.<n> [%s]: ' "$next_base" "$prefix" "$pre_num"
+                prompt "Pre-release number for $next_base-$prefix.<n> [$pre_num]: "
                 read -r input_num
                 input_num=${input_num:-$pre_num}
                 case "$input_num" in
                     ''|*[!0-9]*)
-                        printf 'error: pre-release number must be a number, got "%s"\n' "$input_num" >&2
+                        err "pre-release number must be a number, got \"$input_num\""
                         exit 1
                         ;;
                 esac
@@ -237,7 +269,7 @@ if [ -z "$tag" ]; then
             fi
 
             printf 'Selected tag: %s\n' "$next"
-            printf 'Confirm? [Y/n]: '
+            prompt "Confirm? [Y/n]: "
             read -r confirm
             case "$confirm" in
                 n|N|no|No) continue ;;
@@ -251,7 +283,7 @@ case "$tag" in
     v[0-9]*.[0-9]*.[0-9]*) ;;
     v[0-9]*.[0-9]*.[0-9]*-[0-9A-Za-z.-]*) ;;
     *)
-        printf 'error: tag must look like v0.1.2 or v0.1.2-rc.1, got "%s"\n' "$tag" >&2
+        err "tag must look like v0.1.2 or v0.1.2-rc.1, got \"$tag\""
         exit 1
         ;;
 esac
@@ -264,7 +296,7 @@ if [ -n "$(git status --porcelain -- CHANGELOG.md)" ]; then
     uncommitted=1
     if [ "$interactive" = 1 ]; then
         printf 'CHANGELOG.md lists what this release contains but is not committed yet.\n'
-        printf 'Commit it and continue? [Y/n]: '
+        prompt "Commit it and continue? [Y/n]: "
         read -r answer
         case "$answer" in
             n|N|no|No)
@@ -281,13 +313,13 @@ if [ -n "$(git status --porcelain -- CHANGELOG.md)" ]; then
         fi
     fi
     if [ "$uncommitted" = 1 ]; then
-        printf 'error: CHANGELOG.md lists what this release contains but is not committed yet\n' >&2
+        err "CHANGELOG.md lists what this release contains but is not committed yet"
         printf '       git add CHANGELOG.md && git commit -m "docs: regenerate CHANGELOG for %s"\n' "$tag" >&2
         printf '       then run this script again\n' >&2
         exit 1
     fi
 fi
-printf 'CHANGELOG.md is up to date for %s\n' "$tag"
+ok "CHANGELOG.md is up to date for $tag"
 
 step "Preflight checks"
 # Full check takes a while; Enter skips it, -p/--preflight (or P at the prompt)
@@ -297,7 +329,7 @@ if [ "${1:-}" = "-p" ] || [ "${1:-}" = "--preflight" ]; then
     do_preflight=1
 fi
 if [ "$interactive" = 1 ] && [ "$do_preflight" = 0 ]; then
-    printf 'Run preflight checks (fmt/clippy/test, slow)? [y/N]: '
+    prompt "Run preflight checks (fmt/clippy/test, slow)? [y/N]: "
     read -r answer
     case "$answer" in
         y|Y|yes|Yes) do_preflight=1 ;;
@@ -314,7 +346,7 @@ if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
     # lets a failed release be re-published with the same version.
     retag=0
     if [ "$interactive" = 1 ]; then
-        printf 'Tag %s already exists. Delete it and re-release? [y/N]: ' "$tag"
+        prompt "Tag $tag already exists. Delete it and re-release? [y/N]: "
         read -r answer
         case "$answer" in
             y|Y|yes|Yes) retag=1 ;;
@@ -324,7 +356,7 @@ if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
                 ;;
         esac
     else
-        printf 'error: tag %s already exists\n' "$tag" >&2
+        err "tag $tag already exists"
         exit 1
     fi
     if [ "$retag" = 1 ]; then
@@ -338,18 +370,18 @@ if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
 fi
 
 if [ -n "$(git status --porcelain)" ]; then
-    printf 'error: working tree is not clean; commit or stash first\n' >&2
+    err "working tree is not clean; commit or stash first"
     exit 1
 fi
 
 branch=$(git rev-parse --abbrev-ref HEAD)
 if [ "$branch" != "main" ]; then
-    printf 'warning: releasing from %s, not main\n' "$branch" >&2
+    warn "releasing from $branch, not main"
 fi
 
 if [ "$interactive" = 1 ] && [ "$assume_yes" = 0 ]; then
     printf 'About to tag %s on branch %s and push, starting the release.\n' "$tag" "$branch"
-    printf 'Continue? [y/N]: '
+    prompt "Continue? [y/N]: "
     read -r answer
     case "$answer" in
         y|Y|yes|Yes) ;;
@@ -366,4 +398,4 @@ git tag -a "$tag" -m "Release $tag"
 step "Pushing $tag"
 git push origin "$tag"
 
-printf 'done: release workflow started for %s\n' "$tag"
+ok "done: release workflow started for $tag"
