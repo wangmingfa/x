@@ -58,6 +58,7 @@ pub mod hostsfile;
 pub mod logs;
 pub mod mount;
 pub mod netdiag;
+pub mod net_top;
 pub mod network;
 pub mod pathperm;
 pub mod plugins;

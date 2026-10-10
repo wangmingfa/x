@@ -5,12 +5,12 @@
 //! `default` reads the login database.
 
 use std::process::Command;
+#[cfg(windows)]
+use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 #[cfg(not(windows))]
 use x_core::error::Error;
 use x_core::error::Result;
 use x_core::shell::{ShellInfo, ShellManager};
-#[cfg(windows)]
-use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
 /// The platform shell adapter.
 pub struct PlatformShell;

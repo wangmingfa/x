@@ -65,7 +65,7 @@ pub struct RawSocket {
 ///
 /// Each row has a different size, so the buffer is walked with explicit offsets
 /// rather than a slice cast.
-struct Table {
+pub(crate) struct Table {
     buffer: AlignedBuffer,
     count: u32,
     row_size: usize,

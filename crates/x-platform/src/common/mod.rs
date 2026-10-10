@@ -32,6 +32,12 @@ pub mod user_os;
 pub mod window_os;
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
+pub mod capture;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub mod capture_unix;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub mod ifaddrs;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub mod netprobe;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub mod packet;
