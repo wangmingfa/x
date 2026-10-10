@@ -713,13 +713,13 @@ GitHub Actions CI 在 Ubuntu / macOS / Windows 三平台上跑格式、clippy
   可读；Inno 的 `ReleaseTag` 由工作流从 tag 传入（本地编译用文件里的兜底值），
   安装包文件名与 notes 里承诺的资产名因此是同一个。
 
-**D 组 · 候选（2026-10 新增，未开工，按性价比排序）**
+**D 组 · 候选（2026-10 新增；前两项已实现，余项未开工，按性价比排序）**
 
-- [ ] 监视告警：`x port watch` / `x ps watch` 已有轮询骨架但没有动作出口——加
+- [x] 监视告警：`x port watch` / `x ps watch` 已有轮询骨架但没有动作出口——加
   `--when <条件> --exec <命令>`（如端口被占用/进程消失时触发），或至少 `--quiet-until-change`
   变成可用的高频轮询源。轮询模型、退出码、审计都是现成的，只缺条件判定与触发一跳。
   风险点：触发命令的注入面要按破坏性操作契约过审计，且「触发失败」必须如实报告而不是静默吞掉。
-- [ ] 句柄/FD 泄漏探测：`x events` 已盯进程/网络/USB/磁盘/服务五类快照对拍，
+- [x] 句柄/FD 泄漏探测：`x events` 已盯进程/网络/USB/磁盘/服务五类快照对拍，
   补第六类——每进程打开句柄数（macOS `proc_pidinfo`、Linux `/proc/<pid>/fd` 计数、
   Windows `GetProcessHandleCount`），`x ps` 加一列、`x events` 加 drift 事件。
   全是现有采样循环顺手能拿的读数，且是「进程悄悄涨内存/涨 fd」这类问题的唯一定位入口。
