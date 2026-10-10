@@ -276,6 +276,7 @@ pub fn stub_process(pid: u32, parent: Option<u32>, name: &str) -> ProcessInfo {
         memory_bytes: Some(0),
         virtual_memory_bytes: None,
         threads: Some(1),
+        fd_count: None,
         start_time: None,
         state: ProcessState::Running,
         cwd: None,

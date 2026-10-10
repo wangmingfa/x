@@ -285,6 +285,7 @@ fn to_info(pid: Pid, process: &sysinfo::Process, with_usage: bool) -> ProcessInf
         memory_bytes: Some(process.memory()),
         virtual_memory_bytes: Some(process.virtual_memory()),
         threads: process.tasks().map(|t| t.len() as u32),
+        fd_count: None,
         start_time: Some(process.start_time()),
         state: to_state(process.status()),
         cwd: None,

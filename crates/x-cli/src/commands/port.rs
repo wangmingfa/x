@@ -92,7 +92,44 @@ pub enum PortCommand {
         /// Stop after this many polls instead of running until Ctrl-C.
         #[arg(long)]
         count: Option<usize>,
+        /// Only react to this kind of change: without --exec it filters the
+        /// output, with --exec it is the trigger condition.
+        #[arg(long, value_enum)]
+        when: Option<WatchWhenArg>,
+        /// Run this command once on the first matching change (via `sh -c` /
+        /// `cmd /C`), then exit 0. A failing command is reported and exits 1.
+        #[arg(long)]
+        exec: Option<String>,
     },
+}
+
+/// The kind of change `--when` reacts to.
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+pub enum WatchWhenArg {
+    /// Something appeared.
+    Added,
+    /// Something disappeared.
+    Removed,
+    /// Any change.
+    Any,
+}
+
+impl WatchWhenArg {
+    pub(crate) fn fires(self, added: usize, removed: usize) -> bool {
+        match self {
+            Self::Added => added > 0,
+            Self::Removed => removed > 0,
+            Self::Any => added > 0 || removed > 0,
+        }
+    }
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Added => "added",
+            Self::Removed => "removed",
+            Self::Any => "any",
+        }
+    }
 }
 
 /// Shared filters for the listing commands.
@@ -215,7 +252,18 @@ pub fn dispatch(
             list,
             interval,
             count,
-        } => watch(context, renderer, &list.options(false), *interval, *count),
+            when,
+            exec,
+        } => watch(
+            context,
+            renderer,
+            &list.options(false),
+            *interval,
+            *count,
+            "port",
+            *when,
+            exec.as_deref(),
+        ),
     }
 }
 
@@ -397,13 +445,20 @@ struct WatchEvent {
 /// Poll sockets and print only the differences between consecutive snapshots.
 ///
 /// `--count n` bounds the loop so scripts and tests can take exactly `n`
-/// samples; without it the command runs until Ctrl-C.
+/// samples; without it the command runs until Ctrl-C. With `--exec`, the
+/// first change matching `--when` runs the command once (audited, like any
+/// operation that changes the machine) and the watch exits — a failing
+/// command is reported honestly and exits 1, never swallowed.
+#[allow(clippy::too_many_arguments)]
 pub fn watch(
     context: &SystemContext,
     renderer: &mut Renderer,
     options: &PortListOptions,
     interval: f64,
     count: Option<usize>,
+    domain: &str,
+    when: Option<WatchWhenArg>,
+    exec: Option<&str>,
 ) -> Result<i32> {
     let offset = context
         .system
@@ -440,6 +495,8 @@ pub fn watch(
             }
             Some(before) => {
                 let diff = diff_sockets(before, &current);
+                let (added, removed) = (diff.added.len(), diff.removed.len());
+                let fired = when.is_none_or(|w| w.fires(added, removed));
                 if !diff.is_empty() {
                     if json {
                         renderer.always_json(&WatchEvent {
@@ -454,6 +511,19 @@ pub fn watch(
                         for row in &diff.added {
                             renderer.line(format!("[{time}] + {}", watch_row(row)))?;
                         }
+                    }
+                }
+                if fired {
+                    if let Some(command) = exec {
+                        let summary = format!("{added} added, {removed} removed");
+                        return super::watchexec::run_triggered(
+                            renderer, command, domain, when, &summary,
+                        );
+                    }
+                    if when.is_some() {
+                        // Filtered output without --exec: stop at the first
+                        // match so the caller sees exactly what fired.
+                        return Ok(0);
                     }
                 }
             }

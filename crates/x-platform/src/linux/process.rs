@@ -104,6 +104,18 @@ pub fn parents() -> HashMap<u32, u32> {
     parents
 }
 
+/// Descriptor count of `pid`: the directory entry count of `/proc/<pid>/fd`,
+/// sockets and pipes included. Unreadable pids (other users, dying
+/// processes) read as 0 — the same permission boundary `lsof` draws.
+fn fd_count(pid: u32) -> u32 {
+    let dir = std::path::Path::new("/proc")
+        .join(pid.to_string())
+        .join("fd");
+    std::fs::read_dir(dir)
+        .map(|entries| entries.count())
+        .unwrap_or(0) as u32
+}
+
 impl ProcessManager for LinuxProcess {
     fn list(&self, options: &ProcessListOptions) -> Result<Vec<ProcessInfo>> {
         let mut rows = self.inner.list(options)?;
@@ -112,6 +124,8 @@ impl ProcessManager for LinuxProcess {
             if row.parent_pid.is_none() {
                 row.parent_pid = parents.get(&row.pid).copied();
             }
+            // One `readdir` per pid, no path resolution — cheap enough for lists.
+            row.fd_count = Some(fd_count(row.pid));
         }
         Ok(rows)
     }
@@ -121,6 +135,7 @@ impl ProcessManager for LinuxProcess {
         if row.parent_pid.is_none() {
             row.parent_pid = parents().get(&pid).copied();
         }
+        row.fd_count = Some(fd_count(pid));
         row.open_files = Some(open_files(pid));
         row.connections = Some(connections(pid));
         Ok(row)

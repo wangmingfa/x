@@ -39,6 +39,7 @@ pub mod startup;
 pub mod sys;
 pub mod upgrade;
 pub mod usergroup;
+pub mod watchexec;
 pub mod window;
 
 use x_core::error::Result;

@@ -86,7 +86,13 @@ impl ProcessManager for MacosProcess {
         &self,
         options: &x_core::process::ProcessListOptions,
     ) -> x_core::error::Result<Vec<x_core::process::ProcessInfo>> {
-        self.inner.list(options)
+        let mut rows = self.inner.list(options)?;
+        // `PROC_PIDLISTFDS` is one cheap call per pid — no path resolution —
+        // so every list row can carry the descriptor count.
+        for row in &mut rows {
+            row.fd_count = Some(fd_count(row.pid));
+        }
+        Ok(rows)
     }
 
     fn kill(&self, pid: u32, signal: x_core::process::KillSignal) -> x_core::error::Result<()> {
@@ -95,10 +101,19 @@ impl ProcessManager for MacosProcess {
 
     fn get(&self, pid: u32) -> x_core::error::Result<x_core::process::ProcessInfo> {
         let mut info = self.inner.get(pid)?;
+        info.fd_count = Some(fd_count(pid));
         info.open_files = Some(open_files(pid));
         info.connections = Some(connections(pid));
         Ok(info)
     }
+}
+
+/// Descriptor count of `pid`: the raw `PROC_PIDLISTFDS` entries, sockets and
+/// pipes included. Unreadable pids (other users, dying processes) read as 0,
+/// which is indistinguishable from "no descriptors" — the same boundary
+/// `lsof` draws, reported as a count rather than hidden.
+fn fd_count(pid: u32) -> u32 {
+    crate::macos::libproc::list_fds(pid as i32).len() as u32
 }
 
 /// Trait object helper.

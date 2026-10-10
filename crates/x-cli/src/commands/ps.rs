@@ -84,6 +84,16 @@ pub enum PsCommand {
         /// Stop after this many samples; without it, run until Ctrl-C.
         #[arg(long)]
         count: Option<usize>,
+
+        /// Only react to this kind of change: without --exec it filters the
+        /// output, with --exec it is the trigger condition.
+        #[arg(long, value_enum)]
+        when: Option<super::port::WatchWhenArg>,
+
+        /// Run this command once on the first matching change (via `sh -c` /
+        /// `cmd /C`), then exit 0. A failing command is reported and exits 1.
+        #[arg(long)]
+        exec: Option<String>,
     },
 }
 
@@ -181,7 +191,17 @@ pub fn dispatch(
             args,
             interval,
             count,
-        } => watch(context, renderer, &args.options(), *interval, *count),
+            when,
+            exec,
+        } => watch(
+            context,
+            renderer,
+            &args.options(),
+            *interval,
+            *count,
+            *when,
+            exec.as_deref(),
+        ),
     }
 }
 
@@ -208,6 +228,8 @@ pub fn watch(
     options: &ProcessListOptions,
     interval: f64,
     count: Option<usize>,
+    when: Option<super::port::WatchWhenArg>,
+    exec: Option<&str>,
 ) -> Result<i32> {
     let offset = context
         .system
@@ -263,6 +285,8 @@ pub fn watch(
             }
             Some(before) => {
                 let diff = diff_processes(before, &current);
+                let (added, removed) = (diff.added.len(), diff.removed.len());
+                let fired = when.is_none_or(|w| w.fires(added, removed));
                 if !diff.is_empty() {
                     if json {
                         renderer.always_json(&WatchEvent {
@@ -277,6 +301,19 @@ pub fn watch(
                         for row in &diff.added {
                             renderer.line(format!("[{}] + {}", stamp(offset), watch_row(row)))?;
                         }
+                    }
+                }
+                if fired {
+                    if let Some(command) = exec {
+                        let summary = format!("{added} added, {removed} removed");
+                        return super::watchexec::run_triggered(
+                            renderer, command, "process", when, &summary,
+                        );
+                    }
+                    if when.is_some() {
+                        // Filtered output without --exec: stop at the first
+                        // match so the caller sees exactly what fired.
+                        return Ok(0);
                     }
                 }
             }
@@ -330,7 +367,7 @@ pub fn list(
     if renderer.format() == OutputFormat::Json {
         renderer.always_json(&rows)?;
     } else {
-        let mut table = Table::new(["pid", "user", "cpu%", "mem", "name", "command"]);
+        let mut table = Table::new(["pid", "user", "cpu%", "mem", "fd", "name", "command"]);
         for row in &rows {
             table.push(process_row(row));
         }
@@ -568,6 +605,9 @@ fn process_row(row: &ProcessInfo) -> Vec<crate::format::Cell> {
         row.user.clone().unwrap_or_else(|| "-".into()),
         cpu(row),
         memory(row),
+        row.fd_count
+            .map(|count| count.to_string())
+            .unwrap_or_else(|| "-".into()),
         row.name.clone(),
         row.command_line
             .as_deref()

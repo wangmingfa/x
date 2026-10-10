@@ -125,6 +125,12 @@ pub struct ProcessInfo {
     /// Number of OS threads.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub threads: Option<u32>,
+    /// Open file descriptors (Windows: handles) when the platform exposes a
+    /// count. A cheap per-process read — unlike [`Self::open_files`], which
+    /// resolves every path and is detail-view only — so lists can carry it
+    /// and `x events` can watch it drift.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fd_count: Option<u32>,
     /// Unix boot-relative start time in seconds.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub start_time: Option<u64>,
@@ -426,6 +432,7 @@ mod tests {
             memory_bytes: None,
             virtual_memory_bytes: None,
             threads: None,
+            fd_count: None,
             start_time: None,
             state: ProcessState::Running,
             cwd: None,

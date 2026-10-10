@@ -130,11 +130,14 @@ pub struct SystemEvent {
 // The comparable records each family reduces to
 // ---------------------------------------------------------------------------
 
-/// One process as sampled; the key is `pid`.
+/// One process as sampled; the key is `pid`. The fd count rides along so a
+/// leak shows up as a `~` (changed) event instead of staying invisible —
+/// `None` (platform did not say / read refused) never compares as a change.
 #[derive(Debug, Clone, PartialEq)]
 struct ProcessSeen {
     pid: u32,
     name: String,
+    fd_count: Option<u32>,
 }
 
 /// One socket as sampled; the key is `(proto, local, remote)`.
@@ -267,6 +270,21 @@ pub fn diff(previous: &SystemSnapshot, current: &SystemSnapshot) -> Vec<SystemEv
     let mut events = Vec::new();
     if let (Some(before), Some(after)) = (&previous.processes, &current.processes) {
         diff_sorted(before, after, cmp_processes, process_event, &mut events);
+        // The fd count is not part of the key, so same-pid drift needs its
+        // own pass: report it only when both sides carried a count — a
+        // platform that stopped reporting must not read as "closed them all".
+        let mut by_pid: std::collections::HashMap<u32, Option<u32>> =
+            before.iter().map(|row| (row.pid, row.fd_count)).collect();
+        for row in after {
+            let Some(old) = by_pid.remove(&row.pid) else {
+                continue;
+            };
+            if let (Some(old_count), Some(new_count)) = (old, row.fd_count) {
+                if old_count != new_count {
+                    events.push(fd_drift_event(row.pid, &row.name, old_count, new_count));
+                }
+            }
+        }
     }
     if let (Some(before), Some(after)) = (&previous.connections, &current.connections) {
         diff_sorted(
@@ -300,6 +318,7 @@ fn sample_processes(context: &SystemContext) -> Result<Vec<ProcessSeen>> {
         .map(|row| ProcessSeen {
             pid: row.pid,
             name: row.name,
+            fd_count: row.fd_count,
         })
         .collect();
     seen.sort_by_key(|row| row.pid);
@@ -497,6 +516,23 @@ fn process_event(op: EventOp, row: &ProcessSeen) -> SystemEvent {
     }
 }
 
+/// A live process opened or closed descriptors between rounds. One event per
+/// pid per round — the leak signal is the repeated direction, not the noise.
+fn fd_drift_event(pid: u32, name: &str, before: u32, after: u32) -> SystemEvent {
+    let direction = if after > before { "grew" } else { "shrank" };
+    SystemEvent {
+        event_type: EventType::Process,
+        op: EventOp::Changed,
+        summary: format!(
+            "fds {direction} {} -> {} on {} (pid {pid})",
+            before, after, name
+        ),
+        pid: Some(pid),
+        name: Some(name.to_string()),
+        detail: Some(format!("{before}->{after}")),
+    }
+}
+
 fn connection_event(op: EventOp, row: &ConnectionSeen) -> SystemEvent {
     let verb = match op {
         EventOp::Removed => "closed",
@@ -596,6 +632,7 @@ mod tests {
         ProcessSeen {
             pid,
             name: name.to_string(),
+            fd_count: None,
         }
     }
 
