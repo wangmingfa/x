@@ -30,7 +30,13 @@ fn main() -> ExitCode {
     let context = x_platform::audit::attach(context);
 
     if interactive {
-        return match x_tui::run(context) {
+        // The composition root knows the platform, so it wires the net-top
+        // sampler in here; x-tui itself only sees the trait object. Opening
+        // the capture device is best-effort: without root the page degrades
+        // to a hint instead of failing the TUI.
+        let net_top: std::sync::Arc<dyn x_core::net_top::NetTopSampler> =
+            std::sync::Arc::new(x_platform::PlatformNetSampler::new(None));
+        return match x_tui::run(context, Some(net_top)) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => fail("x tui", &error),
         };

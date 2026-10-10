@@ -135,6 +135,7 @@ powershell -c "irm https://raw.githubusercontent.com/wangmingfa/x/main/scripts/i
 | `x net dns` | DNS 解析器配置 |
 | `x net flush` | 刷新系统 DNS 缓存 |
 | `x net connections` | 全部套接字 + 归属进程，`--process` / `--port` 过滤 |
+| `x net top` | 每进程实时网速：RX/TX 速率、连接数与来源标注（`--interval` / `--count` / `--pid` / `--sort` / `--json`）；抓包需 root，无权限时如实降级为连接归属 + 整机速率并给 hint |
 | `x net resolve <host>` | 正向解析：主机名 → 地址 |
 | `x net reverse <ip>` | 反向解析：地址 → 主机名 |
 | `x net ping <host>` | ICMP 连通性（`--count` / `--timeout`），输出 min/avg/max |

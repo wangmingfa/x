@@ -83,13 +83,18 @@ PID    PROCESS      RX/s      TX/s     CONNS  SOURCE
 
 ```
 x net top [--interval 2.0] [--count N] [--pid PID] [--sort rx|tx|conns|pid]
-          [--json] [--no-etw]  (Windows: 不开 ETW 会话，免提权)
+          [--interface IF] [--json] [--jsonl]
 ```
 
-- 退出码：0 成功；6 采样超时；7 平台无任何一层可用；130 拒绝确认（若未来加写操作）
-- 破坏性？**否**——ETW 只读事件流、连接表只读，不写审计（与 `x logs` 同级）
-- JSON 模式：每轮一个文档 `{ "interval_s":…, "host":{…}, "processes":[…] }`，
+- 退出码：0 成功；1 采样失败（无权限/无接口）；7 平台无任何一层可用；130 拒绝确认（若未来加写操作）。
+  契约里的 6（采样超时）在本实现中不产生——抓包窗口由 `--interval` 决定，读不满时如实输出已有数据
+- 破坏性？**否**——抓包只读、连接表只读，不写审计（与 `x logs` 同级）
+- `--interface`：抓包设备（默认 macOS `en0`、Linux `any`）
+- `--json`：每轮一个文档 `{ "interval_s":…, "host":{…}, "processes":[…] }`，
   缺失层整字段缺席（不输出 null 假装是 0）
+- `--jsonl`：与 `--json` 同样的文档，每轮紧凑单行输出，供管道按行消费
+- TUI：`x tui` 的第 9 页（数字键 9 / 命令面板 go to net top），后台线程采样
+  （抓包窗口不阻塞绘制循环），无采样器接线或无权限时显示 hint 而非假数据
 
 ## 5. 平台降级矩阵（实现前的契约）
 
@@ -97,7 +102,7 @@ x net top [--interval 2.0] [--count N] [--pid PID] [--sort rx|tx|conns|pid]
 |------|-------------|-------------|------------|
 | Linux | ✗ 如实缺席 | ✓（现有 port.rs 数据源） | ✓ |
 | macOS | ✗ 如实缺席 | ✓（现有 network.rs 数据源） | ✓（netstat -ib 已在用） |
-| Windows | ✓（admin）/ ✗ 无 admin 时如实缺席并给 hint | ✓（现有 GetExtendedTcpTable） | ✓（MIB_IF_ROW2 已在用） |
+| Windows | ✗ 无可用来源，如实缺席并提示（ETW/ESTATS 路线已证伪：`SetPerTcpConnectionEStats` 需管理员且返回 `ERROR_ACCESS_DENIED`） | ✓（现有 GetExtendedTcpTable） | ✓（MIB_IF_ROW2 已在用） |
 
 `x capability --domain net` 增加 `net-top` 条目，按上表报告 supported/degraded/unsupported。
 

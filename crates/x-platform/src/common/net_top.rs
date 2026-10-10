@@ -18,7 +18,7 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use x_core::net_top::{ConnectionOwner, InterfaceCounters, NetSnapshot};
+use x_core::net_top::{ConnectionOwner, InterfaceCounters, NetSnapshot, NetTopSampler};
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use x_core::net_top::{PidBytes, SOURCE_SENTINEL};
 use x_core::port::{PortListOptions, Protocol};
@@ -56,19 +56,20 @@ pub struct PlatformNetSampler {
 
 impl Default for PlatformNetSampler {
     fn default() -> Self {
-        Self::new()
+        Self::new(None)
     }
 }
 
 impl PlatformNetSampler {
-    /// Build the sampler, opening the capture device when the platform has
-    /// one. A denied device is the expected case without root: L3 is then
-    /// absent for the whole run and [`Self::per_process_available`] reports
-    /// `false`, so the CLI can hint once instead of failing.
-    pub fn new() -> Self {
+    /// `interface` pins the capture device to one NIC; `None` keeps the
+    /// platform default (macOS `en0`, Linux `any`). A denied device is the
+    /// expected case without root: L3 is then absent for the whole run and
+    /// [`Self::per_process_available`] reports `false`, so the CLI can hint
+    /// once instead of failing.
+    pub fn new(interface: Option<&str>) -> Self {
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         {
-            match crate::common::capture_unix::UnixCaptureSampler::open() {
+            match crate::common::capture_unix::UnixCaptureSampler::open(interface) {
                 Ok(sampler) => Self {
                     per_process_error: None,
                     per_process_denied: false,
@@ -90,6 +91,7 @@ impl PlatformNetSampler {
         {
             // No capture source is bound on this OS: host and connection
             // layers still run, so the command degrades instead of failing.
+            let _ = interface;
             Self {
                 per_process_error: Some(
                     "per-process rates have no source on this platform yet".to_string(),
@@ -203,6 +205,31 @@ impl PlatformNetSampler {
     }
 }
 
+/// Trait-object face for interactive frontends (`x-tui`); delegates to the
+/// inherent methods, which take precedence in method resolution so there is
+/// no recursion.
+impl NetTopSampler for PlatformNetSampler {
+    fn sample(&self, context: &SystemContext, window: Duration) -> NetSnapshot {
+        PlatformNetSampler::sample(self, context, window)
+    }
+
+    fn process_name(&self, pid: i32) -> Option<String> {
+        PlatformNetSampler::process_name(self, pid)
+    }
+
+    fn status_note(&self) -> Option<String> {
+        if self.per_process_available() {
+            None
+        } else {
+            Some(
+                self.per_process_error()
+                    .unwrap_or("per-process rates unavailable")
+                    .to_string(),
+            )
+        }
+    }
+}
+
 /// L1: cumulative byte counters per interface name. Interfaces that report
 /// neither side are skipped; an all-empty host is indistinguishable from a
 /// failed read and stays `None` either way.
@@ -272,7 +299,7 @@ fn socket_entry(row: &x_core::PortInfo) -> Option<SocketEntry> {
 /// because the capture device is platform knowledge `x-core` must not have;
 /// the CLI slots the row in with the rest of the `net` domain.
 pub fn net_top_capability_rows() -> Vec<x_core::Capability> {
-    let sampler = PlatformNetSampler::new();
+    let sampler = PlatformNetSampler::new(None);
     let (status, note) = if sampler.per_process_available() {
         (
             x_core::CapabilityStatus::Supported,

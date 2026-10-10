@@ -23,6 +23,7 @@ pub mod ui;
 use std::time::Duration;
 
 use x_core::error::{Error, Result};
+use x_core::net_top::NetTopSampler;
 use x_core::SystemContext;
 
 /// How often the visible snapshot is refreshed.
@@ -41,7 +42,14 @@ const REFRESH_MS: u64 = 1500;
 pub const INPUT_TIMEOUT: Duration = Duration::from_millis(250);
 
 /// Run the interface against `context` until the user quits.
-pub fn run(context: SystemContext) -> Result<()> {
+///
+/// `net_top` is wired in by the composition root — the one place allowed to
+/// know which platform it runs on — so this crate stays platform-agnostic.
+/// `None` leaves the net top page showing a hint instead of a table.
+pub fn run(
+    context: SystemContext,
+    net_top: Option<std::sync::Arc<dyn NetTopSampler>>,
+) -> Result<()> {
     if !crossterm::tty::IsTty::is_tty(&std::io::stdout()) {
         return Err(Error::invalid_input(
             "x-tui needs an interactive terminal; use `x` for one shot output",
@@ -55,7 +63,10 @@ pub fn run(context: SystemContext) -> Result<()> {
     let (keys, key_warnings) = keys::Keys::from_config(&config);
     warnings.extend(key_warnings);
 
-    let mut app = app::App::with_keys(context, keys);
+    let mut app = match net_top {
+        Some(net_top) => app::App::with_net_top(context, keys, net_top),
+        None => app::App::with_keys(context, keys),
+    };
     for warning in &warnings {
         app.set_status(format!("config: {warning}"));
     }

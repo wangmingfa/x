@@ -256,17 +256,19 @@ impl std::fmt::Debug for UnixCaptureSampler {
 pub type SocketTableProvider<'a> = &'a dyn Fn() -> Vec<super::capture::SocketEntry>;
 
 impl UnixCaptureSampler {
-    pub fn open() -> Result<Self> {
+    /// Open the capture device, optionally pinned to one interface.
+    /// `None` uses the platform default (macOS `en0`, Linux `any`).
+    pub fn open(interface: Option<&str>) -> Result<Self> {
         let device: Box<dyn CaptureDevice> = {
             #[cfg(target_os = "macos")]
             {
                 // en0 covers the common case; loopback traffic attributes via
                 // its own device only when explicitly asked for.
-                Box::new(BpfDevice::open("en0")?)
+                Box::new(BpfDevice::open(interface.unwrap_or("en0"))?)
             }
             #[cfg(target_os = "linux")]
             {
-                Box::new(PacketDevice::open("any")?)
+                Box::new(PacketDevice::open(interface.unwrap_or("any"))?)
             }
         };
         let datalink = device.datalink();
@@ -343,7 +345,7 @@ mod tests {
         if unsafe { libc::geteuid() == 0 } {
             return;
         }
-        let err = UnixCaptureSampler::open().unwrap_err();
+        let err = UnixCaptureSampler::open(None).unwrap_err();
         assert_eq!(err.kind(), ErrorKind::PermissionDenied);
     }
 }

@@ -131,7 +131,7 @@ fn view_cycles_and_wraps_in_both_directions() {
     assert_eq!(app.view(), View::Dashboard);
 
     app.on_key(key(KeyCode::Left));
-    assert_eq!(app.view(), View::Remote, "left from the first page wraps");
+    assert_eq!(app.view(), View::NetTop, "left from the first page wraps");
     app.on_key(key(KeyCode::Right));
     assert_eq!(app.view(), View::Dashboard, "right from the last wraps");
 }
@@ -372,6 +372,9 @@ fn every_page_refreshes_its_own_capability() {
             // The remote page lists whatever hosts ~/.ssh/config exposes; the
             // count is environment-dependent but must match what was loaded.
             View::Remote => app.remote_hosts().len(),
+            // No net-top sampler is wired into stub contexts, so the page
+            // stays empty instead of sampling.
+            View::NetTop => 0,
         };
         assert_eq!(app.rows(), expected, "{view:?}");
     }

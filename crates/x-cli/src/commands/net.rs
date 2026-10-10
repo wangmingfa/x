@@ -131,6 +131,11 @@ pub struct TopArgs {
     #[arg(long)]
     pub pid: Option<i32>,
 
+    /// Capture on this interface instead of the platform default
+    /// (macOS `en0`, Linux `any`).
+    #[arg(long)]
+    pub interface: Option<String>,
+
     /// Sort key: rx, tx, conns or pid.
     #[arg(long, default_value = "rx")]
     pub sort: String,
@@ -561,9 +566,9 @@ fn top(context: &SystemContext, renderer: &mut Renderer, args: &TopArgs) -> Resu
     };
     let window = Duration::from_secs_f64(interval);
     let sort = SortKey::parse(&args.sort)?;
-    let json = renderer.format() == OutputFormat::Json;
+    let json = matches!(renderer.format(), OutputFormat::Json | OutputFormat::Jsonl);
 
-    let sampler = PlatformNetSampler::new();
+    let sampler = PlatformNetSampler::new(args.interface.as_deref());
 
     let mut previous = NetSnapshot::default();
     let mut rounds = 0usize;
@@ -811,7 +816,18 @@ fn render_top_json(
             .collect();
         doc.insert("failures".into(), serde_json::Value::Array(failures));
     }
-    renderer.always_json(&serde_json::Value::Object(doc))?;
+    // Jsonl streams one compact document per round; Json pretty-prints.
+    if renderer.format() == OutputFormat::Jsonl {
+        let text = serde_json::to_string(&serde_json::Value::Object(doc)).map_err(|e| {
+            Error::new(
+                x_core::ErrorKind::System,
+                format!("net top json failed: {e}"),
+            )
+        })?;
+        renderer.line(text)?;
+    } else {
+        renderer.always_json(&serde_json::Value::Object(doc))?;
+    }
     Ok(())
 }
 

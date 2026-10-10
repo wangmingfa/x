@@ -11,6 +11,8 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+use crate::context::SystemContext;
+
 /// Cumulative interface byte counters at one sampling instant.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct InterfaceCounters {
@@ -285,6 +287,21 @@ fn current_source_tag(counters: &BTreeMap<i32, PidBytes>) -> &'static str {
 /// Reserved pid the sampler uses to tag how the per-process counters were
 /// obtained. A real kernel never hands out this pid.
 pub const SOURCE_SENTINEL: i32 = i32::MAX;
+
+/// The seam the interactive frontends sample through: `x-tui` must not know
+/// which OS it draws on, so the composition root hands in one of these
+/// trait objects. One-shot output (`x net top`) holds the platform type
+/// directly and never goes through here.
+pub trait NetTopSampler: Send + Sync {
+    /// One sampling round; `window` bounds the blocking read inside.
+    fn sample(&self, context: &SystemContext, window: Duration) -> NetSnapshot;
+    /// Process name for `pid` from the most recent socket-table read, when
+    /// the platform resolved one.
+    fn process_name(&self, pid: i32) -> Option<String>;
+    /// One line explaining why per-process coverage may be absent (denied
+    /// privileges, no source on this platform), when there is such a line.
+    fn status_note(&self) -> Option<String>;
+}
 
 #[cfg(test)]
 mod tests {

@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use x_core::disk::{DirUsage, DiskInfo};
 use x_core::error::Result;
+use x_core::net_top::{diff, NetSnapshot, NetTopReport, NetTopSampler};
 use x_core::network::{AddressInfo, DnsConfig, InterfaceInfo, RouteInfo};
 use x_core::port::{ConnectionState, KillPlan, PortInfo, PortListOptions, PortQuery};
 use x_core::process::{ProcessInfo, ProcessListOptions, ProcessNode, ProcessSort, ProcessTree};
@@ -52,11 +53,13 @@ pub enum View {
     Disks,
     /// Snapshots from another machine that runs x, over SSH.
     Remote,
+    /// Live per-process network usage (`x net top`).
+    NetTop,
 }
 
 impl View {
     /// Every view, for tab cycling.
-    pub const ALL: [View; 8] = [
+    pub const ALL: [View; 9] = [
         View::Dashboard,
         View::Ports,
         View::Processes,
@@ -65,6 +68,7 @@ impl View {
         View::System,
         View::Disks,
         View::Remote,
+        View::NetTop,
     ];
 
     /// Sidebar label.
@@ -78,6 +82,7 @@ impl View {
             Self::System => "system",
             Self::Disks => "disks",
             Self::Remote => "remote",
+            Self::NetTop => "net top",
         }
     }
 
@@ -300,6 +305,15 @@ pub struct App {
 
     /// SSH hosts the remote page can jump to (from `~/.ssh/config`).
     remote_hosts: Vec<String>,
+    /// Live per-process network sampler, wired in by the composition root.
+    /// `None` leaves the net top page showing a hint instead of a table.
+    net_top: Option<std::sync::Arc<dyn NetTopSampler>>,
+    /// Latest diffed report shown on the net top page.
+    net_top_report: Option<NetTopReport>,
+    /// Previous snapshot, for diffing the next round against.
+    net_top_previous: Option<NetSnapshot>,
+    /// In-flight sampling round (mailbox slot, like the disk walker).
+    net_top_slot: Option<std::sync::Arc<Mutex<Option<NetSnapshot>>>>,
     /// Effective key bindings (defaults overridden by config.toml).
     keys: crate::keys::Keys,
     /// Host whose snapshot is currently displayed, if any.
@@ -362,10 +376,26 @@ impl App {
             remote_rows: Vec::new(),
             remote_error: None,
             remote_fetch: None,
+            net_top: None,
+            net_top_report: None,
+            net_top_previous: None,
+            net_top_slot: None,
             keys,
         };
         app.load_remote_hosts();
         app.refresh();
+        app
+    }
+
+    /// Build the interface with a live net-top sampler. Called by the
+    /// composition root, the one place allowed to know the platform.
+    pub fn with_net_top(
+        context: SystemContext,
+        keys: crate::keys::Keys,
+        net_top: std::sync::Arc<dyn NetTopSampler>,
+    ) -> Self {
+        let mut app = Self::with_keys(context, keys);
+        app.net_top = Some(net_top);
         app
     }
 
@@ -568,6 +598,7 @@ impl App {
             View::System => self.refresh_system(),
             View::Disks => self.refresh_disks(),
             View::Remote => self.refresh_remote(),
+            View::NetTop => self.refresh_net_top(),
         };
         if let Err(error) = result {
             self.status = error.message().to_string();
@@ -725,6 +756,71 @@ impl App {
         });
     }
 
+    /// Kick off one net-top sampling round on a helper thread.
+    ///
+    /// The capture window inside `sample` blocks for the whole interval, so
+    /// like the disk walker it reports through a mailbox slot instead of
+    /// stalling the draw loop. Sampling starts on the first visit to the
+    /// page and keeps one round in flight from then on.
+    fn refresh_net_top(&mut self) -> Result<()> {
+        let Some(sampler) = self.net_top.as_ref() else {
+            return Ok(());
+        };
+        if self.net_top_slot.is_some() {
+            return Ok(());
+        }
+        let sampler = sampler.clone();
+        let context = self.context.clone();
+        let window = crate::refresh_interval();
+        let slot: Arc<Mutex<Option<NetSnapshot>>> = Arc::new(Mutex::new(None));
+        self.net_top_slot = Some(slot.clone());
+        std::thread::spawn(move || {
+            let snapshot = sampler.sample(&context, window);
+            // A dropped mailbox only means the round is never shown; the
+            // sampling thread itself cannot fail.
+            if let Ok(mut guard) = slot.lock() {
+                *guard = Some(snapshot);
+            }
+        });
+        Ok(())
+    }
+
+    /// Pick up a finished sampling round and diff it against the previous
+    /// one. Returns `true` when a new report is on screen.
+    fn collect_net_top(&mut self) -> bool {
+        let snapshot = self
+            .net_top_slot
+            .as_ref()
+            .and_then(|slot| slot.lock().ok())
+            .and_then(|mut guard| guard.take());
+        if snapshot.is_some() {
+            self.net_top_slot = None;
+        }
+        let Some(current) = snapshot else {
+            return false;
+        };
+        let window = crate::refresh_interval();
+        let previous = self.net_top_previous.take().unwrap_or_default();
+        self.net_top_report = Some(diff(&previous, &current, window));
+        self.net_top_previous = Some(current);
+        true
+    }
+
+    /// The diffed net-top report, when a round has completed.
+    pub fn net_top_report(&self) -> Option<&NetTopReport> {
+        self.net_top_report.as_ref()
+    }
+
+    /// Process name for `pid` from the sampler's most recent socket read.
+    pub fn net_top_process_name(&self, pid: i32) -> Option<String> {
+        self.net_top.as_ref().and_then(|s| s.process_name(pid))
+    }
+
+    /// Whether a net-top sampler is wired into this session.
+    pub fn net_top_available(&self) -> bool {
+        self.net_top.is_some()
+    }
+
     /// Walk the usage root once per session on a helper thread.
     ///
     /// The event loop has no async runtime by design, and a full subtree scan
@@ -854,6 +950,7 @@ impl App {
 
     /// Called when the refresh interval elapsed.
     pub fn on_tick(&mut self) {
+        self.collect_net_top();
         if self.collect_scan() {
             // A scan finishing while the search overlay is open refreshes its
             // file family instead of leaving a stale empty group.
@@ -1394,6 +1491,12 @@ impl App {
                     self.remote_hosts.len()
                 }
             }
+            View::NetTop => self.net_top_report.as_ref().map_or(0, |report| {
+                report.processes.len()
+                    + usize::from(
+                        report.unmapped.rx_bps.is_some() || report.unmapped.tx_bps.is_some(),
+                    )
+            }),
         }
     }
 

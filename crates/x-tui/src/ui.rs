@@ -67,6 +67,7 @@ fn body(frame: &mut Frame, app: &mut App, area: Rect) {
         View::System => system(frame, app, area),
         View::Disks => disks(frame, app, area),
         View::Remote => remote(frame, app, area),
+        View::NetTop => net_top(frame, app, area),
     }
 }
 
@@ -737,9 +738,93 @@ fn remote(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
+/// Rates render as human bytes per second; an absent rate stays `-`.
+fn rate_label(rate: Option<f64>) -> String {
+    match rate {
+        Some(bps) => format!("{}/s", format_bytes(bps as u64)),
+        None => "-".to_string(),
+    }
+}
+
+fn net_top(frame: &mut Frame, app: &mut App, area: Rect) {
+    if !app.net_top_available() {
+        frame.render_widget(
+            Paragraph::new("net top: no sampler wired in this session")
+                .style(crate::theme::current().dim()),
+            area,
+        );
+        return;
+    }
+    let inner_height = inner_rows(app, area);
+    let start = app.scroll();
+    let Some(report) = app.net_top_report() else {
+        frame.render_widget(
+            Paragraph::new("collecting baseline: per-process rates appear from the next round")
+                .style(crate::theme::current().dim()),
+            area,
+        );
+        return;
+    };
+
+    let mut rows: Vec<(String, String, String, String, String, String)> = report
+        .processes
+        .iter()
+        .map(|rate| {
+            let process = app
+                .net_top_process_name(rate.pid)
+                .unwrap_or_else(|| "?".to_string());
+            (
+                rate.pid.to_string(),
+                process,
+                rate_label(rate.rx_bps),
+                rate_label(rate.tx_bps),
+                rate.conns.to_string(),
+                rate.source.to_string(),
+            )
+        })
+        .collect();
+    // Unmapped = host total minus the attributed sum; derived, not a
+    // process, so it renders last without a pid.
+    if report.unmapped.rx_bps.is_some() || report.unmapped.tx_bps.is_some() {
+        rows.push((
+            "-".to_string(),
+            "(unmapped)".to_string(),
+            rate_label(report.unmapped.rx_bps),
+            rate_label(report.unmapped.tx_bps),
+            "-".to_string(),
+            "host counters only".to_string(),
+        ));
+    }
+    let rows: Vec<Row> = rows
+        .into_iter()
+        .enumerate()
+        .skip(start)
+        .take(inner_height.max(1))
+        .map(|(index, (pid, process, rx, tx, conns, source))| {
+            Row::new(vec![pid, process, rx, tx, conns, source])
+                .style(selected_row(start + index, app.selected()))
+        })
+        .collect();
+
+    let widget = table(
+        &[
+            ("pid", 7),
+            ("process", 24),
+            ("rx/s", 12),
+            ("tx/s", 12),
+            ("conns", 7),
+            ("source", 16),
+        ],
+        &titled("net top", app),
+    )
+    .rows(rows);
+    frame.render_widget(widget, area);
+    scrollbar(frame, app, area);
+}
+
 fn footer(frame: &mut Frame, app: &App, area: Rect) {
     let keys = match app.view() {
-        View::Dashboard => "1-8 pages   / search   ctrl+p commands   r refresh   q quit",
+        View::Dashboard => "1-9 pages   / search   ctrl+p commands   r refresh   q quit",
         View::Ports => "enter details   k kill   / search   f filter   r refresh   q quit",
         View::Processes => {
             if app.tree_mode() {
@@ -753,6 +838,7 @@ fn footer(frame: &mut Frame, app: &App, area: Rect) {
         View::System => "/ search   ctrl+p commands   r refresh   q quit",
         View::Disks => "enter fold   / search   ctrl+p commands   r refresh   q quit",
         View::Remote => "enter fetch snapshot   up/down choose host   r refresh   q quit",
+        View::NetTop => "r resample   ctrl+p commands   q quit",
     };
     frame.render_widget(
         Paragraph::new(keys).style(crate::theme::current().dim()),
