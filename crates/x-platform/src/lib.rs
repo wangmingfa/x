@@ -41,6 +41,8 @@ pub mod windows;
 
 pub use sys::{current_user_name, host_name, is_linux, is_macos, is_windows};
 
+pub use common::net_top::{net_top_capability_rows, PlatformNetSampler};
+
 use x_core::context::SystemContext;
 use x_core::error::Result;
 

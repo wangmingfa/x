@@ -19,6 +19,7 @@ pub mod firewall_os;
 pub mod hosts_os;
 pub mod logs_os;
 pub mod mount_os;
+pub mod net_top;
 pub mod netdiag;
 pub mod pathperm_os;
 pub mod power_os;

@@ -25,6 +25,14 @@ pub fn dispatch(
     args: &CapabilityArgs,
 ) -> Result<i32> {
     let mut rows = x_core::capability::probe(context);
+    // net-top's per-process source lives in x-platform, so its capability
+    // row is probed there; slot it in with the rest of the net domain.
+    let net_top = x_platform::net_top_capability_rows();
+    if let Some(pos) = rows.iter().rposition(|row| row.domain == "net") {
+        rows.splice(pos + 1..pos + 1, net_top);
+    } else {
+        rows.extend(net_top);
+    }
     if let Some(domain) = &args.domain {
         let needle = domain.to_ascii_lowercase();
         rows.retain(|row| row.domain.to_ascii_lowercase() == needle);

@@ -4,9 +4,13 @@
 use clap::Subcommand;
 use std::collections::HashMap;
 use std::net::IpAddr;
+use std::time::Duration;
 use x_core::error::{Error, Result};
+use x_core::format_bytes;
+use x_core::net_top::{diff, NetSnapshot, NetTopReport};
 use x_core::network::{format_link_speed, PingRequest};
 use x_core::SystemContext;
+use x_platform::PlatformNetSampler;
 
 use crate::{
     format::{OutputFormat, Renderer, Table},
@@ -107,6 +111,29 @@ pub enum NetCommand {
         #[arg(long, default_value_t = 1)]
         count: usize,
     },
+
+    /// Live per-process network usage: rates, connections and their sources.
+    Top(TopArgs),
+}
+
+/// `x net top` arguments.
+#[derive(Debug, clap::Args)]
+pub struct TopArgs {
+    /// Seconds between rounds; also the capture window.
+    #[arg(long, default_value_t = 2.0)]
+    pub interval: f64,
+
+    /// Stop after this many rounds instead of running until interrupted.
+    #[arg(long)]
+    pub count: Option<usize>,
+
+    /// Only show this process id (the unmapped row is hidden).
+    #[arg(long)]
+    pub pid: Option<i32>,
+
+    /// Sort key: rx, tx, conns or pid.
+    #[arg(long, default_value = "rx")]
+    pub sort: String,
 }
 
 /// Route a `x net` invocation.
@@ -117,6 +144,7 @@ pub fn dispatch(
 ) -> Result<i32> {
     match command {
         NetCommand::Interfaces => interfaces(context, renderer),
+        NetCommand::Top(args) => top(context, renderer, args),
         NetCommand::Addresses => addresses(context, renderer),
         NetCommand::Routes => routes(context, renderer),
         NetCommand::Dns => dns(context, renderer),
@@ -518,6 +546,268 @@ fn speed(renderer: &mut Renderer, url: &str, timeout: f64, count: usize) -> Resu
         }
     }
     Ok(0)
+}
+
+/// Live per-process network usage: poll the platform sampler, diff
+/// consecutive rounds and render rates, connections and their sources —
+/// the same snapshot-diff loop `x events` runs. The capture window inside
+/// `sample` paces rounds on platforms that capture, so there is no extra
+/// sleep there.
+fn top(context: &SystemContext, renderer: &mut Renderer, args: &TopArgs) -> Result<i32> {
+    let interval = if args.interval.is_finite() && args.interval > 0.0 {
+        args.interval.max(0.05)
+    } else {
+        2.0
+    };
+    let window = Duration::from_secs_f64(interval);
+    let sort = SortKey::parse(&args.sort)?;
+    let json = renderer.format() == OutputFormat::Json;
+
+    let sampler = PlatformNetSampler::new();
+
+    let mut previous = NetSnapshot::default();
+    let mut rounds = 0usize;
+    loop {
+        let current = sampler.sample(context, window);
+
+        // Exit 7 when not a single layer came back: every platform can read
+        // the connection table unprivileged, so both layers failing means
+        // this host has nothing to show.
+        if rounds == 0 && current.interfaces.is_none() && current.connections.is_none() {
+            return Err(Error::unsupported(
+                "no network layer could be read on this host (interfaces and connections both failed)",
+            ));
+        }
+
+        let report = diff(&previous, &current, window);
+        if json {
+            render_top_json(renderer, &report, &sampler, args, sort)?;
+        } else {
+            render_top_table(renderer, &report, &sampler, args, sort, rounds)?;
+        }
+        renderer.flush().map_err(|e| {
+            Error::new(
+                x_core::ErrorKind::System,
+                format!("net top output failed: {e}"),
+            )
+        })?;
+
+        previous = current;
+        rounds += 1;
+        if args.count.is_some_and(|target| rounds >= target) {
+            return Ok(0);
+        }
+        // Platforms without a capture layer return from `sample` instantly;
+        // sleep there so the loop keeps the requested interval.
+        if !sampler.per_process_available() {
+            std::thread::sleep(window);
+        }
+    }
+}
+
+/// One renderable row: a process rate plus the name resolved from the
+/// sampler's most recent socket table.
+struct TopRow {
+    pid: i32,
+    process: String,
+    rx_bps: Option<f64>,
+    tx_bps: Option<f64>,
+    conns: usize,
+    source: &'static str,
+}
+
+/// Column `--sort` orders by; ties break by pid ascending.
+#[derive(Debug, Clone, Copy)]
+enum SortKey {
+    Rx,
+    Tx,
+    Conns,
+    Pid,
+}
+
+impl SortKey {
+    fn parse(key: &str) -> Result<Self> {
+        match key {
+            "rx" => Ok(Self::Rx),
+            "tx" => Ok(Self::Tx),
+            "conns" => Ok(Self::Conns),
+            "pid" => Ok(Self::Pid),
+            other => Err(Error::invalid_input(format!(
+                "unknown sort key `{other}` (expected rx, tx, conns or pid)"
+            ))),
+        }
+    }
+
+    fn order(self, rows: &mut [TopRow]) {
+        match self {
+            // Rates sort descending with absent values last: a process we
+            // could not measure never outranks one we did.
+            Self::Rx => rows.sort_by(|a, b| {
+                b.rx_bps
+                    .partial_cmp(&a.rx_bps)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then(a.pid.cmp(&b.pid))
+            }),
+            Self::Tx => rows.sort_by(|a, b| {
+                b.tx_bps
+                    .partial_cmp(&a.tx_bps)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then(a.pid.cmp(&b.pid))
+            }),
+            Self::Conns => rows.sort_by(|a, b| b.conns.cmp(&a.conns).then(a.pid.cmp(&b.pid))),
+            Self::Pid => rows.sort_by_key(|row| row.pid),
+        }
+    }
+}
+
+/// The report's process rows, name-resolved, `--pid`-filtered and sorted.
+fn sorted_top_rows(
+    report: &NetTopReport,
+    sampler: &PlatformNetSampler,
+    args: &TopArgs,
+    sort: SortKey,
+) -> Vec<TopRow> {
+    let mut rows: Vec<TopRow> = report
+        .processes
+        .iter()
+        .filter(|rate| args.pid.is_none_or(|pid| rate.pid == pid))
+        .map(|rate| TopRow {
+            pid: rate.pid,
+            process: sampler
+                .process_name(rate.pid)
+                .unwrap_or_else(|| "?".to_string()),
+            rx_bps: rate.rx_bps,
+            tx_bps: rate.tx_bps,
+            conns: rate.conns,
+            source: rate.source,
+        })
+        .collect();
+    sort.order(&mut rows);
+    rows
+}
+
+/// Rates render as human bytes per second; an absent rate stays `-` instead
+/// of a fabricated zero.
+fn rate_cell(rate: Option<f64>) -> String {
+    match rate {
+        Some(bps) => format!("{}/s", format_bytes(bps as u64)),
+        None => "-".to_string(),
+    }
+}
+
+fn render_top_table(
+    renderer: &mut Renderer,
+    report: &NetTopReport,
+    sampler: &PlatformNetSampler,
+    args: &TopArgs,
+    sort: SortKey,
+    round: usize,
+) -> Result<()> {
+    if round == 0 {
+        let source = if sampler.per_process_available() {
+            "port-inference (packet capture)".to_string()
+        } else {
+            sampler
+                .per_process_error()
+                .unwrap_or("unavailable on this platform")
+                .to_string()
+        };
+        renderer.line(format!(
+            "net top: sampling every {}s; per-process source: {source}",
+            report.interval.as_secs_f64()
+        ))?;
+    }
+    let mut table = Table::new(["PID", "PROCESS", "RX/s", "TX/s", "CONNS", "SOURCE"]);
+    for row in sorted_top_rows(report, sampler, args, sort) {
+        table.push(row![
+            row.pid.to_string(),
+            row.process,
+            rate_cell(row.rx_bps),
+            rate_cell(row.tx_bps),
+            row.conns.to_string(),
+            row.source,
+        ]);
+    }
+    // Unmapped = host total minus the attributed sum; it is derived, not a
+    // process, so it renders last without a pid — and only when the host
+    // counters that derive it exist.
+    if args.pid.is_none() && (report.unmapped.rx_bps.is_some() || report.unmapped.tx_bps.is_some())
+    {
+        table.push(row![
+            "-",
+            "(unmapped)",
+            rate_cell(report.unmapped.rx_bps),
+            rate_cell(report.unmapped.tx_bps),
+            "-",
+            "host counters only",
+        ]);
+    }
+    renderer.table(&table)?;
+    for (layer, reason) in &report.failures {
+        renderer.line(format!("! {layer}: {reason}"))?;
+    }
+    if round == 0 {
+        renderer.line("collecting baseline: per-process rates appear from the next round")?;
+    }
+    Ok(())
+}
+
+fn render_top_json(
+    renderer: &mut Renderer,
+    report: &NetTopReport,
+    sampler: &PlatformNetSampler,
+    args: &TopArgs,
+    sort: SortKey,
+) -> Result<()> {
+    let mut doc = serde_json::Map::new();
+    doc.insert(
+        "interval_s".into(),
+        serde_json::json!(report.interval.as_secs_f64()),
+    );
+    // A layer that failed this round leaves its whole object out: JSON must
+    // not render an absent reading as null-or-zero.
+    if let (Some(rx), Some(tx)) = (report.host_rx_bps, report.host_tx_bps) {
+        doc.insert(
+            "host".into(),
+            serde_json::json!({ "rx_bps": rx, "tx_bps": tx }),
+        );
+    }
+    let processes: Vec<serde_json::Value> = sorted_top_rows(report, sampler, args, sort)
+        .iter()
+        .map(|row| {
+            let mut obj = serde_json::Map::new();
+            obj.insert("pid".into(), serde_json::json!(row.pid));
+            obj.insert("process".into(), serde_json::json!(row.process));
+            if let Some(rx) = row.rx_bps {
+                obj.insert("rx_bps".into(), serde_json::json!(rx));
+            }
+            if let Some(tx) = row.tx_bps {
+                obj.insert("tx_bps".into(), serde_json::json!(tx));
+            }
+            obj.insert("conns".into(), serde_json::json!(row.conns));
+            obj.insert("source".into(), serde_json::json!(row.source));
+            serde_json::Value::Object(obj)
+        })
+        .collect();
+    doc.insert("processes".into(), serde_json::Value::Array(processes));
+    if args.pid.is_none() {
+        if let (Some(rx), Some(tx)) = (report.unmapped.rx_bps, report.unmapped.tx_bps) {
+            doc.insert(
+                "unmapped".into(),
+                serde_json::json!({ "rx_bps": rx, "tx_bps": tx }),
+            );
+        }
+    }
+    if !report.failures.is_empty() {
+        let failures: Vec<serde_json::Value> = report
+            .failures
+            .iter()
+            .map(|(layer, reason)| serde_json::json!({ "layer": layer, "reason": reason }))
+            .collect();
+        doc.insert("failures".into(), serde_json::Value::Array(failures));
+    }
+    renderer.always_json(&serde_json::Value::Object(doc))?;
+    Ok(())
 }
 
 /// Turn a CLI host argument into an address: literal addresses pass through,

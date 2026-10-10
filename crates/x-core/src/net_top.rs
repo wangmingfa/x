@@ -211,8 +211,12 @@ pub fn diff(previous: &NetSnapshot, current: &NetSnapshot, interval: Duration) -
     };
 
     let secs = interval.as_secs_f64();
+    // The sentinel pid carries only the source tag, not a real process — it
+    // must not surface as its own row.
+    let source = current_source_tag(curr_pids);
     report.processes = curr_pids
         .iter()
+        .filter(|(pid, _)| **pid != SOURCE_SENTINEL)
         .map(|(pid, curr_bytes)| {
             let (rx, tx) = match prev_pids.get(pid) {
                 // A backwards counter is as unusable as a missing one.
@@ -226,7 +230,6 @@ pub fn diff(previous: &NetSnapshot, current: &NetSnapshot, interval: Duration) -
                 }
                 _ => (None, None),
             };
-            let source = current_source_tag(curr_pids);
             ProcessRate {
                 pid: *pid,
                 rx_bps: rx,
@@ -236,6 +239,21 @@ pub fn diff(previous: &NetSnapshot, current: &NetSnapshot, interval: Duration) -
             }
         })
         .collect();
+    // A connected pid the byte layer never credited still gets its row:
+    // connections are a fact about now, and its rates stay absent instead
+    // of being guessed as zero.
+    for (pid, conns) in &per_pid_conns {
+        if !curr_pids.contains_key(pid) {
+            report.processes.push(ProcessRate {
+                pid: *pid,
+                rx_bps: None,
+                tx_bps: None,
+                conns: *conns,
+                source: "connections-only",
+            });
+        }
+    }
+    report.processes.sort_by_key(|p| p.pid);
 
     // Traffic the connection table could not attribute: host total minus the
     // sum of per-process rates, computed per layer only when both exist.
@@ -498,5 +516,34 @@ mod tests {
             counter_rate(Some(&counters), Some(&counters), Duration::ZERO),
             None
         );
+    }
+
+    #[test]
+    fn connected_pid_without_bytes_shows_conns_only() {
+        // The byte layer is live (sentinel present) but pid 77 sent nothing
+        // this round: it keeps its connection row with absent rates instead
+        // of vanishing or showing a fabricated 0 B/s.
+        let mut curr_pids = BTreeMap::new();
+        curr_pids.insert(SOURCE_SENTINEL, PidBytes::default());
+        curr_pids.insert(42, PidBytes { rx: 100, tx: 100 });
+        let prev = NetSnapshot {
+            pid_bytes: Some(curr_pids.clone()),
+            ..Default::default()
+        };
+        let curr = NetSnapshot {
+            pid_bytes: Some(curr_pids),
+            connections: conns(&[(42, "1.2.3.4:443"), (77, "5.6.7.8:80")]),
+            ..Default::default()
+        };
+        let report = diff(&prev, &curr, TWO_SECONDS);
+        let p77 = report.processes.iter().find(|p| p.pid == 77).unwrap();
+        assert_eq!(p77.conns, 1);
+        assert_eq!(p77.rx_bps, None);
+        assert_eq!(p77.source, "connections-only");
+        let p42 = report.processes.iter().find(|p| p.pid == 42).unwrap();
+        assert_eq!(p42.rx_bps, Some(0.0));
+        assert_eq!(p42.source, "port-inference");
+        // Rows stay in pid order even though 77 came from the merge.
+        assert!(report.processes.windows(2).all(|w| w[0].pid <= w[1].pid));
     }
 }
