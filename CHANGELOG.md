@@ -20,6 +20,8 @@ produce is a claim nobody can trace back to a commit.
 
 ### Fixes
 
+- **linux:** fall back to the logical core count on ARM ARM kernels and most VMs publish neither "physical id"/"core id" nor "cpu cores" in /proc/cpuinfo, so physical_cores() returned None and the range test panicked on ubuntu-22.04-arm CI. Fall back to the logical count, which can only overstate the physical count, never understate it. (f7803f2)
+- **windows:** import GetProcessHandleCount from Threading windows-sys 0.61.2 declares the function in Win32::System::Threading, not ProcessStatus; the wrong path broke the Windows cross check in CI. (6a39980)
 - **net-top:** 对拍模型三处修正：哨兵行泄漏、连接行合入、排序 - 哨兵 pid（SOURCE_SENTINEL）只用于标注字节来源，此前会从 curr_pids   迭代里漏出、渲染成一条幽灵进程行；现在在生成 ProcessRate 前过滤，   source 标签改为只取一次。 - 只有连接归属、本轮无字节计数的 pid 现在仍得到自己的行   （source=connections-only，速率缺席而非猜测为 0）：连接是"当下"   的事实，不因字节层缺席而消失。 - 进程行按 pid 排序，合并进来的连接行不破坏顺序。 - 删除引入后未接线的 NetSampler trait：CLI 直接持有平台采样器具体   类型，模型层不承担接缝职责。 (85cc728)
 - **install:** 安装脚本改用 POSIX set -eu，兼容 dash 下 curl|sh 执行 - scripts/install-release.sh / install.sh：set -euo pipefail 改为 set -eu。README 的   安装命令 curl ... | sh 会把脚本喂给 /bin/sh（Debian/Ubuntu 上即 dash），shebang   在管道场景下被忽略；pipefail 是 bash 专属选项，dash 报 Illegal option -o pipefail。   其余写法均为 POSIX，关键 curl|sed|head 管线已有 [ -n X_VERSION ] || fail 兜底，   去掉 pipefail 不影响正确性。已用真实 dash -n 验证两脚本通过、并复现过原报错。 - docs/design/net-top.md：新增网络拓扑设计笔记。 (52c37ce)
 - **changelog:** 启动清理上次被杀留下的孤儿临时文件 changelog.sh 用 CHANGELOG.md.tmp.<PID> 作写中转文件，正常退出由 EXIT trap 清理；但进程被 Ctrl+C / SIGKILL 终止时 trap 不执行，孤儿 .tmp 残留在工作树， 会被 release-tag.sh 的干净树检查当作未跟踪文件而中断发布。 (ab7a38c)
@@ -156,6 +158,61 @@ Subjects with no recognised `type:` prefix, kept verbatim.
 - P0 数据补全：内存 Swap/Pagefile 与内存压力（三平台） Co-Authored-By: AtomCode (glm5.3-flash) <noreply@atomgit.com> (0e71953)
 - P0 数据补全：系统信息与 CPU 详情（三平台） - sys info：上次重启时间、时区、UTC 偏移、locale、用户、shell、终端；   P/E 核心数（macOS perflevel / Windows EfficiencyClass / Linux cpufreq 推断） - sys cpu：Load Average、当前与最大频率、每核频率列、温度（Linux sysfs）、   governor（Linux）；三平台共用的两段采样逻辑收敛到 common::cpu_sysinfo - 修复 Windows GetLogicalProcessorInformationEx 记录遍历：把 Relationship   当成了记录长度，导致 Ex 路径永远失败并回退到旧 API - Linux/Windows 纯函数（cpufreq 集群、温度筛选、记录遍历等）带单测；   macOS 实测对齐 sysctl/uptime，另两平台 cargo check 通过 (13c813a)
 - README：路线图按 P0-P4 分层展开，条目全部单行 (2aaea7b)
+
+## v0.1.0-rc.2 (2026-10-10)
+
+### Features
+
+- watch triggers (--when/--exec) and per-process fd counts - x port watch / x ps watch: --when added|removed|any filters output and,   with --exec, fires the command once via sh -c / cmd /C then exits. The   trigger is audited (port.watch_exec / process.watch_exec) like any   operation that changes the machine; a failing command is reported with   its exit status and exits 1, never swallowed. - ProcessInfo gains fd_count: macOS PROC_PIDLISTFDS, Linux /proc/<pid>/fd   entry count, Windows GetProcessHandleCount (None when the process cannot   be opened — a missing read is not a zero). Cheap enough for list views. - x ps list shows an fd column. - x events process family: same-pid fd drift between rounds emits a ~   changed event; only when both rounds carried a count — a platform that   stopped reporting must not read as "closed them all". (ca6d96b)
+- **tui:** net top page (9th view) with background sampling; sync net-top docs - x-core: add NetTopSampler trait as the seam for interactive frontends,   keeping x-tui free of x-platform knowledge - x-platform: implement the trait on PlatformNetSampler, delegating to the   inherent methods; status_note surfaces the honest per-process denial hint - x-tui: 9th page (digit 9 / palette goto), mailbox-thread sampling like the   disk walker so the capture window never blocks the draw loop; hint instead   of fake data when no sampler is wired; footer/palette/rows/tests updated - x-app: composition root wires the sampler in, best-effort so losing the   capture device degrades the page rather than failing the TUI - docs: net-top.md §4 gains --interface/--jsonl/TUI and honest exit codes,   §5 Windows row corrected (ETW/ESTATS route disproved); contract.md exit   code 6 narrowed to its real source (net diag curl 28) (cb5c6ed)
+- **net-top:** 无 root 时打印独立 sudo hint 行 sudo 提示此前藏在首轮状态行末尾的括号里，容易被扫过去。现在： (5d203a9)
+- **release:** publish a windows tarball so x upgrade covers all platforms The build matrix gains a windows-x86_64 entry (windows-2022, MSVC, same image as the installer job). The Package step copies x.exe into the archive under the bare name x, so all three platforms ship the same tarball layout and x upgrade's unpack needs no platform branch. The changelog assets footer names the new file too - the publish job compares the notes against the produced assets and would refuse a release where they disagree. (8caf0fe)
+- 新增 x upgrade 自更新命令并修复 Windows shell 检测 - 新增 'x upgrade'：从 GitHub Release 拉取最新版本并替换自身，无需重跑安装   脚本；按平台选产物（macOS universal / Linux 按架构 / Windows 安装包），   --force 强制重装，替换前确认（--yes 跳过，拒绝退出码 130）；Windows 上   通过重命名技巧替换运行中的 x.exe（旧文件改名 x.exe.old）。 - 新增依赖 flate2/tar/ureq（workspace + x-cli），接线到 CLI：mod.rs 加   pub mod upgrade，lib.rs 的 Command 枚举加 Upgrade 变体并 dispatch，README   补「升级」小节。 - 修复 Windows 下 'x shell info' 误报当前 shell 为 cmd：原 Windows 分支直接读   COMSPEC（恒为 cmd.exe），现改为用 sysinfo 沿父进程链查找真正的 shell   （powershell.exe/pwsh.exe/cmd.exe），命中即返回，找不到才 fallback   COMSPEC；终端宿主（conhost/WindowsTerminal/explorer）跳过不计入。 (7a34181)
+- 优化发布ta (38c2a5e)
+- release-tag支持跳过check (3b98f6a)
+- **scripts:** commit the regenerated CHANGELOG with one Enter release-tag.sh stopped with an error telling you to commit CHANGELOG.md by hand and re-run. In interactive mode it now offers to commit and continue in place: pressing Enter runs the commit and flows straight into preflight, keeping the tag chosen in the menus. (70a32f1)
+- **scripts:** one-command install from GitHub Releases Add scripts/install-release.sh (bash) that resolves the latest release, picks the asset per platform (macOS universal, Linux by uname -m) and installs it into PREFIX/bin without a Rust toolchain. Extend install.ps1 with -FromRelease to download and silently run the Inno Setup installer instead of building from source. (74f9ef3)
+
+### Fixes
+
+- **net-top:** 对拍模型三处修正：哨兵行泄漏、连接行合入、排序 - 哨兵 pid（SOURCE_SENTINEL）只用于标注字节来源，此前会从 curr_pids   迭代里漏出、渲染成一条幽灵进程行；现在在生成 ProcessRate 前过滤，   source 标签改为只取一次。 - 只有连接归属、本轮无字节计数的 pid 现在仍得到自己的行   （source=connections-only，速率缺席而非猜测为 0）：连接是"当下"   的事实，不因字节层缺席而消失。 - 进程行按 pid 排序，合并进来的连接行不破坏顺序。 - 删除引入后未接线的 NetSampler trait：CLI 直接持有平台采样器具体   类型，模型层不承担接缝职责。 (85cc728)
+- **install:** 安装脚本改用 POSIX set -eu，兼容 dash 下 curl|sh 执行 - scripts/install-release.sh / install.sh：set -euo pipefail 改为 set -eu。README 的   安装命令 curl ... | sh 会把脚本喂给 /bin/sh（Debian/Ubuntu 上即 dash），shebang   在管道场景下被忽略；pipefail 是 bash 专属选项，dash 报 Illegal option -o pipefail。   其余写法均为 POSIX，关键 curl|sed|head 管线已有 [ -n X_VERSION ] || fail 兜底，   去掉 pipefail 不影响正确性。已用真实 dash -n 验证两脚本通过、并复现过原报错。 - docs/design/net-top.md：新增网络拓扑设计笔记。 (52c37ce)
+- **changelog:** 启动清理上次被杀留下的孤儿临时文件 changelog.sh 用 CHANGELOG.md.tmp.<PID> 作写中转文件，正常退出由 EXIT trap 清理；但进程被 Ctrl+C / SIGKILL 终止时 trap 不执行，孤儿 .tmp 残留在工作树， 会被 release-tag.sh 的干净树检查当作未跟踪文件而中断发布。 (ab7a38c)
+- **release:** retag 时自动删除同名 GitHub release，避免重发 already_exists 重发已存在 tag 时，删 git tag 会把对应 GitHub release 降级成 draft， action-gh-release 无法在其上重发，finalize 阶段报 already_exists。 (1762b2c)
+- **packaging:** Windows 安装包落位到 LocalAppData 且免管理员，对齐安装脚本 README 的 irm|iex 一行命令失败：x.iss 旧配置把程序装到 C:\Program Files 并要求管理员，而 install-release.ps1 检测的是 %LOCALAPPDATA%\x 且未提权启动安装器，导致路径不匹配、无权限写入。 (5ad331a)
+- **scripts:** resolve the latest release from /releases, not /releases/latest /releases/latest 404s when the repo's newest release is a prerelease (e.g. v0.1.0-rc.1), so the install scripts could never pick a tag. List /releases and take the first entry instead - GitHub returns them newest-first, prereleases included. Applied to install-release.sh, install-release.ps1 and install.ps1 -FromRelease alike. (db1270e)
+- point install URLs and repo references at wangmingfa/x The scripts, README, Cargo.toml and packaging files referenced a xsys/x repository that does not exist; the actual repository is wangmingfa/x. Also add scripts/install-release.ps1 so the Windows release install is a single command (download + silent install + PATH), matching install-release.sh on macOS/Linux. (9cfc536)
+- **release:** upload the installer from iscc's Output directory iscc writes to Packaging/Windows/Output/, but the upload step looked in the repository root, matched nothing and only warned - so the release published without the Windows installer and the publish job's asset-name check failed. Point the path at the real location and fail the job when no file matches instead of publishing minus one asset. (29d9d5c)
+- use Pascal comments in the installer [Code] section (22602e7)
+
+### Documentation
+
+- tick off roadmap group D items 1-2 (watch triggers, fd counts) Co-Authored-By: AtomCode (glm5.3-flash) <noreply@atomgit.com> (7f01ac6)
+- add roadmap group D candidates (watch triggers, fd tracking, disk io, tui net top, file wait, log context) Co-Authored-By: AtomCode (glm5.3-flash) <noreply@atomgit.com> (0d52114)
+- **install:** 提示安装后需重开终端才能使用 x 命令 各安装路径均补充说明：把目录写进用户 PATH 后，已打开的终端不会自动读取 新 PATH，需重开终端（或新开窗口）才能用 x 命令。 (b1bd562)
+- split install commands per OS under release/source headings One code block per operating system (macOS/Linux share the sh block, Windows gets its own powershell block), and separate ### sections for release-binary install and source build. (ef7dd11)
+
+### CI
+
+- 与 release.yml 对齐 OS 矩阵，补上 ubuntu-24.04-arm CI 少了发布端为 Linux aarch64 产物新增的构建机，导致该架构上的回归 只被 release 流水线覆盖。两个 job 的矩阵现与 release.yml 的四个构建 镜像一一对应。 (8b0cd83)
+- bump actions to v5 to silence Node.js 20 deprecation warning actions/checkout@v4 targets Node.js 20, which runners now force onto Node.js 24 with a deprecation warning. Move checkout, upload-artifact and download-artifact to v5, which targets Node.js 24 natively. (5a99b0e)
+- pin runner images to the ones release.yml builds on ubuntu-latest/macOS-latest/windows-latest drift over time; use ubuntu-22.04, macos-15 and windows-2022 to match the release build images. (e6bb1bf)
+
+### Chores
+
+- 给sh脚本增加可执行权限 (6796e95)
+- 增加脚本可执行权限 (7cfed5f)
+- 移除误提交的 changelog 临时文件并忽略 *.tmp 144a947 提交 CHANGELOG 时误将 CHANGELOG.md.tmp.32185 一并纳入版本控制， 使该文件被跟踪；从索引移除，并加 CHANGELOG.md.tmp.* 忽略规则，避免再次 误提交、也消除对 release-tag.sh 干净树检查的干扰。 (3b2bff2)
+- 将 .workbuddy/ 加入 .gitignore .workbuddy/ 是代理在本机产生的本地工作区记忆（daily log / MEMORY.md），属 本地状态而非项目源码，与 .idea/、.vscode/ 同性质，不应进版本库；忽略后 文件夹仍保留在磁盘上。 (fbc4adb)
+
+### Other changes
+
+Subjects with no recognised `type:` prefix, kept verbatim.
+
+- x disk io: 块设备 I/O 速率，TUI net top 补排序/联动/pid 过滤 D3 x disk io - x-core 增 DiskIo 累计计数模型与 diff_disk_io，与 net top 的「累计计数 →   区间速率」同构，CLI 层 sleep 在前再采样，首轮也有完整计数窗口 - Linux 读 /proc/diskstats；macOS 走 IOServiceGetMatchingServices +   IORegistryEntryCreateIterator 递归取 BSD Name - Windows 诚实降级为退出码 7：当前 windows-sys 只绑定 Threading 下不相关的   IO_COUNTERS，STORAGE_PERFORMANCE_DATA 的 20 字段布局手写错一个字段会   静默报错字节数，宁可缺命令不造假读数 - macOS 空卡槽 driver 子树没有 IOMedia、也就没有 BSD Name；registry id 每轮   都变（每次匹配新建 entry），兜底会让它永远匹配不到上一轮、速率恒 0，改为跳过 (ff2213c)
+- docs+fix: irm|iex install commands, AddToPath on by default Document the Windows install as a single powershell -c "irm ...|iex" one-liner for both release and source installs, leaving no local script file. install.ps1 now enables AddToPath by default (turn off with -AddToPath:\$false), so the parameterless irm|iex invocation still lands x on the PATH; install-release.ps1 already did. (20d122d)
+- macOS SMC 占位温度：本机随机交替取证，并按回答内容实现防护 - 取证用随机交替破混淆（只有一台 Mac，换机不可行）：独立 C 探针五种条件   A1 新开 client+枚举 / A2 同 client 再读一遍 / B 长命复用 client /   C 新开 client 跳过枚举 / D 空闲 12-16s 后读，两轮 147 个样本。结论：   占位是持续数秒的全局窗口，窗口内所有条件同时中——候选 ①（每样本多读   一轮）作废，A1/A2 配对 37 次里 36 次同判，那 0.25s 白花；候选 ②（复用   长命 client）作废，B 在窗口里同样中招，D 反而 5 次里 4 次是真值 - 只剩候选 ③ 并已实现：common/smc.rs 新增纯函数   hottest_when_differentiated(&[f32])，distinct >= ceil(matched/2) 才给最热值。   实测区分度很宽：占位组 1 个或 5 个不同值，真读数 44-45；五值组   {-4.0, 0.0, 2.5, 4.0, 5.2} 每个单独都落在 −40…150 合理窗口内，所以光靠   窗口拦不住，塌缩的是整组。单键机器 ceil(1/2)=1 不误伤 - macos/smc.rs 读循环改成先收齐全组再判：边读边折最大值看不见塌缩，   一个孤立热核单独看永远合理。Linux 的 thermal_zone/hwmon 不动——另一个   来源另一种失效方式，强行统一是假统一。判断函数在平台无关模块，这段   逻辑 CI 三平台都真跑 - 测试：4 个新夹具（45 键同 40.0、五值量化组、实测真读数、43 占位+热核的   过渡行）+ 把原来手写 fold 自己跟自己一致的 the_hottest_core_wins_over_a_mixed_set   改成调用真函数；x-platform 125 → 129 - README P5 段加「整组没分化就不给数」条目：写清实测窗口、被排除的两种解释、   阈值与代价（窗口内打印「本平台未暴露」而不是一个数字），机制仍未定论 - devlog 2026-10-09 第三个坑改为已取证 + 已实现，含实验设计、三条结论、   活体 30 样本（21 给温度、9 整段无 temp 字段、不再出现 5.2 / 平坦 40.0） - 门禁：cargo fmt --check 0、clippy --workspace --all-targets -D warnings 干净、   cargo test --workspace 全绿。分析器初版漏解析 below20= 0（%2d 前导空格），   把 82 行只读成 10 行、算出 87.5% 的假污染率；补 \s* 并加「解析行数 ==   ROW 行数」自检后重算才得到上面的数字 (8cfa3ee)
+- macOS SMC 温度：修一个数据符号误声明，按声明类型分发解码 - mach_task_self_ 按数据符号读（macos/smc.rs）：原先声明成 fn 让   IOServiceOpen 跳进 __DATA 页，真机 SIGBUS（exit 138），x sys cpu /   x sys watch / TUI 仪表盘全中止，项目自己的测试也在 Mac 上 abort，   本地门禁原本不可满足 - common/smc.rs 加 DATA_TYPE_FLT 与 decode_temperature 分发：本机 45 个   Tp0* 传感器全是 flt 而非 sp78，只认 sp78 会静默返回 None；同一串字节   两种解法差 500 倍且都落在 −40…150 合理窗口内，错了无法察觉，所以按   SMC 声明的类型选解码器，未知类型拒绝而不是猜 - x sys watch 的温度加 temp 标签，并与 x sys cpu 统一成 `temp NN.N C`：   紧跟负载三元的裸数字读起来像第四个 load 数；.1 精度顺带让占位读数   （5.2 C）现形。3 个单测 + 1 个 E2E，E2E 用 stub 走真实命令路径把两处   钉在同一字面量上，红→绿已验 - README 三处与实现相反的条目如实回写：Linux DHCP 其实已实现（ip -4 addr   show 的 dynamic ∪ nmcli 的 auto，两者都没提的接口留空而非 static）；   HDR 是三态读取，Windows 走 DisplayConfig，macOS/Linux 是「没说话」不是   「关」；P5 macOS CPU 温度段重写，写明类型口径、两个 ABI 坑，以及这条   路径在 CI（VM 无 AppleSMC）上必然空跑 - devlog 2026-10-09 记录排查证据链；其中「第三个坑」（同进程内 75.4 C 与   5.2 C 交替，占位读数落在合理窗口内被透传）只留数据与三个候选方案，   未处理，等定方向 - 门禁：cargo fmt --check 0、clippy --workspace --all-targets -D warnings   干净、cargo test --workspace 全绿（x-cli lib 50 / E2E 94、x-core 171、   x-platform 125）；本机活体 x sys cpu、x sys watch 退出码 0 且温度可读 (d553b4a)
 
 ## v0.1.0-rc.1 (2026-10-09)
 
