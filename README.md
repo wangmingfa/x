@@ -712,3 +712,28 @@ GitHub Actions CI 在 Ubuntu / macOS / Windows 三平台上跑格式、clippy
   publish 作业改为带 `fetch-depth: 0` + `fetch-tags: true` 检出，notes 才有区间
   可读；Inno 的 `ReleaseTag` 由工作流从 tag 传入（本地编译用文件里的兜底值），
   安装包文件名与 notes 里承诺的资产名因此是同一个。
+
+**D 组 · 候选（2026-10 新增，未开工，按性价比排序）**
+
+- [ ] 监视告警：`x port watch` / `x ps watch` 已有轮询骨架但没有动作出口——加
+  `--when <条件> --exec <命令>`（如端口被占用/进程消失时触发），或至少 `--quiet-until-change`
+  变成可用的高频轮询源。轮询模型、退出码、审计都是现成的，只缺条件判定与触发一跳。
+  风险点：触发命令的注入面要按破坏性操作契约过审计，且「触发失败」必须如实报告而不是静默吞掉。
+- [ ] 句柄/FD 泄漏探测：`x events` 已盯进程/网络/USB/磁盘/服务五类快照对拍，
+  补第六类——每进程打开句柄数（macOS `proc_pidinfo`、Linux `/proc/<pid>/fd` 计数、
+  Windows `GetProcessHandleCount`），`x ps` 加一列、`x events` 加 drift 事件。
+  全是现有采样循环顺手能拿的读数，且是「进程悄悄涨内存/涨 fd」这类问题的唯一定位入口。
+- [ ] `x disk io`：块设备 I/O 速率（读/写字节与 IOPS，按间隔采样差值）。
+  Linux `/proc/diskstats`、macOS `IOService` IOKit 统计、Windows `IO_COUNTERS`——
+  三个来源都是纯读数，形状与 `x net top` 的「累计计数 → 区间速率」完全同构，
+  x-core 的 diff 模型可直接复用。
+- [ ] TUI net top 深化：9 页目前只有表格与 hint，补排序切换（rx/tx/conns）、
+  选中进程 Enter 跳转它持有的端口（跨页联动的既有机制）、`--pid` 过滤视图。
+  全是 TUI 内部接线，不碰平台层。
+- [ ] `x file wait <path>`：阻塞等待文件出现/变化/稳定（大小两轮不变才算 stable），
+  供脚本串联（下载完成检测、构建产物等待）。零平台差异，纯轮询语义；
+  要点是把「出现/消失/稳定」三态的超时行为写进退出码而不是都返回 0。
+- [ ] 日志 `--context`：`x logs --grep` 命中后带上下文行（-B/-A 语义）。轮询去重
+  按「整条记录内容」的现有约定不受影响——上下文只影响首轮窗口的展示，不动增量判定；
+  三套日志源都是流式文本，实现面窄。
+
