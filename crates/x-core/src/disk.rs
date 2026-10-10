@@ -84,10 +84,77 @@ impl DiskInfo {
     }
 }
 
+/// Cumulative block-device I/O counters, as the kernel reports them.
+///
+/// Cumulative since boot, per whole disk — the CLI diffs two samples into
+/// rates the same way `x net top` does. Devices the platform cannot read
+/// are simply absent; a failed read is an error, never zeros.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiskIo {
+    /// Whole-disk device name as the platform spells it (`sda`, `disk0`,
+    /// `PhysicalDrive0`).
+    pub device: String,
+    /// Total bytes read, cumulative.
+    pub read_bytes: u64,
+    /// Total bytes written, cumulative.
+    pub write_bytes: u64,
+    /// Total read operations, cumulative.
+    pub read_ops: u64,
+    /// Total write operations, cumulative.
+    pub write_ops: u64,
+}
+
+/// Interval rates derived from two [`DiskIo`] samples of the same device.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DiskIoRates {
+    /// Whole-disk device name.
+    pub device: String,
+    /// Bytes read per second over the interval.
+    pub read_bytes_per_sec: f64,
+    /// Bytes written per second over the interval.
+    pub write_bytes_per_sec: f64,
+    /// Read operations per second over the interval.
+    pub read_ops_per_sec: f64,
+    /// Write operations per second over the interval.
+    pub write_ops_per_sec: f64,
+}
+
+/// Rate derivation from two cumulative samples.
+///
+/// A counter that went backwards (device replaced, counter reset) yields
+/// zeros for that direction instead of a wrapped garbage number; callers
+/// see `previous` returning so they can note the reset rather than rate it.
+pub fn diff_disk_io(previous: &DiskIo, current: &DiskIo, seconds: f64) -> DiskIoRates {
+    fn per_sec(after: u64, before: u64, seconds: f64) -> f64 {
+        if seconds <= 0.0 || after < before {
+            return 0.0;
+        }
+        (after - before) as f64 / seconds
+    }
+    DiskIoRates {
+        device: current.device.clone(),
+        read_bytes_per_sec: per_sec(current.read_bytes, previous.read_bytes, seconds),
+        write_bytes_per_sec: per_sec(current.write_bytes, previous.write_bytes, seconds),
+        read_ops_per_sec: per_sec(current.read_ops, previous.read_ops, seconds),
+        write_ops_per_sec: per_sec(current.write_ops, previous.write_ops, seconds),
+    }
+}
+
 /// Disk capability.
 pub trait DiskManager: Send + Sync {
     /// List mounted filesystems.
     fn list(&self) -> crate::error::Result<Vec<DiskInfo>>;
+
+    /// Cumulative I/O counters of every whole disk the platform can read.
+    ///
+    /// Defaults to "no source on this platform": callers treat the error as
+    /// an honest absence, the same way `x net top` treats a missing L3.
+    fn io(&self) -> crate::error::Result<Vec<DiskIo>> {
+        let _ = self;
+        Err(crate::error::Error::unsupported(
+            "block-device I/O counters are not available on this platform",
+        ))
+    }
 
     /// Usage of the filesystem containing the current working directory.
     fn current(&self) -> crate::error::Result<DiskInfo> {

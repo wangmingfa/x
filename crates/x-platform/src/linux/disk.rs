@@ -59,6 +59,52 @@ impl DiskManager for LinuxDisk {
         }
         Ok(rows)
     }
+
+    fn io(&self) -> Result<Vec<x_core::disk::DiskIo>> {
+        io_from_diskstats("/proc/diskstats")
+    }
+}
+
+/// Cumulative I/O counters per whole disk, from `/proc/diskstats`.
+///
+/// Only whole disks are reported (`/proc/diskstats` also lists partitions;
+/// a device whose stats are entirely zero is a container like `loop*` that
+/// has never been touched — the kernel reports what it measured, and it
+/// measured nothing). Field 9 is sector-count-based reads/writes at 512
+/// bytes per sector by kernel ABI, not by what `statvfs` might suggest.
+fn io_from_diskstats(path: &str) -> Result<Vec<x_core::disk::DiskIo>> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| x_core::error::Error::system(format!("cannot read {path}: {e}")))?;
+    // /proc/diskstats fields: major minor name reads_completed reads_merged
+    // sectors_read ms_reading writes_completed writes_merged sectors_written
+    // ms_writing (…flushes on newer kernels)
+    const SECTOR_BYTES: u64 = 512;
+    let mut rows = Vec::new();
+    for line in text.lines() {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.len() < 10 {
+            continue;
+        }
+        let name = fields[2];
+        // Partitions share the counters' shape; whole disks are the names
+        // sysfs exposes under /sys/block. Filter by what is actually there
+        // rather than by naming heuristics (nvme0n1 vs nvme0n1p2 etc.).
+        if !std::path::Path::new("/sys/block").join(name).exists() {
+            continue;
+        }
+        // A never-touched stacked device reports all zeros; that is honest
+        // data (the kernel measured nothing), keep it.
+        let numbers: Option<Vec<u64>> = fields[3..11].iter().map(|f| f.parse().ok()).collect();
+        let Some(n) = numbers else { continue };
+        rows.push(x_core::disk::DiskIo {
+            device: name.to_string(),
+            read_bytes: n[1] * SECTOR_BYTES,
+            write_bytes: n[4] * SECTOR_BYTES,
+            read_ops: n[0],
+            write_ops: n[3],
+        });
+    }
+    Ok(rows)
 }
 
 /// `(identifier -> /dev node)` for one `/dev/disk/by-*` directory.

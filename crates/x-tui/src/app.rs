@@ -19,6 +19,30 @@ use x_core::{format_bytes, KillSignal, SystemContext};
 
 use crate::palette::{self, Command, CommandId};
 
+/// The order `s` cycles net-top sorting through.
+const NET_TOP_SORT_CYCLE: [NetTopSort; 5] = [
+    NetTopSort::Total,
+    NetTopSort::Rx,
+    NetTopSort::Tx,
+    NetTopSort::Conns,
+    NetTopSort::Name,
+];
+
+/// How the net top page orders its rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetTopSort {
+    /// Highest combined traffic first. Default.
+    Total,
+    /// Highest receive rate first.
+    Rx,
+    /// Highest transmit rate first.
+    Tx,
+    /// Most connections first.
+    Conns,
+    /// Process name, then pid.
+    Name,
+}
+
 /// Rows assumed before the first draw, when the real height is still unknown.
 const DEFAULT_VISIBLE_ROWS: usize = 20;
 
@@ -243,6 +267,88 @@ pub fn service_state_label(state: ServiceState) -> &'static str {
     }
 }
 
+/// Whether a net top row matches the search term: process name, pid or
+/// source, so `/ 1234` narrows to one process the way the CLI's `--pid` does.
+fn net_top_matches(row: &NetTopRow, term: &str) -> bool {
+    let term = term.to_ascii_lowercase();
+    row.process.to_ascii_lowercase().contains(&term)
+        || (row.has_pid && row.pid.to_string().contains(&term))
+        || row.source.to_ascii_lowercase().contains(&term)
+}
+
+/// Compare two net top rows for the selected sort.
+///
+/// A missing rate sorts last within its column, so a layer that could not be
+/// read never pushes a real row below it — same convention as the CLI table.
+fn net_top_cmp(a: &NetTopRow, b: &NetTopRow, sort: NetTopSort) -> std::cmp::Ordering {
+    let rate = |r: &NetTopRow, which: Which| match which {
+        Which::Rx => r.rx_bps,
+        Which::Tx => r.tx_bps,
+        Which::Total => r
+            .rx_bps
+            .zip(r.tx_bps)
+            .map(|(rx, tx)| rx + tx)
+            .or_else(|| r.rx_bps.or(r.tx_bps)),
+    };
+    let by_rate = |which: Which, a: &NetTopRow, b: &NetTopRow| -> std::cmp::Ordering {
+        match (rate(a, which), rate(b, which)) {
+            (Some(av), Some(bv)) => bv.total_cmp(&av).then(a.pid.cmp(&b.pid)),
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, None) => a.pid.cmp(&b.pid),
+        }
+    };
+    match sort {
+        NetTopSort::Rx => by_rate(Which::Rx, a, b),
+        NetTopSort::Tx => by_rate(Which::Tx, a, b),
+        NetTopSort::Total => by_rate(Which::Total, a, b),
+        NetTopSort::Conns => {
+            if a.conns != b.conns {
+                a.conns.cmp(&b.conns).reverse()
+            } else {
+                a.pid.cmp(&b.pid)
+            }
+        }
+        NetTopSort::Name => a
+            .process
+            .to_ascii_lowercase()
+            .cmp(&b.process.to_ascii_lowercase())
+            .then(a.pid.cmp(&b.pid)),
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Which {
+    Rx,
+    Tx,
+    Total,
+}
+
+/// One net top row, ready to draw: the rate plus its resolved process name.
+#[derive(Debug, Clone)]
+pub struct NetTopRow {
+    /// `0` for the (unmapped) total row.
+    pub pid: i32,
+    pub process: String,
+    pub rx_bps: Option<f64>,
+    pub tx_bps: Option<f64>,
+    pub conns: usize,
+    pub source: String,
+    /// `false` for the (unmapped) host total, which has no pid to filter by.
+    pub has_pid: bool,
+}
+
+/// Short name of a net-top sort key, for the table title.
+pub fn net_top_sort_label(sort: NetTopSort) -> &'static str {
+    match sort {
+        NetTopSort::Total => "total",
+        NetTopSort::Rx => "rx",
+        NetTopSort::Tx => "tx",
+        NetTopSort::Conns => "conns",
+        NetTopSort::Name => "name",
+    }
+}
+
 /// Short name of a process sort key, for the table title.
 pub fn sort_label(sort: ProcessSort) -> &'static str {
     match sort {
@@ -270,6 +376,8 @@ pub struct App {
     port_summary: Option<PortSummary>,
     processes: Vec<ProcessInfo>,
     process_sort: ProcessSort,
+    /// Ordering of the net top page, cycled by `s` on that page only.
+    net_top_sort: NetTopSort,
     tree_mode: bool,
     process_tree: Option<ProcessTree>,
     /// Pids whose subtree is hidden in tree mode.
@@ -350,6 +458,7 @@ impl App {
             port_summary: None,
             processes: Vec::new(),
             process_sort: ProcessSort::Cpu,
+            net_top_sort: NetTopSort::Total,
             tree_mode: false,
             process_tree: None,
             folded: BTreeSet::new(),
@@ -1031,7 +1140,13 @@ impl App {
             KeyCode::Tab | KeyCode::Right => self.goto_view(self.view.next()),
             KeyCode::BackTab | KeyCode::Left => self.goto_view(self.view.previous()),
             KeyCode::Char(c) if c == self.keys.key(crate::keys::Action::Tree) => self.toggle_tree(),
-            KeyCode::Char(c) if c == self.keys.key(crate::keys::Action::Sort) => self.cycle_sort(),
+            KeyCode::Char(c) if c == self.keys.key(crate::keys::Action::Sort) => {
+                if self.view == View::NetTop {
+                    self.cycle_net_top_sort();
+                } else {
+                    self.cycle_sort();
+                }
+            }
             KeyCode::Char(c) if c == self.keys.key(crate::keys::Action::Ports) => {
                 self.ports_of_selection()
             }
@@ -1453,20 +1568,121 @@ impl App {
         self.refresh();
     }
 
-    /// Jump to the ports held by the selected process, filtered to it.
+    fn cycle_net_top_sort(&mut self) {
+        let index = NET_TOP_SORT_CYCLE
+            .iter()
+            .position(|sort| *sort == self.net_top_sort)
+            .unwrap_or(0);
+        self.net_top_sort = NET_TOP_SORT_CYCLE[(index + 1) % NET_TOP_SORT_CYCLE.len()];
+        self.status = format!("sort: {}", net_top_sort_label(self.net_top_sort));
+        self.selected = 0;
+        self.scroll = 0;
+        self.refresh();
+    }
+
+    /// Jump to the ports of the selected process, filtered to its name.
+    ///
+    /// Filtering by name rather than pid: the port search treats a pid as a
+    /// substring of the row text, so `12` would also match pid `1234`. The
+    /// name is what the port table shows anyway.
     fn ports_of_selection(&mut self) {
-        if self.view != View::Processes {
+        if self.view != View::Processes && self.view != View::NetTop {
             self.status = "select a process first".into();
             return;
         }
-        let rows = self.process_rows();
-        let Some((_, row)) = rows.get(self.selected) else {
+        let from_net_top = self.view == View::NetTop;
+        let Some((_, name, pid)) = self.process_filter_target() else {
             return;
         };
-        let name = row.name.clone();
+        if from_net_top && pid.is_none() {
+            self.status = "that row has no pid".into();
+            return;
+        }
         self.filter = name.clone();
         self.goto_view(View::Ports);
-        self.status = format!("ports of {name}");
+        // Net top rows carry a pid that the port table does not, so the jump
+        // says which process was resolved. The process page already shows it.
+        self.status = if from_net_top {
+            format!("ports of {name} (pid {})", pid.expect("checked above"))
+        } else {
+            format!("ports of {name}")
+        };
+    }
+
+    /// Filter target of the selected row: the process name and, when the row
+    /// carries one, its pid. Shared by the process and net top pages.
+    fn process_filter_target(&self) -> Option<(usize, String, Option<i32>)> {
+        match self.view {
+            View::Processes => {
+                let rows = self.process_rows();
+                let (_, row) = rows.get(self.selected)?;
+                Some((self.selected, row.name.clone(), Some(row.pid as i32)))
+            }
+            View::NetTop => {
+                let rows = self.net_top_rows();
+                let row = rows.get(self.selected)?;
+                Some((
+                    self.selected,
+                    row.process.clone(),
+                    row.has_pid.then_some(row.pid),
+                ))
+            }
+            _ => None,
+        }
+    }
+
+    /// Ordering of the net top page.
+    pub fn net_top_sort(&self) -> NetTopSort {
+        self.net_top_sort
+    }
+
+    /// Net top rows in the selected order, including the (unmapped) total row.
+    ///
+    /// Built at draw time because the process name resolves from the sampler's
+    /// newest socket table, which changes between rounds.
+    pub fn net_top_rows(&self) -> Vec<NetTopRow> {
+        let Some(report) = &self.net_top_report else {
+            return Vec::new();
+        };
+        let mut rows: Vec<NetTopRow> = report
+            .processes
+            .iter()
+            .map(|rate| NetTopRow {
+                pid: rate.pid,
+                process: self
+                    .net_top_process_name(rate.pid)
+                    .unwrap_or_else(|| "?".to_string()),
+                rx_bps: rate.rx_bps,
+                tx_bps: rate.tx_bps,
+                conns: rate.conns,
+                source: rate.source.to_string(),
+                has_pid: true,
+            })
+            .collect();
+        // Unmapped = host total minus the attributed sum; derived, not a
+        // process, so it renders last without a pid.
+        if report.unmapped.rx_bps.is_some() || report.unmapped.tx_bps.is_some() {
+            rows.push(NetTopRow {
+                pid: 0,
+                process: "(unmapped)".to_string(),
+                rx_bps: report.unmapped.rx_bps,
+                tx_bps: report.unmapped.tx_bps,
+                conns: 0,
+                source: "host counters only".to_string(),
+                has_pid: false,
+            });
+        }
+        if let Some(term) = self.search() {
+            rows.retain(|row| net_top_matches(row, &term));
+        }
+        rows.sort_by(|a, b| {
+            // The (unmapped) host total is not a process, so no sort column
+            // ever promotes it above a real one.
+            b.has_pid
+                .cmp(&a.has_pid)
+                .then_with(|| net_top_cmp(a, b, self.net_top_sort))
+        });
+        rows
     }
 
     /// The rows of the visible page.
@@ -1491,12 +1707,7 @@ impl App {
                     self.remote_hosts.len()
                 }
             }
-            View::NetTop => self.net_top_report.as_ref().map_or(0, |report| {
-                report.processes.len()
-                    + usize::from(
-                        report.unmapped.rx_bps.is_some() || report.unmapped.tx_bps.is_some(),
-                    )
-            }),
+            View::NetTop => self.net_top_rows().len(),
         }
     }
 
@@ -1590,6 +1801,9 @@ impl App {
             View::Services => self.open_service_detail(),
             View::Disks => self.toggle_collapse(),
             View::Remote => self.start_remote_fetch(),
+            // No detail dialog for a rate row: its interesting data is the
+            // sockets, so Enter opens the ports page filtered to that pid.
+            View::NetTop => self.ports_of_selection(),
             _ => {}
         }
     }

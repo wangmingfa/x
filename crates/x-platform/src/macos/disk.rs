@@ -10,10 +10,262 @@
 
 use std::process::Command;
 
-use x_core::disk::{DiskInfo, DiskManager, MediaType};
-use x_core::error::Result;
+use core_foundation_sys::base::CFRelease;
+use core_foundation_sys::dictionary::{
+    CFDictionaryGetValue, CFDictionaryRef, CFMutableDictionaryRef,
+};
+use core_foundation_sys::number::{kCFNumberSInt64Type, CFNumberGetValue, CFNumberRef};
+use core_foundation_sys::string::{CFStringCreateWithCString, CFStringRef};
+use x_core::disk::{DiskInfo, DiskIo, DiskManager, MediaType};
+use x_core::error::{Error, Result};
 
 use crate::common::disk_sysinfo::SysinfoDisk;
+
+// Minimal IOKit registry access for block-device statistics. The C API is
+// plain enough that binding it here beats pulling another crate.
+type IoObject = u32;
+type KernReturn = i32;
+const KERN_SUCCESS: KernReturn = 0;
+const MAIN_PORT_DEFAULT: IoObject = 0;
+
+#[link(name = "IOKit", kind = "framework")]
+extern "C" {
+    fn IOServiceMatching(name: *const std::ffi::c_char) -> *mut std::ffi::c_void;
+    fn IOServiceGetMatchingServices(
+        main_port: IoObject,
+        matching: *mut std::ffi::c_void,
+        existing: *mut IoObject,
+    ) -> KernReturn;
+    fn IOIteratorNext(iterator: IoObject) -> IoObject;
+    fn IOObjectRelease(object: IoObject) -> KernReturn;
+    fn IORegistryEntryCreateCFProperties(
+        entry: IoObject,
+        properties: *mut CFMutableDictionaryRef,
+        allocator: *mut std::ffi::c_void,
+        options: u32,
+    ) -> KernReturn;
+    fn IORegistryEntryCreateIterator(
+        entry: IoObject,
+        plane: *const std::ffi::c_char,
+        options: u32,
+        iterator: *mut IoObject,
+    ) -> KernReturn;
+}
+
+extern "C" {
+    fn CFDictionaryGetCount(dictionary: CFDictionaryRef) -> std::os::raw::c_ulong;
+    fn CFStringGetCString(
+        the_string: *const std::ffi::c_void,
+        buffer: *mut std::ffi::c_char,
+        buffer_size: std::os::raw::c_long,
+        encoding: u32,
+    ) -> u8;
+}
+
+const K_CFSTRING_ENCODING_UTF8: u32 = 0x0800_0100;
+const IO_REGISTRY_PLANE: &[u8] = b"IOService\0";
+/// `kIORegistryIterateRecursively`: descend into each returned entry.
+const K_IO_REGISTRY_ITERATE_RECURSIVELY: u32 = 0x0000_0001;
+/// Read the "Statistics" dictionary of one `IOBlockStorageDriver` entry and
+/// pick the four counters `x disk io` reports. Keys are confirmed by ioreg
+/// output, including the spaces and parentheses — any change there reads as
+/// absence, never as a zero.
+unsafe fn statistics_of(entry: IoObject) -> Option<(u64, u64, u64, u64)> {
+    let mut properties: CFMutableDictionaryRef = std::ptr::null_mut();
+    // SAFETY: `properties` is our own storage, filled in with a +1 reference
+    // we release below; the allocator argument is the default (null).
+    if unsafe { IORegistryEntryCreateCFProperties(entry, &mut properties, std::ptr::null_mut(), 0) }
+        != KERN_SUCCESS
+        || properties.is_null()
+    {
+        return None;
+    }
+    let stats: Option<(u64, u64, u64, u64)> = unsafe {
+        let key = |name: &str| cf_string(name);
+        let read_key = key("Statistics");
+        let stats_ref =
+            CFDictionaryGetValue(properties, read_key as *const _) as CFMutableDictionaryRef;
+        CFRelease(read_key as *const _);
+        if stats_ref.is_null() || CFDictionaryGetCount(stats_ref) == 0 {
+            CFRelease(properties as *const _);
+            return None;
+        }
+        let get_u64 = |dict: CFDictionaryRef, name: &str| -> Option<u64> {
+            let cfkey = cf_string(name);
+            let value = CFDictionaryGetValue(dict, cfkey as *const _);
+            CFRelease(cfkey as *const _);
+            if value.is_null() {
+                return None;
+            }
+            let mut out: u64 = 0;
+            // SAFETY: `value` is a CFNumber from the dictionary and `out`
+            // outlives the call; the cast matches its expected C type.
+            CFNumberGetValue(
+                value as CFNumberRef,
+                kCFNumberSInt64Type,
+                &mut out as *mut u64 as *mut std::ffi::c_void,
+            )
+            .then_some(out)
+        };
+        let result = Some((
+            get_u64(stats_ref, "Bytes (Read)")?,
+            get_u64(stats_ref, "Bytes (Write)")?,
+            get_u64(stats_ref, "Operations (Read)")?,
+            get_u64(stats_ref, "Operations (Write)")?,
+        ));
+        CFRelease(properties as *const _);
+        result
+    };
+    stats
+}
+
+/// Create a `CFString` from a Rust string; caller releases (+1 reference).
+fn cf_string(text: &str) -> CFStringRef {
+    let c = std::ffi::CString::new(text).unwrap_or_default();
+    // SAFETY: `c` is NUL terminated and lives for the call.
+    unsafe { CFStringCreateWithCString(std::ptr::null(), c.as_ptr(), K_CFSTRING_ENCODING_UTF8) }
+}
+
+/// BSD name (`disk0`) of the whole disk an `IOBlockStorageDriver` serves.
+///
+/// The registry hangs `IOMedia` (and its `IOMediaBSDClient`, which carries
+/// `BSD Name`) *below* the driver, so the driver's own subtree is iterated
+/// recursively rather than walking parents or siblings. `None` when the
+/// subtree has no `IOMedia` at all — an empty card slot.
+unsafe fn bsd_name_of(entry: IoObject) -> Option<String> {
+    unsafe {
+        let mut iterator: IoObject = 0;
+        // SAFETY: `entry` is a live registry object the caller owns; the
+        // iterator is released below.
+        if IORegistryEntryCreateIterator(
+            entry,
+            IO_REGISTRY_PLANE.as_ptr() as *const _,
+            K_IO_REGISTRY_ITERATE_RECURSIVELY,
+            &mut iterator,
+        ) != KERN_SUCCESS
+            || iterator == 0
+        {
+            return None;
+        }
+        let mut result = None;
+        loop {
+            let child = IOIteratorNext(iterator);
+            if child == 0 {
+                break;
+            }
+            let candidate = registry_string(child, "BSD Name");
+            IOObjectRelease(child);
+            if candidate.is_some() {
+                result = candidate;
+                break;
+            }
+        }
+        IOObjectRelease(iterator);
+        result
+    }
+}
+
+/// Read one string property off a registry entry.
+unsafe fn registry_string(entry: IoObject, key_name: &str) -> Option<String> {
+    let mut properties: CFMutableDictionaryRef = std::ptr::null_mut();
+    // SAFETY: `properties` is our own storage, filled in with a +1 reference
+    // we release below; the null allocator is the default.
+    let found = unsafe {
+        IORegistryEntryCreateCFProperties(entry, &mut properties, std::ptr::null_mut(), 0)
+    } == KERN_SUCCESS
+        && !properties.is_null();
+    if !found {
+        return None;
+    }
+    let key = cf_string(key_name);
+    // SAFETY: `key` and `properties` are valid CF objects for the calls below.
+    let value = unsafe { CFDictionaryGetValue(properties, key as *const _) };
+    unsafe { CFRelease(key as *const _) };
+    let out = if value.is_null() {
+        None
+    } else {
+        cf_string_value(value)
+    };
+    unsafe { CFRelease(properties as *const _) };
+    out
+}
+
+/// Copy a `CFString` reference into an owned Rust string (does not release).
+unsafe fn cf_string_value(value: *const std::ffi::c_void) -> Option<String> {
+    let mut buffer = [0u8; 64];
+    // SAFETY: `value` is a valid CFString, `buffer` outlives the call.
+    let ok = unsafe {
+        CFStringGetCString(
+            value,
+            buffer.as_mut_ptr() as *mut std::ffi::c_char,
+            buffer.len() as std::os::raw::c_long,
+            K_CFSTRING_ENCODING_UTF8,
+        )
+    };
+    if ok == 0 {
+        return None;
+    }
+    Some(
+        std::ffi::CStr::from_bytes_until_nul(&buffer)
+            .ok()?
+            .to_string_lossy()
+            .into_owned(),
+    )
+}
+
+/// Cumulative I/O counters per whole disk, from the `IOBlockStorageDriver`
+/// statistics dictionaries in the IOKit registry.
+fn io_via_iokit() -> Result<Vec<DiskIo>> {
+    let name =
+        std::ffi::CString::new("IOBlockStorageDriver").map_err(|e| Error::system(e.to_string()))?;
+    // SAFETY: each extern call below uses valid handles or our own storage as
+    // documented by IOKit; every registry object we receive is released.
+    unsafe {
+        let matching = service_matching(&name);
+        if matching.is_null() {
+            return Err(Error::system("IOServiceMatching returned null"));
+        }
+        let mut iterator: IoObject = 0;
+        if IOServiceGetMatchingServices(MAIN_PORT_DEFAULT, matching, &mut iterator) != KERN_SUCCESS
+        {
+            return Err(Error::system("no IOBlockStorageDriver services"));
+        }
+        let mut rows = Vec::new();
+        loop {
+            let entry = IOIteratorNext(iterator);
+            if entry == 0 {
+                break;
+            }
+            // A driver whose subtree carries no `IOMedia` serves no disk: an
+            // empty SD card slot reports statistics for no `diskN`. Without a
+            // BSD name there is nothing to diff against next round either, so
+            // the entry is skipped rather than shown under a made-up name.
+            if let (Some((read_bytes, write_bytes, read_ops, write_ops)), Some(device)) =
+                (statistics_of(entry), bsd_name_of(entry))
+            {
+                rows.push(DiskIo {
+                    device,
+                    read_bytes,
+                    write_bytes,
+                    read_ops,
+                    write_ops,
+                });
+            }
+            IOObjectRelease(entry);
+        }
+        IOObjectRelease(iterator);
+        rows.sort_by(|a, b| a.device.cmp(&b.device));
+        Ok(rows)
+    }
+}
+
+/// `IOServiceMatching` for one service class; the returned dictionary is
+/// consumed by `IOServiceGetMatchingServices`.
+unsafe fn service_matching(name: &std::ffi::CStr) -> *mut std::ffi::c_void {
+    // SAFETY: `name` is NUL terminated; the returned dictionary is consumed
+    // by `IOServiceGetMatchingServices`.
+    unsafe { IOServiceMatching(name.as_ptr()) }
+}
 
 /// Lists mounts and decorates them with what `diskutil` knows.
 #[derive(Debug, Default)]
@@ -72,6 +324,10 @@ impl DiskManager for MacDisk {
             }
         }
         Ok(rows)
+    }
+
+    fn io(&self) -> Result<Vec<DiskIo>> {
+        io_via_iokit()
     }
 }
 

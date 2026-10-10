@@ -4,6 +4,7 @@ use super::*;
 use crossterm::event::KeyEventState;
 use std::net::{IpAddr, Ipv4Addr};
 use x_core::error::{ErrorKind, PermissionRequirement};
+use x_core::net_top::{NetSnapshot, NetTopReport, NetTopSampler, ProcessRate, UnmappedRate};
 use x_core::port::Protocol;
 use x_core::system::{CpuUsage, OsFamily};
 use x_core::testing::{stub_process, stub_service, stub_socket, StubFailure, Stubs};
@@ -859,4 +860,197 @@ fn collapsing_a_parent_of_the_selection_keeps_the_selection_in_range() {
     app.on_key(key(KeyCode::Enter)); // collapse `big`, hiding `inner`
     assert_eq!(app.rows(), 3);
     assert!(app.selected < app.rows(), "selection stays inside the tree");
+}
+
+/// Rows the net top page draws when the sampler resolved no process names.
+fn net_top_report_fixture() -> NetTopReport {
+    NetTopReport {
+        interval: std::time::Duration::from_secs(2),
+        host_rx_bps: Some(12000.0),
+        host_tx_bps: Some(3000.0),
+        processes: vec![
+            ProcessRate {
+                pid: 200,
+                rx_bps: Some(1000.0),
+                tx_bps: Some(2000.0),
+                conns: 3,
+                source: "port-inference",
+            },
+            ProcessRate {
+                pid: 100,
+                rx_bps: Some(5000.0),
+                tx_bps: Some(100.0),
+                conns: 1,
+                source: "port-inference",
+            },
+        ],
+        unmapped: UnmappedRate {
+            rx_bps: Some(6000.0),
+            tx_bps: Some(700.0),
+        },
+        failures: Vec::new(),
+    }
+}
+
+/// A net-top sampler that only resolves process names; the report is injected
+/// directly, so no real sampling round is spawned by these tests.
+struct NameOnlySampler;
+
+impl NetTopSampler for NameOnlySampler {
+    fn sample(&self, _context: &SystemContext, _window: std::time::Duration) -> NetSnapshot {
+        NetSnapshot::default()
+    }
+    fn process_name(&self, pid: i32) -> Option<String> {
+        match pid {
+            100 => Some("node".into()),
+            200 => Some("python".into()),
+            _ => None,
+        }
+    }
+    fn status_note(&self) -> Option<String> {
+        None
+    }
+}
+
+fn net_top_app_with(report: NetTopReport) -> App {
+    let stubs = Stubs::new().with_ports(vec![
+        stub_socket(8080, 100, "node"),
+        stub_socket(9090, 200, "python"),
+    ]);
+    let mut app = app_at(&stubs, View::NetTop);
+    app.net_top = Some(std::sync::Arc::new(NameOnlySampler));
+    app.net_top_report = Some(report);
+    app
+}
+
+#[test]
+fn net_top_sort_cycles_through_its_columns() {
+    let mut app = net_top_app_with(net_top_report_fixture());
+
+    assert_eq!(app.net_top_sort(), NetTopSort::Total);
+
+    app.on_key(key(KeyCode::Char('s')));
+    assert_eq!(app.net_top_sort(), NetTopSort::Rx);
+    assert_eq!(app.net_top_rows().first().map(|row| row.pid), Some(100));
+
+    app.on_key(key(KeyCode::Char('s')));
+    assert_eq!(app.net_top_sort(), NetTopSort::Tx);
+    assert_eq!(app.net_top_rows().first().map(|row| row.pid), Some(200));
+
+    app.on_key(key(KeyCode::Char('s')));
+    assert_eq!(app.net_top_sort(), NetTopSort::Conns);
+    assert_eq!(app.net_top_rows().first().map(|row| row.pid), Some(200));
+
+    app.on_key(key(KeyCode::Char('s')));
+    assert_eq!(app.net_top_sort(), NetTopSort::Name);
+    app.on_key(key(KeyCode::Char('s')));
+    assert_eq!(app.net_top_sort(), NetTopSort::Total);
+
+    // Sorting re-ranks the list, so the selection starts at the top of it.
+    assert_eq!(app.selected, 0);
+}
+
+#[test]
+fn sort_on_the_process_page_does_not_touch_net_top_ordering() {
+    let mut app = net_top_app_with(net_top_report_fixture());
+    app.on_key(key(KeyCode::Char('s')));
+    app.goto_view(View::Processes);
+
+    app.on_key(key(KeyCode::Char('s')));
+
+    assert_ne!(app.process_sort, ProcessSort::Cpu);
+    assert_eq!(app.net_top_sort(), NetTopSort::Rx);
+}
+
+#[test]
+fn net_top_enter_jumps_to_the_ports_of_that_pid() {
+    let mut app = net_top_app_with(net_top_report_fixture());
+
+    // Top row by total traffic is pid 100, whose name the stub sockets resolve.
+    assert_eq!(app.selected, 0);
+    assert_eq!(app.net_top_rows()[0].pid, 100);
+
+    app.on_key(key(KeyCode::Enter));
+
+    assert_eq!(app.view(), View::Ports);
+    assert_eq!(app.filter(), "node");
+    assert_eq!(app.ports().len(), 1);
+    assert_eq!(app.ports()[0].local_port, 8080);
+    assert_eq!(app.status(), "ports of node (pid 100)");
+}
+
+#[test]
+fn net_top_enter_on_the_unmapped_row_does_not_jump() {
+    let mut app = net_top_app_with(net_top_report_fixture());
+
+    // The (unmapped) host total always sorts last, whatever the column.
+    app.selected = app.rows() - 1;
+    assert_eq!(app.net_top_rows()[app.selected].process, "(unmapped)");
+
+    app.on_key(key(KeyCode::Enter));
+
+    assert_eq!(
+        app.view(),
+        View::NetTop,
+        "the unmapped row has no pid to jump from"
+    );
+    assert!(app.status().contains("no pid"), "{}", app.status());
+    assert!(app.filter().is_empty());
+}
+
+/// Open the filter prompt and replace whatever it prefilled with `filter`.
+/// The prompt starts from the current filter, so the old text must be erased.
+fn set_filter(app: &mut App, filter: &str) {
+    app.on_key(key(KeyCode::Char('f')));
+    for _ in 0..app.filter.len() {
+        app.on_key(key(KeyCode::Backspace));
+    }
+    for event in text(filter) {
+        app.on_key(event);
+    }
+    app.on_key(key(KeyCode::Enter));
+}
+
+#[test]
+fn net_top_filter_narrows_by_pid_and_by_process_name() {
+    let mut app = net_top_app_with(net_top_report_fixture());
+
+    set_filter(&mut app, "100");
+
+    let rows = app.net_top_rows();
+    assert_eq!(rows.len(), 1, "only the matching row remains");
+    assert_eq!(rows[0].pid, 100);
+    assert_eq!(
+        app.rows(),
+        1,
+        "selection and drawing agree on the row count"
+    );
+
+    set_filter(&mut app, "python");
+    let rows = app.net_top_rows();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].pid, 200);
+
+    set_filter(&mut app, "");
+    assert_eq!(app.net_top_rows().len(), 3, "the unmapped row is back");
+}
+
+#[test]
+fn a_missing_rate_sorts_last_within_its_column() {
+    let mut report = net_top_report_fixture();
+    report.processes[0].rx_bps = None;
+    let mut app = net_top_app_with(report);
+
+    app.on_key(key(KeyCode::Char('s'))); // total
+
+    let rows = app.net_top_rows();
+    let index = rows
+        .iter()
+        .position(|row| row.pid == 200)
+        .expect("row present");
+    assert_eq!(rows.len(), 3);
+    assert!(
+        index >= 1,
+        "a row with an unreadable rate does not outrank a real one"
+    );
 }

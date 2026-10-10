@@ -19,7 +19,9 @@ use x_core::process::ProcessInfo;
 use x_core::service::ServiceInfo;
 use x_core::{format_bytes, format_duration};
 
-use crate::app::{service_state_label, sort_label, state_label, App, Modal, Target, View};
+use crate::app::{
+    net_top_sort_label, service_state_label, sort_label, state_label, App, Modal, Target, View,
+};
 
 /// Draw the whole interface.
 pub fn draw(frame: &mut Frame, app: &mut App) {
@@ -757,7 +759,7 @@ fn net_top(frame: &mut Frame, app: &mut App, area: Rect) {
     }
     let inner_height = inner_rows(app, area);
     let start = app.scroll();
-    let Some(report) = app.net_top_report() else {
+    let Some(_) = app.net_top_report() else {
         frame.render_widget(
             Paragraph::new("collecting baseline: per-process rates appear from the next round")
                 .style(crate::theme::current().dim()),
@@ -766,46 +768,29 @@ fn net_top(frame: &mut Frame, app: &mut App, area: Rect) {
         return;
     };
 
-    let mut rows: Vec<(String, String, String, String, String, String)> = report
-        .processes
-        .iter()
-        .map(|rate| {
-            let process = app
-                .net_top_process_name(rate.pid)
-                .unwrap_or_else(|| "?".to_string());
-            (
-                rate.pid.to_string(),
-                process,
-                rate_label(rate.rx_bps),
-                rate_label(rate.tx_bps),
-                rate.conns.to_string(),
-                rate.source.to_string(),
-            )
-        })
-        .collect();
-    // Unmapped = host total minus the attributed sum; derived, not a
-    // process, so it renders last without a pid.
-    if report.unmapped.rx_bps.is_some() || report.unmapped.tx_bps.is_some() {
-        rows.push((
-            "-".to_string(),
-            "(unmapped)".to_string(),
-            rate_label(report.unmapped.rx_bps),
-            rate_label(report.unmapped.tx_bps),
-            "-".to_string(),
-            "host counters only".to_string(),
-        ));
-    }
-    let rows: Vec<Row> = rows
+    let rows: Vec<Row> = app
+        .net_top_rows()
         .into_iter()
         .enumerate()
         .skip(start)
         .take(inner_height.max(1))
-        .map(|(index, (pid, process, rx, tx, conns, source))| {
-            Row::new(vec![pid, process, rx, tx, conns, source])
-                .style(selected_row(start + index, app.selected()))
+        .map(|(index, row)| {
+            Row::new(vec![
+                row.pid.to_string(),
+                row.process.clone(),
+                rate_label(row.rx_bps),
+                rate_label(row.tx_bps),
+                row.conns.to_string(),
+                row.source.clone(),
+            ])
+            .style(selected_row(start + index, app.selected()))
         })
         .collect();
 
+    let title = titled(
+        &format!("net top | sort {}", net_top_sort_label(app.net_top_sort())),
+        app,
+    );
     let widget = table(
         &[
             ("pid", 7),
@@ -815,7 +800,7 @@ fn net_top(frame: &mut Frame, app: &mut App, area: Rect) {
             ("conns", 7),
             ("source", 16),
         ],
-        &titled("net top", app),
+        &title,
     )
     .rows(rows);
     frame.render_widget(widget, area);
@@ -838,7 +823,7 @@ fn footer(frame: &mut Frame, app: &App, area: Rect) {
         View::System => "/ search   ctrl+p commands   r refresh   q quit",
         View::Disks => "enter fold   / search   ctrl+p commands   r refresh   q quit",
         View::Remote => "enter fetch snapshot   up/down choose host   r refresh   q quit",
-        View::NetTop => "r resample   ctrl+p commands   q quit",
+        View::NetTop => "enter ports   p ports   s sort   f filter pid   r resample   q quit",
     };
     frame.render_widget(
         Paragraph::new(keys).style(crate::theme::current().dim()),

@@ -22,6 +22,15 @@
 //!   and bus type, with the seek-penalty property deciding HDD vs SSD.
 //!   The physical-drive query is security-descriptor gated: without permission
 //!   the fields simply stay `None`.
+//!
+//! No block-device I/O counters here: `DiskManager::io` keeps its default
+//! "unavailable on this platform" error. The Windows source is
+//! `IOCTL_STORAGE_QUERY_PERF_DATA` on `IO_COUNTERS_QUERY`, which this
+//! `windows-sys` version does not bind (`IO_COUNTERS` exists only as the
+//! unrelated process-memory structure under `Threading`). Rather than
+//! re-declaring the structure and IOCTL by hand — a 20-field layout where a
+//! wrong field order silently misreports bytes — the command stays absent
+//! on Windows until the binding lands.
 
 use std::ffi::c_void;
 

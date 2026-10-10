@@ -20,6 +20,9 @@ pub enum DiskCommand {
     /// The filesystem holding the current directory.
     Current,
 
+    /// Block-device I/O rates per whole disk, live.
+    Io(IoArgs),
+
     /// Recursive disk usage of a directory, like `du`.
     Usage {
         /// The directory to size up.
@@ -31,6 +34,22 @@ pub enum DiskCommand {
     },
 }
 
+/// `x disk io` arguments.
+#[derive(Debug, clap::Args)]
+pub struct IoArgs {
+    /// Seconds between rounds; also the counting window.
+    #[arg(long, default_value_t = 2.0)]
+    pub interval: f64,
+
+    /// Stop after this many rounds instead of running until interrupted.
+    #[arg(long)]
+    pub count: Option<usize>,
+
+    /// Sort key: read, write, total or device.
+    #[arg(long, default_value = "total")]
+    pub sort: String,
+}
+
 /// Route a `x disk` invocation.
 pub fn dispatch(
     context: &SystemContext,
@@ -40,7 +59,145 @@ pub fn dispatch(
     match command {
         DiskCommand::List => list(context, renderer),
         DiskCommand::Current => current(context, renderer),
+        DiskCommand::Io(args) => disk_io(context, renderer, args),
         DiskCommand::Usage { path, depth } => usage(renderer, path, *depth),
+    }
+}
+
+/// Live block-device I/O rates: sample cumulative counters, diff consecutive
+/// rounds — the same snapshot-diff loop `x net top` runs. The window between
+/// rounds *is* the counting window, so no extra sleep.
+pub fn disk_io(context: &SystemContext, renderer: &mut Renderer, args: &IoArgs) -> Result<i32> {
+    let interval = if args.interval.is_finite() && args.interval > 0.0 {
+        args.interval.max(0.05)
+    } else {
+        2.0
+    };
+    let json = matches!(renderer.format(), OutputFormat::Json | OutputFormat::Jsonl);
+
+    // A platform without a source fails on the very first read, before the
+    // loop can claim it is working.
+    let first = context.disk.io()?;
+    if first.is_empty() {
+        return Err(Error::unsupported("no block devices reported I/O counters"));
+    }
+
+    let mut previous = first;
+    if !json {
+        renderer.line(format!("disk io: sampling every {interval}s"))?;
+    }
+    let mut rounds = 0usize;
+    loop {
+        // Sleep *before* sampling: the window between two reads is the
+        // counting window, and the first round needs one too.
+        std::thread::sleep(std::time::Duration::from_secs_f64(interval));
+        let current = context.disk.io()?;
+        let mut rates: Vec<_> = current
+            .iter()
+            .map(|row| {
+                let prior = previous
+                    .iter()
+                    .find(|p| p.device == row.device)
+                    .unwrap_or(row);
+                x_core::diff_disk_io(prior, row, interval)
+            })
+            .collect();
+        sort_disk_io(&mut rates, &args.sort);
+
+        if json {
+            render_disk_io_json(renderer, &rates, interval, rounds)?;
+        } else {
+            render_disk_io_table(renderer, &rates)?;
+        }
+        renderer.flush().map_err(|e| {
+            Error::new(
+                x_core::ErrorKind::System,
+                format!("disk io output failed: {e}"),
+            )
+        })?;
+
+        previous = current;
+        rounds += 1;
+        if args.count.is_some_and(|target| rounds >= target) {
+            return Ok(0);
+        }
+    }
+}
+
+/// `--sort` orders by; ties break by device name.
+fn sort_disk_io(rates: &mut [x_core::DiskIoRates], key: &str) {
+    rates.sort_by(|a, b| match key {
+        "read" => a
+            .read_bytes_per_sec
+            .total_cmp(&b.read_bytes_per_sec)
+            .reverse(),
+        "write" => a
+            .write_bytes_per_sec
+            .total_cmp(&b.write_bytes_per_sec)
+            .reverse(),
+        "device" => a.device.cmp(&b.device),
+        _ => {
+            let ta = a.read_bytes_per_sec + a.write_bytes_per_sec;
+            let tb = b.read_bytes_per_sec + b.write_bytes_per_sec;
+            if ta != tb {
+                return ta.total_cmp(&tb).reverse();
+            }
+            a.device.cmp(&b.device)
+        }
+    });
+}
+
+/// JSON: one document per round (Json) or one per line (Jsonl).
+fn render_disk_io_json(
+    renderer: &mut Renderer,
+    rates: &[x_core::DiskIoRates],
+    interval: f64,
+    round: usize,
+) -> Result<()> {
+    let mut doc = serde_json::Map::new();
+    doc.insert("round".into(), serde_json::json!(round));
+    doc.insert("interval_s".into(), serde_json::json!(interval));
+    doc.insert("disks".into(), serde_json::json!(rates));
+    renderer.json(&doc).map_err(|e| {
+        Error::new(
+            x_core::ErrorKind::System,
+            format!("disk io json failed: {e}"),
+        )
+    })?;
+    Ok(())
+}
+
+/// Table: rates per whole disk, busiest first.
+fn render_disk_io_table(renderer: &mut Renderer, rates: &[x_core::DiskIoRates]) -> Result<()> {
+    let mut table = Table::new(["device", "read/s", "write/s", "read ops/s", "write ops/s"]);
+    for rate in rates {
+        table.push(row![
+            rate.device.clone(),
+            rate_cell(rate.read_bytes_per_sec),
+            rate_cell(rate.write_bytes_per_sec),
+            rate_ops(rate.read_ops_per_sec),
+            rate_ops(rate.write_ops_per_sec),
+        ]);
+    }
+    renderer.table(&table)?;
+    Ok(())
+}
+
+/// Bytes-per-second as a human rate; a zero interval reads `-`, not `0`.
+fn rate_cell(bps: f64) -> String {
+    if bps <= 0.0 {
+        "-".into()
+    } else {
+        format!("{}/s", x_core::format_bytes(bps as u64))
+    }
+}
+
+/// Operations-per-second, whole numbers are enough at this scale.
+fn rate_ops(ops_per_sec: f64) -> String {
+    if ops_per_sec <= 0.0 {
+        "-".into()
+    } else {
+        format!("{:.0}/s", ops_per_sec)
     }
 }
 

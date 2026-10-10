@@ -81,7 +81,9 @@ pub use audit::{now_utc_rfc3339, rfc3339_utc, AuditEntry};
 pub use bench::{BenchConfig, BenchReport, BenchRow, BenchStatus, BenchTarget};
 pub use capability::{probe as probe_capabilities, Capability, CapabilityStatus};
 pub use context::{SystemContext, SystemContextBuilder};
-pub use disk::{walk_directory, DirUsage, DiskInfo, DiskManager, MediaType};
+pub use disk::{
+    diff_disk_io, walk_directory, DirUsage, DiskInfo, DiskIo, DiskIoRates, DiskManager, MediaType,
+};
 pub use error::{Error, ErrorKind, PermissionRequirement, Result, ResultExt};
 pub use events::{EventOp, EventType, SystemEvent, SystemSnapshot};
 pub use network::{

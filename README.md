@@ -150,6 +150,7 @@ powershell -c "irm https://raw.githubusercontent.com/wangmingfa/x/main/scripts/i
 | `x disk list` | 全部挂载文件系统：设备、类型、介质、容量、已用、可用、使用率（`--json` 含标签 / 卷 UUID / 分区 UUID / 型号 / 序列号 / 只读） |
 | `x disk current` | 当前目录所在的文件系统 |
 | `x disk usage <path> [--depth N]` | 目录占用，du 风格：按聚合大小排序，`--depth` 限制展示层级，路径不存在退出码 3 |
+| `x disk io` | 块设备 I/O 速率：每整盘的读/写字节与 IOPS，按间隔采样差值（`--interval` / `--count` / `--sort` / `--json`）；累计计数 → 区间速率，与 `x net top` 同构。Windows 未接入 `IOCTL_STORAGE_QUERY_PERF_DATA` 绑定，如实报退出码 7 |
 
 ### 服务（`x service`）
 
@@ -723,13 +724,24 @@ GitHub Actions CI 在 Ubuntu / macOS / Windows 三平台上跑格式、clippy
   补第六类——每进程打开句柄数（macOS `proc_pidinfo`、Linux `/proc/<pid>/fd` 计数、
   Windows `GetProcessHandleCount`），`x ps` 加一列、`x events` 加 drift 事件。
   全是现有采样循环顺手能拿的读数，且是「进程悄悄涨内存/涨 fd」这类问题的唯一定位入口。
-- [ ] `x disk io`：块设备 I/O 速率（读/写字节与 IOPS，按间隔采样差值）。
+- [x] `x disk io`：块设备 I/O 速率（读/写字节与 IOPS，按间隔采样差值）。
   Linux `/proc/diskstats`、macOS `IOService` IOKit 统计、Windows `IO_COUNTERS`——
   三个来源都是纯读数，形状与 `x net top` 的「累计计数 → 区间速率」完全同构，
   x-core 的 diff 模型可直接复用。
-- [ ] TUI net top 深化：9 页目前只有表格与 hint，补排序切换（rx/tx/conns）、
+  落地时 Windows 侧诚实降级：当前 `windows-sys` 只绑定了 `Threading` 下不相关的
+  `IO_COUNTERS`（进程内存结构），`IOCTL_STORAGE_QUERY_PERF_DATA` 的 20 字段布局
+  手写错一个字段会静默报错字节数，所以命令在 Windows 报退出码 7 而非造假读数。
+  macOS 侧一个坑：空卡槽的 `IOBlockStorageDriver` 子树里没有任何 `IOMedia`，
+  于是没有 `BSD Name`；用 registry id 兜底会让名字每轮都变（每次匹配都新建 entry），
+  永远匹配不到上一轮、速率恒为 0，所以直接跳过这种条目。
+- [x] TUI net top 深化：9 页目前只有表格与 hint，补排序切换（rx/tx/conns）、
   选中进程 Enter 跳转它持有的端口（跨页联动的既有机制）、`--pid` 过滤视图。
   全是 TUI 内部接线，不碰平台层。
+  落地形态：`s` 在 net top 页循环 total/rx/tx/conns/name 五种排序（processes 页
+  的 `s` 走它自己的循环，互不干扰）；Enter 与 `p` 都跳 ports 页并按选中进程名过滤
+  （过滤用进程名而不是 pid——ports 的 search 把 pid 当文本子串，`12` 会连带匹到
+  `1234`）；`f` 过滤行，pid 与进程名都认。`(unmapped)` 汇总行没有 pid，Enter 会
+  提示而不是跳转，且任何排序列都不会把它顶到真进程上面。
 - [ ] `x file wait <path>`：阻塞等待文件出现/变化/稳定（大小两轮不变才算 stable），
   供脚本串联（下载完成检测、构建产物等待）。零平台差异，纯轮询语义；
   要点是把「出现/消失/稳定」三态的超时行为写进退出码而不是都返回 0。
