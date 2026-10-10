@@ -20,6 +20,7 @@ produce is a claim nobody can trace back to a commit.
 
 ### Fixes
 
+- **release:** point the Windows package step at the target-triple dir The Build step passes --target x86_64-pc-windows-msvc, so the binary lands in target/x86_64-pc-windows-msvc/release/, not target/release/ where the Package step looked for it. (aa282c2)
 - **linux:** fall back to the logical core count on ARM ARM kernels and most VMs publish neither "physical id"/"core id" nor "cpu cores" in /proc/cpuinfo, so physical_cores() returned None and the range test panicked on ubuntu-22.04-arm CI. Fall back to the logical count, which can only overstate the physical count, never understate it. (f7803f2)
 - **windows:** import GetProcessHandleCount from Threading windows-sys 0.61.2 declares the function in Win32::System::Threading, not ProcessStatus; the wrong path broke the Windows cross check in CI. (6a39980)
 - **net-top:** 对拍模型三处修正：哨兵行泄漏、连接行合入、排序 - 哨兵 pid（SOURCE_SENTINEL）只用于标注字节来源，此前会从 curr_pids   迭代里漏出、渲染成一条幽灵进程行；现在在生成 ProcessRate 前过滤，   source 标签改为只取一次。 - 只有连接归属、本轮无字节计数的 pid 现在仍得到自己的行   （source=connections-only，速率缺席而非猜测为 0）：连接是"当下"   的事实，不因字节层缺席而消失。 - 进程行按 pid 排序，合并进来的连接行不破坏顺序。 - 删除引入后未接线的 NetSampler trait：CLI 直接持有平台采样器具体   类型，模型层不承担接缝职责。 (85cc728)
@@ -175,6 +176,8 @@ Subjects with no recognised `type:` prefix, kept verbatim.
 
 ### Fixes
 
+- **linux:** fall back to the logical core count on ARM ARM kernels and most VMs publish neither "physical id"/"core id" nor "cpu cores" in /proc/cpuinfo, so physical_cores() returned None and the range test panicked on ubuntu-22.04-arm CI. Fall back to the logical count, which can only overstate the physical count, never understate it. (f7803f2)
+- **windows:** import GetProcessHandleCount from Threading windows-sys 0.61.2 declares the function in Win32::System::Threading, not ProcessStatus; the wrong path broke the Windows cross check in CI. (6a39980)
 - **net-top:** 对拍模型三处修正：哨兵行泄漏、连接行合入、排序 - 哨兵 pid（SOURCE_SENTINEL）只用于标注字节来源，此前会从 curr_pids   迭代里漏出、渲染成一条幽灵进程行；现在在生成 ProcessRate 前过滤，   source 标签改为只取一次。 - 只有连接归属、本轮无字节计数的 pid 现在仍得到自己的行   （source=connections-only，速率缺席而非猜测为 0）：连接是"当下"   的事实，不因字节层缺席而消失。 - 进程行按 pid 排序，合并进来的连接行不破坏顺序。 - 删除引入后未接线的 NetSampler trait：CLI 直接持有平台采样器具体   类型，模型层不承担接缝职责。 (85cc728)
 - **install:** 安装脚本改用 POSIX set -eu，兼容 dash 下 curl|sh 执行 - scripts/install-release.sh / install.sh：set -euo pipefail 改为 set -eu。README 的   安装命令 curl ... | sh 会把脚本喂给 /bin/sh（Debian/Ubuntu 上即 dash），shebang   在管道场景下被忽略；pipefail 是 bash 专属选项，dash 报 Illegal option -o pipefail。   其余写法均为 POSIX，关键 curl|sed|head 管线已有 [ -n X_VERSION ] || fail 兜底，   去掉 pipefail 不影响正确性。已用真实 dash -n 验证两脚本通过、并复现过原报错。 - docs/design/net-top.md：新增网络拓扑设计笔记。 (52c37ce)
 - **changelog:** 启动清理上次被杀留下的孤儿临时文件 changelog.sh 用 CHANGELOG.md.tmp.<PID> 作写中转文件，正常退出由 EXIT trap 清理；但进程被 Ctrl+C / SIGKILL 终止时 trap 不执行，孤儿 .tmp 残留在工作树， 会被 release-tag.sh 的干净树检查当作未跟踪文件而中断发布。 (ab7a38c)
