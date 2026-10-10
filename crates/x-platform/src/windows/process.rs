@@ -61,7 +61,8 @@ impl ProcessManager for WindowsProcess {
 /// or it is a protected system process) — a missing read is not a zero.
 fn handle_count(pid: u32) -> Option<u32> {
     use windows_sys::Win32::Foundation::CloseHandle;
-    use windows_sys::Win32::System::ProcessStatus::GetProcessHandleCount;
+    // GetProcessHandleCount lives in Threading, not ProcessStatus.
+    use windows_sys::Win32::System::Threading::GetProcessHandleCount;
 
     // SAFETY: `OpenProcess` returns a valid handle or null; the count pointer
     // is a plain u32 out-parameter for the duration of the call.
