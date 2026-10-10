@@ -228,9 +228,16 @@ pub fn physical_cores() -> Option<usize> {
             return Some(sockets.len());
         }
     }
-    cpuinfo_field("cpu cores")
+    if let Some(cores) = cpuinfo_field("cpu cores")
         .and_then(|value| value.parse().ok())
         .filter(|cores: &usize| *cores > 0)
+    {
+        return Some(cores);
+    }
+    // ARM and most VMs publish neither field: the logical count is the only
+    // honest bound left (it can only overstate the physical count, never
+    // understate it).
+    Some(sysinfo::System::new_all().cpus().len())
 }
 
 /// First value of a `key : value` field in `/proc/cpuinfo`.
