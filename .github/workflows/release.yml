@@ -58,7 +58,9 @@ jobs:
             os: windows-2022
             asset: windows-x86_64
             targets: x86_64-pc-windows-msvc
-            bindir: target/release
+            # The Build step passes --target, so artifacts land in the
+            # target-triple directory, not the plain target/release.
+            bindir: target/x86_64-pc-windows-msvc/release
             deployment_target: ""
 
     steps:
