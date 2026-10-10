@@ -716,6 +716,11 @@ fn render_top_table(
             "net top: sampling every {}s; per-process source: {source}",
             report.interval.as_secs_f64()
         ))?;
+        // Only when privileges are the reason: on a platform with no source
+        // at all, sudo changes nothing and the hint would mislead.
+        if sampler.per_process_denied() {
+            renderer.line("hint: re-run with sudo to enable per-process rates")?;
+        }
     }
     let mut table = Table::new(["PID", "PROCESS", "RX/s", "TX/s", "CONNS", "SOURCE"]);
     for row in sorted_top_rows(report, sampler, args, sort) {

@@ -113,7 +113,7 @@ mod device {
                 });
             }
             Err(capture_error(format!(
-                "no /dev/bpf device available for {interface} (capture requires root; hint: sudo x net top)"
+                "no /dev/bpf device available for {interface} (capture requires root)"
             )))
         }
     }
@@ -180,7 +180,7 @@ mod device {
                 unsafe { libc::socket(libc::AF_PACKET, libc::SOCK_RAW, ETH_P_IP.to_be() as i32) };
             if fd < 0 {
                 return Err(capture_error(
-                    "AF_PACKET socket failed (capture requires CAP_NET_RAW; hint: sudo x net top)",
+                    "AF_PACKET socket failed (capture requires CAP_NET_RAW)",
                 ));
             }
             Ok(PacketDevice { fd })

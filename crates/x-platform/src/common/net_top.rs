@@ -43,6 +43,10 @@ pub struct PlatformNetSampler {
     /// error on Unix, `None` when the layer is live or the platform never
     /// had one.
     per_process_error: Option<String>,
+    /// Whether the layer is absent for lack of privileges — the case where
+    /// re-running with sudo would actually help. `false` also covers
+    /// platforms with no source at all, where a sudo hint would mislead.
+    per_process_denied: bool,
     /// Process names from the most recent socket-table read, keyed by pid:
     /// rows get labeled without a second process enumeration.
     names: Mutex<BTreeMap<i32, String>>,
@@ -67,6 +71,7 @@ impl PlatformNetSampler {
             match crate::common::capture_unix::UnixCaptureSampler::open() {
                 Ok(sampler) => Self {
                     per_process_error: None,
+                    per_process_denied: false,
                     names: Mutex::new(BTreeMap::new()),
                     capture: Some(CaptureState {
                         sampler,
@@ -75,6 +80,7 @@ impl PlatformNetSampler {
                 },
                 Err(error) => Self {
                     per_process_error: Some(error.message().to_string()),
+                    per_process_denied: error.kind() == x_core::ErrorKind::PermissionDenied,
                     names: Mutex::new(BTreeMap::new()),
                     capture: None,
                 },
@@ -88,6 +94,7 @@ impl PlatformNetSampler {
                 per_process_error: Some(
                     "per-process rates have no source on this platform yet".to_string(),
                 ),
+                per_process_denied: false,
                 names: Mutex::new(BTreeMap::new()),
             }
         }
@@ -111,6 +118,14 @@ impl PlatformNetSampler {
     /// this as a one-line hint instead of failing the command.
     pub fn per_process_error(&self) -> Option<&str> {
         self.per_process_error.as_deref()
+    }
+
+    /// Whether the per-process layer is absent for lack of privileges —
+    /// the one case where re-running with sudo would actually help. A
+    /// platform with no source at all reports `false` here, so the CLI
+    /// does not suggest sudo where it changes nothing.
+    pub fn per_process_denied(&self) -> bool {
+        self.per_process_denied
     }
 
     /// Process name for `pid` from the most recent socket-table read.
