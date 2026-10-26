@@ -608,9 +608,14 @@ fn the_search_notes_families_it_cannot_read() {
 
 #[test]
 fn a_file_hit_selects_the_usage_row() {
+    // The fixture is injected before the page is entered, so the usage
+    // walker's guard sees non-empty rows and never starts a real scan of
+    // the working directory — a scan landing on the search flush tick
+    // would otherwise overwrite the fixture with real rows.
     let (_stubs, mut app) = app_with_sockets(1);
-    app.goto_view(View::Disks);
+    app.usage_root = std::env::temp_dir();
     app.usage = sample_usage();
+    app.goto_view(View::Disks);
 
     app.on_key(key(KeyCode::Char('/')));
     for event in text("big") {
