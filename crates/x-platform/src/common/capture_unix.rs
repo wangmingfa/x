@@ -361,7 +361,9 @@ mod tests {
     }
 
     /// One BPF record: 18-byte header (`bh_caplen` at offset 8) plus the
-    /// captured bytes, word-aligned to the next record.
+    /// captured bytes, word-aligned to the next record. BPF is macOS-only,
+    /// so the helper is gated with the test that uses it.
+    #[cfg(target_os = "macos")]
     fn bpf_record(caplen: usize, payload_byte: u8) -> Vec<u8> {
         let mut record = vec![0u8; 18];
         record[8..12].copy_from_slice(&(caplen as u32).to_le_bytes());
