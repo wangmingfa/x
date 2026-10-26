@@ -1017,7 +1017,9 @@ fn set_filter(app: &mut App, filter: &str) {
     for event in text(filter) {
         app.on_key(event);
     }
-    app.on_tick(); // flush the debounced search scan
+    // No tick here: the filter prompt commits on Enter (which refreshes
+    // synchronously), and a stray tick could harvest an in-flight net-top
+    // sampler round and replace the report the test just injected.
     app.on_key(key(KeyCode::Enter));
 }
 
@@ -1030,6 +1032,13 @@ fn net_top_filter_narrows_by_pid_and_by_process_name() {
     let rows = app.net_top_rows();
     assert_eq!(rows.len(), 1, "only the matching row remains");
     assert_eq!(rows[0].pid, 100);
+    eprintln!(
+        "DBG view={:?} modal-match={} filter={:?} rows={}",
+        app.view(),
+        matches!(app.modal(), crate::app::Modal::None),
+        app.filter(),
+        app.rows()
+    );
     assert_eq!(
         app.rows(),
         1,
