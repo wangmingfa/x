@@ -264,6 +264,7 @@ fn the_search_dialog_lists_hits_under_family_headers() {
 
     press(&mut app, KeyCode::Char('/'));
     type_text(&mut app, "node");
+    app.on_tick(); // flush the debounced search scan
     let screen = render(&mut app, 100, 30);
 
     assert!(
@@ -444,4 +445,79 @@ fn the_status_line_prompts_for_the_filter() {
 
     assert!(screen.contains("filter: no_"), "status prompt:\n{screen}");
     assert!(screen.contains(" filter "), "dialog title:\n{screen}");
+}
+
+/// After scrolling, the highlighted row must still be the selected row —
+/// `k` and Enter act on the selection, so a shifted highlight can make the
+/// user confirm an action against the wrong row.
+#[test]
+fn the_highlighted_row_is_the_selected_row_after_scrolling() {
+    let ports: Vec<PortInfo> = (0..40)
+        .map(|index| stub_socket(10_000 + index as u16, 42, &format!("proc{index}")))
+        .collect();
+    let stubs = Stubs::new().with_ports(ports);
+    let mut app = App::new(stubs.context());
+    press(&mut app, KeyCode::Char('2')); // Ports page
+
+    // A small viewport forces the scroll to follow the selection.
+    app.note_viewport(10);
+    for _ in 0..35 {
+        press(&mut app, KeyCode::Down);
+    }
+    assert_eq!(app.selected(), 35);
+    assert!(
+        app.scroll() > 0,
+        "the view should have scrolled: {}",
+        app.scroll()
+    );
+
+    // Find the row drawn with the selection style (the theme's header
+    // background) and check it is the row the app would act on. The theme
+    // is read from the same source the draw uses, so this holds even when
+    // another test has installed a different theme.
+    let header_bg = crate::theme::current().header().bg;
+    let mut terminal = Terminal::new(TestBackend::new(100, 40)).expect("test backend");
+    terminal
+        .draw(|frame| draw(frame, &mut app))
+        .expect("draw frame");
+    let buffer = terminal.backend().buffer();
+    let mut highlighted: Vec<String> = Vec::new();
+    for y in 0..buffer.area.height {
+        let mut line = String::new();
+        let mut is_selected = false;
+        for x in 0..buffer.area.width {
+            let cell = buffer.cell((x, y)).expect("cell");
+            if cell.style().bg == header_bg {
+                is_selected = true;
+            }
+            line.push_str(cell.symbol());
+        }
+        if is_selected {
+            highlighted.push(line.trim_end().to_string());
+        }
+    }
+    let data_rows: Vec<String> = highlighted
+        .iter()
+        .filter(|line| {
+            line.contains("proc0")
+                || line.contains("proc1")
+                || line.contains("proc2")
+                || line.contains("proc3")
+        })
+        .cloned()
+        .collect();
+    assert_eq!(
+        data_rows.len(),
+        1,
+        "exactly one data row should be highlighted; selected={} scroll={} highlighted: {highlighted:?}",
+        app.selected(),
+        app.scroll()
+    );
+    assert!(
+        data_rows[0].contains(&format!("proc{}", app.selected())),
+        "highlight drifted off the selected row (selected={}, scroll={}): {}",
+        app.selected(),
+        app.scroll(),
+        data_rows[0]
+    );
 }

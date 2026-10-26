@@ -2262,3 +2262,147 @@ fn regression_every_read_command_survives_its_manager_erroring() {
     };
     assert_eq!(disk.code, ErrorKind::System.exit_code());
 }
+
+// --- file wait ----------------------------------------------------------------
+
+use std::path::PathBuf;
+
+fn wait_tmp(tag: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("x-cli-file-wait-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    dir
+}
+
+fn stub_log_entry(level: &str, origin: &str, message: &str) -> x_core::logs::LogEntry {
+    log_entry("2026-10-02 10:00:00 +08:00", level, origin, message)
+}
+
+#[test]
+fn file_wait_appear_exits_zero_when_the_path_exists() {
+    let dir = wait_tmp("exists");
+    std::fs::write(dir.join("a.txt"), b"x").expect("write");
+    let stubs = Stubs::new();
+    let path = dir.join("a.txt").to_string_lossy().into_owned();
+    let out = x(
+        &stubs,
+        &[
+            "file",
+            "wait",
+            &path,
+            "--interval",
+            "0.01",
+            "--timeout",
+            "1",
+        ],
+        false,
+    );
+    assert_eq!(out.code, 0, "{}", out.stdout);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn file_wait_times_out_with_exit_three() {
+    let dir = wait_tmp("timeout");
+    let stubs = Stubs::new();
+    let path = dir.join("never.txt").to_string_lossy().into_owned();
+    let out = x(
+        &stubs,
+        &[
+            "file",
+            "wait",
+            &path,
+            "--interval",
+            "0.01",
+            "--timeout",
+            "0.05",
+        ],
+        false,
+    );
+    assert_eq!(
+        out.code, 3,
+        "timeout is exit 3, not a failure: {}",
+        out.stdout
+    );
+    assert!(out.stdout.contains("timed out"), "{}", out.stdout);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn file_wait_json_emits_one_document() {
+    let dir = wait_tmp("json");
+    std::fs::write(dir.join("a"), b"x").expect("write");
+    let stubs = Stubs::new();
+    let path = dir.join("a").to_string_lossy().into_owned();
+    let out = x(
+        &stubs,
+        &[
+            "--json",
+            "file",
+            "wait",
+            &path,
+            "--interval",
+            "0.01",
+            "--timeout",
+            "1",
+        ],
+        false,
+    );
+    assert_eq!(out.code, 0);
+    let value: serde_json::Value = serde_json::from_str(&out.stdout).expect("valid json");
+    assert_eq!(value["met"], true);
+    assert_eq!(value["condition"], "appear");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// --- logs --context -----------------------------------------------------------
+
+#[test]
+fn logs_context_marks_hits_and_keeps_neighbours() {
+    let entries = vec![
+        stub_log_entry("info", "cron", "one"),
+        stub_log_entry("err", "cron", "two boom"),
+        stub_log_entry("info", "cron", "three"),
+        stub_log_entry("info", "cron", "four"),
+    ];
+    let stubs = Stubs::new().with_logs("stub", entries);
+    let out = x(
+        &stubs,
+        &[
+            "logs",
+            "system",
+            "--limit",
+            "10",
+            "--grep",
+            "boom",
+            "--context",
+            "1",
+        ],
+        false,
+    );
+    assert_eq!(out.code, 0);
+    // The hit, its two neighbours, and the untouched row far from it.
+    assert!(
+        out.stdout.contains("match"),
+        "match column expected: {}",
+        out.stdout
+    );
+    assert!(out.stdout.contains("one"), "{}", out.stdout);
+    assert!(out.stdout.contains("two boom"), "{}", out.stdout);
+    assert!(out.stdout.contains("three"), "{}", out.stdout);
+    assert!(
+        !out.stdout.contains("four"),
+        "outside the context window: {}",
+        out.stdout
+    );
+    assert!(out.stdout.contains('*'), "hit marker: {}", out.stdout);
+}
+
+#[test]
+fn logs_without_context_has_no_match_column() {
+    let entries = vec![stub_log_entry("err", "cron", "boom")];
+    let stubs = Stubs::new().with_logs("stub", entries);
+    let out = x(&stubs, &["logs", "system", "--grep", "boom"], false);
+    assert_eq!(out.code, 0);
+    assert!(!out.stdout.contains("match"), "{}", out.stdout);
+}

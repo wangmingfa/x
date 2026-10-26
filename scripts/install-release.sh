@@ -67,7 +67,7 @@ if [ -z "$X_VERSION" ]; then
     curl -fsSL "https://api.github.com/repos/$X_REPO/releases" |
       sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1
   )
-  [ -n "$X_VERSION" ] || fail "could not determine the latest release (check your network or set X_VERSION=v0.1.2)"
+  [ -n "$X_VERSION" ] || fail "could not determine the latest release (check your network, or set X_VERSION=v0.1.2 to skip the API call; unauthenticated GitHub API requests are limited to 60 per hour per IP, which users behind a shared NAT can exhaust without trying)"
 fi
 
 URL="https://github.com/$X_REPO/releases/download/$X_VERSION/x-${X_VERSION}-${ASSET}.tar.gz"
@@ -77,7 +77,11 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 info "installing x $X_VERSION into $BIN_DIR"
 if [ "$ASSUME_YES" -ne 1 ]; then
   printf "Continue? [Y/n] "
-  read -r answer
+  # Read from the terminal, not stdin: under `curl | sh` stdin is the pipe
+  # that feeds the script itself, and a plain `read` would swallow the next
+  # script line instead of the user's answer. From a saved file stdin is the
+  # terminal anyway, so nothing changes there.
+  read -r answer </dev/tty
   case "$answer" in
     ""|y|Y|yes|YES) ;;
     *) echo "aborted"; exit 1 ;;

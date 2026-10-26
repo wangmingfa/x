@@ -185,6 +185,7 @@ powershell -c "irm https://raw.githubusercontent.com/wangmingfa/x/main/scripts/i
 | `x logs process <pid\|name> [--limit N]` | 按进程取（Windows 事件日志无进程索引，如实报不支持） |
 | 上述三者 + `--follow` | 持续跟随，只输出新增记录（`--interval`、`--count`）；按整条记录内容去重 |
 | 上述三者 + `--grep` / `--level` | 过滤：文本命中 message/origin/level（不分大小写）；`--level` 逗号分隔，词汇按平台原文（journald `err`、Windows `Error`、unified log `error`） |
+| 上述三者 + `--context N` | 命中行各带 N 行上下文（-B/-A 语义，按窗口截断）；表格多一列 `match` 标命中，`--follow` 下只影响首轮展示、不动增量判定 |
 
 全部只读：不确认、不提权、不落审计。三套日志体系词汇不通，故时间戳与
 级别按平台原文透传（如 journald 的 `err`、中文 Windows 的「信息」），
@@ -508,7 +509,7 @@ GitHub Actions CI 在 Ubuntu / macOS / Windows 三平台上跑格式、clippy
 
 ### P1 开发者日常
 
-- [x] 文件：`x file info / type / permissions / owner / size / hash`；`open / reveal / trash / copy / move / rename`（`x file reveal` 优先）
+- [x] 文件：`x file info / type / permissions / owner / size / hash`；`open / reveal / trash / copy / move / rename`（`x file reveal` 优先）；`wait`（`--for appear|change|stable`，超时退出 3）
 - [x] 环境与 PATH：`x env list/get/set`、`x path list/find/add/remove`、`x which <cmd>`（统一 where / which / command -v）
 - [x] Shell：`x shell info / list / default`
 - [x] 用户与组：`x user current/list/info`（UID/GID/home/groups/会话）、`x group list/info/members`
@@ -742,10 +743,18 @@ GitHub Actions CI 在 Ubuntu / macOS / Windows 三平台上跑格式、clippy
   （过滤用进程名而不是 pid——ports 的 search 把 pid 当文本子串，`12` 会连带匹到
   `1234`）；`f` 过滤行，pid 与进程名都认。`(unmapped)` 汇总行没有 pid，Enter 会
   提示而不是跳转，且任何排序列都不会把它顶到真进程上面。
-- [ ] `x file wait <path>`：阻塞等待文件出现/变化/稳定（大小两轮不变才算 stable），
-  供脚本串联（下载完成检测、构建产物等待）。零平台差异，纯轮询语义；
-  要点是把「出现/消失/稳定」三态的超时行为写进退出码而不是都返回 0。
-- [ ] 日志 `--context`：`x logs --grep` 命中后带上下文行（-B/-A 语义）。轮询去重
-  按「整条记录内容」的现有约定不受影响——上下文只影响首轮窗口的展示，不动增量判定；
-  三套日志源都是流式文本，实现面窄。
+- [x] `x file wait <path>`：阻塞等待文件出现/变化/稳定（`--for appear|change|stable`，
+  stable 要求相邻两轮采样的大小与 mtime 一致——「大小两轮不变」），供脚本串联
+  （下载完成检测、构建产物等待）。零平台差异，纯轮询语义（`--interval`，缺省 0.5s）。
+  超时行为写进退出码而不是都返回 0：条件满足退出 0，`--timeout N` 秒内未满足退出 3
+  （与「未找到」共用），非法数值退出 5。`--json` 输出单文档
+  （`condition` / `path` / `met` / `waited_ms` / `detail`）。纯读，不落审计。
+  change 以首次采样为基线：文件原本不在、之后出现也算一次变化；stable 在文件
+  中途消失时重置基线，不会把「回来后的第一轮」误判成稳定。
+- [x] 日志 `--context`：`x logs --grep … --context N` 命中后带上下文行（-B/-A 语义，
+  两个方向、按取回的窗口截断）。上下文行按窗口原序混排、不重排不改写；表格模式
+  加 `match` 列（`*` 命中 / `-` 上下文），JSON 文档的 entries 含上下文行（哪些是
+  命中由过滤条件可复算，不另改 LogPage 形状）。轮询去重按「整条记录内容」的现有
+  约定不受影响——上下文只影响 `--follow` 首轮窗口的展示，后续轮次照旧只打新增；
+  首轮打印行数仍受 `--limit` 约束（上下文行计入该限额）。
 

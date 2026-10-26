@@ -166,13 +166,17 @@ impl FileManager for PlatformFile {
         #[cfg(target_os = "macos")]
         {
             // AppleScript is the only sanctioned "move to Trash" verb; Finder
-            // handles name collisions and Same Volume rules itself.
-            let script = format!(
-                "tell application \"Finder\" to delete POSIX file \"{}\"",
-                path.canonicalize()
+            // handles name collisions and Same Volume rules itself. The path
+            // is escaped because filenames may legally contain `"` and `\` —
+            // interpolating them raw would let a filename rewrite the script.
+            let escaped = crate::common::window_os::applescript_escape(
+                &path
+                    .canonicalize()
                     .unwrap_or_else(|_| path.to_path_buf())
                     .display()
+                    .to_string(),
             );
+            let script = format!("tell application \"Finder\" to delete POSIX file \"{escaped}\"");
             run("osascript", &["-e", &script])
         }
         #[cfg(all(unix, not(target_os = "macos")))]
@@ -208,7 +212,12 @@ impl FileManager for PlatformFile {
         {
             // PowerShell's VisualBasic FileSystem API deletes to the Recycle
             // Bin, honouring name collisions, without extra dependencies.
-            let native = path.to_string_lossy().replace('/', "\\");
+            // Single quotes are doubled inside the literal: a `'` in the
+            // path must not close it and inject PowerShell.
+            let native = path
+                .to_string_lossy()
+                .replace('/', "\\")
+                .replace('\'', "''");
             let script = format!(
                 "Add-Type -AssemblyName Microsoft.VisualBasic; \
                  [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile('{native}', \

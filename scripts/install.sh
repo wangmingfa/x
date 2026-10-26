@@ -43,7 +43,11 @@ fi
 info "installing x $X_VERSION into $BIN_DIR"
 if [ "$ASSUME_YES" -ne 1 ]; then
   printf "Continue? [Y/n] "
-  read -r answer
+  # Read from the terminal, not stdin: under `curl | sh` stdin is the pipe
+  # that feeds the script itself, and a plain `read` would swallow the next
+  # script line instead of the user's answer. From a saved file stdin is the
+  # terminal anyway, so nothing changes there.
+  read -r answer </dev/tty
   case "$answer" in
     ""|y|Y|yes|YES) ;;
     *) echo "aborted"; exit 1 ;;
@@ -56,8 +60,12 @@ if [ -d "$SRC_DIR/.git" ]; then
 else
   git clone --quiet "$X_REPO" "$SRC_DIR"
 fi
+# A missing ref is an error, not a silent fallback to `main`: X_VERSION always
+# names a requested ref (even its default is a tag), and the user must not
+# quietly get some other code installed under that name.
 if ! git -C "$SRC_DIR" checkout --quiet "$X_VERSION" 2>/dev/null; then
-  git -C "$SRC_DIR" checkout --quiet main
+  echo "git ref '$X_VERSION' not found in $X_REPO (tag, branch or sha?)" >&2
+  exit 1
 fi
 
 info "building release binary (this can take a few minutes)"

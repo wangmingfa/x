@@ -31,9 +31,17 @@ use x_core::SystemContext;
 /// Watching is polling on purpose: the adapters expose snapshot reads only, so
 /// the TUI, the CLI and any future HTTP API observe the exact same values.
 /// `config.toml` 的 `refresh_ms`（>= 100）可以覆盖它。
+///
+/// Read once per process: the value used to be re-read from disk on every
+/// tick, which meant a config parse several times per second for the whole
+/// session. A config edit now applies to the next session (or an explicit
+/// reload) instead of live.
 pub fn refresh_interval() -> Duration {
-    let (config, _) = x_core::config::load(&x_core::config::default_path());
-    Duration::from_millis(config.refresh_ms.unwrap_or(REFRESH_MS))
+    static CACHED: std::sync::OnceLock<Duration> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| {
+        let (config, _) = x_core::config::load(&x_core::config::default_path());
+        Duration::from_millis(config.refresh_ms.unwrap_or(REFRESH_MS))
+    })
 }
 
 const REFRESH_MS: u64 = 1500;

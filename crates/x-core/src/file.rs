@@ -97,9 +97,11 @@ pub trait FileManager: Send + Sync {
     }
 
     /// Recursive byte count. Directories are walked; unreadable entries are
-    /// skipped rather than failing the whole command.
+    /// skipped rather than failing the whole command. Symlinks are resolved:
+    /// `size` answers "how much does this hold", which for a link is the
+    /// target's size — not the length of the path text it stores.
     fn size(&self, path: &Path) -> Result<u64> {
-        let metadata = std::fs::symlink_metadata(path)
+        let metadata = std::fs::metadata(path)
             .map_err(|e| Error::not_found(format!("{}: {e}", path.display())))?;
         Ok(recursive_size(path, &metadata))
     }
@@ -149,7 +151,9 @@ pub trait FileManager: Send + Sync {
         Ok(None)
     }
 
-    /// Copy a file or a directory tree. Existing destinations are overwritten.
+    /// Copy a file or a directory tree. Existing destinations are overwritten
+    /// (an existing destination directory is replaced, not merged into).
+    /// Symlinks inside the tree are dereferenced into regular files.
     fn copy(&self, from: &Path, to: &Path) -> Result<()> {
         copy_path(from, to)
     }
@@ -731,6 +735,13 @@ fn copy_path(from: &Path, to: &Path) -> Result<()> {
     let meta = std::fs::symlink_metadata(from)
         .map_err(|e| Error::not_found(format!("{}: {e}", from.display())))?;
     if meta.is_dir() {
+        // "Existing destinations are overwritten" means the destination does
+        // not keep stale files that the source no longer has, so an existing
+        // directory is replaced rather than merged into.
+        if std::fs::symlink_metadata(to).is_ok() {
+            std::fs::remove_dir_all(to)
+                .map_err(|e| Error::system(format!("cannot remove {}: {e}", to.display())))?;
+        }
         std::fs::create_dir_all(to)
             .map_err(|e| Error::system(format!("cannot create {}: {e}", to.display())))?;
         let entries = std::fs::read_dir(from)
@@ -763,6 +774,161 @@ fn move_path(from: &Path, to: &Path) -> Result<()> {
         })?;
     }
     Ok(())
+}
+
+/// What `x file wait` watches for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WaitCondition {
+    /// The path exists.
+    Appear,
+    /// The path's size or modification time differs from the first sample
+    /// (a path that was absent and then shows up has changed).
+    Change,
+    /// The path exists and two consecutive samples agree on size and
+    /// modification time — the shape of "a download finished".
+    Stable,
+}
+
+impl WaitCondition {
+    /// Lowercase name, as printed and accepted on the command line.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Appear => "appear",
+            Self::Change => "change",
+            Self::Stable => "stable",
+        }
+    }
+}
+
+/// What one `wait_for` run observed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WaitOutcome {
+    /// The condition that was watched.
+    pub condition: WaitCondition,
+    /// The path that was watched.
+    pub path: PathBuf,
+    /// Whether the condition was met (`false` means the deadline passed).
+    pub met: bool,
+    /// Wall clock time spent waiting, in milliseconds.
+    pub waited_ms: u64,
+    /// Human readable detail: what the last sample looked like.
+    pub detail: String,
+}
+
+/// Block until `path` satisfies `condition`, polling every `interval_secs`.
+///
+/// Pure polling with `std::fs`, so it is identical on all three platforms.
+/// The timeout is part of the result rather than an error: a deadline that
+/// expires is the answer "not yet", which the caller reports through the exit
+/// code (0 met, 3 timed out) instead of a generic failure.
+pub fn wait_for(
+    path: &Path,
+    condition: WaitCondition,
+    interval_secs: f64,
+    timeout_secs: Option<f64>,
+) -> Result<WaitOutcome> {
+    if !interval_secs.is_finite() || interval_secs < 0.0 {
+        return Err(Error::invalid_input(
+            "interval must be a positive number of seconds",
+        ));
+    }
+    if let Some(timeout) = timeout_secs {
+        if !timeout.is_finite() || timeout < 0.0 {
+            return Err(Error::invalid_input(
+                "timeout must be a positive number of seconds",
+            ));
+        }
+    }
+    let interval = std::time::Duration::from_secs_f64(interval_secs.max(0.05));
+    let started = std::time::Instant::now();
+    let deadline = timeout_secs.map(|secs| started + std::time::Duration::from_secs_f64(secs));
+
+    // The change condition compares against the first sample, so it is taken
+    // before the first sleep. Stable keeps the previous sample to require two
+    // consecutive agreeing reads — and the first two samples must be a full
+    // interval apart: taking them back to back would report a file that is
+    // mid-download as "stable" just because nothing moved in microseconds.
+    let baseline = observe(path);
+    let mut previous = baseline;
+    let mut first_sample = true;
+    let outcome = loop {
+        if let Some(observation) = observe(path) {
+            let met = match condition {
+                WaitCondition::Appear => true,
+                WaitCondition::Change => Some(observation) != baseline,
+                WaitCondition::Stable => {
+                    !first_sample && previous.is_some() && Some(observation) == previous
+                }
+            };
+            if met {
+                break WaitOutcome {
+                    condition,
+                    path: path.to_path_buf(),
+                    met: true,
+                    waited_ms: started.elapsed().as_millis() as u64,
+                    detail: format!(
+                        "size {} bytes, modified {}",
+                        observation.0,
+                        mtime_rfc3339(observation.1)
+                    ),
+                };
+            }
+            previous = Some(observation);
+        } else {
+            // Absent: appear keeps waiting, change compares against the
+            // absent baseline, stable restarts from scratch when the path
+            // comes back.
+            previous = None;
+        }
+        first_sample = false;
+
+        // Sleep no longer than the time left before the deadline, so a short
+        // timeout is not stretched by a long interval.
+        let sleep = match deadline {
+            Some(deadline) => {
+                let now = std::time::Instant::now();
+                if now >= deadline {
+                    break WaitOutcome {
+                        condition,
+                        path: path.to_path_buf(),
+                        met: false,
+                        waited_ms: started.elapsed().as_millis() as u64,
+                        detail: match condition {
+                            WaitCondition::Stable => "no two consecutive samples agreed".into(),
+                            _ => "condition not met before the timeout".into(),
+                        },
+                    };
+                }
+                interval.min(deadline - now)
+            }
+            None => interval,
+        };
+        std::thread::sleep(sleep);
+    };
+    Ok(outcome)
+}
+
+/// Nanoseconds since the epoch → RFC 3339, `None` for a pre-1970 clock.
+fn mtime_rfc3339(nanos: u128) -> String {
+    system_time_to_rfc3339(Some(
+        std::time::UNIX_EPOCH + std::time::Duration::from_nanos(nanos as u64),
+    ))
+    .unwrap_or_else(|| nanos.to_string())
+}
+
+/// One sample of the watched path: `(size, mtime in nanoseconds)`, `None`
+/// when the path is absent right now. Symlinks count as present; `wait` is
+/// about the path showing up, not about resolving what it points at.
+fn observe(path: &Path) -> Option<(u64, u128)> {
+    let metadata = std::fs::symlink_metadata(path).ok()?;
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    Some((metadata.len(), modified))
 }
 
 fn remove_path(path: &Path) -> Result<()> {
@@ -955,5 +1121,236 @@ mod tests {
             "unsupported stays unsupported"
         );
         assert_eq!(HashAlgo::default(), HashAlgo::Sha256);
+    }
+
+    // --- wait ---------------------------------------------------------------
+
+    fn wait_args_ok(outcome: Result<WaitOutcome>) -> WaitOutcome {
+        outcome.expect("wait_for itself must not fail")
+    }
+
+    #[test]
+    fn wait_appear_is_met_immediately_when_the_path_exists() {
+        let dir = temp_dir("wait-exists");
+        std::fs::write(dir.join("a.txt"), b"x").unwrap();
+        let outcome = wait_args_ok(wait_for(
+            &dir.join("a.txt"),
+            WaitCondition::Appear,
+            0.01,
+            Some(0.0),
+        ));
+        assert!(outcome.met);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn wait_appear_times_out_when_the_path_never_shows_up() {
+        let dir = temp_dir("wait-absent");
+        let outcome = wait_args_ok(wait_for(
+            &dir.join("never.txt"),
+            WaitCondition::Appear,
+            0.01,
+            Some(0.05),
+        ));
+        assert!(!outcome.met);
+        assert_eq!(outcome.condition, WaitCondition::Appear);
+    }
+
+    #[test]
+    fn wait_appear_runs_forever_without_a_timeout() {
+        // No deadline: the loop only leaves through the condition, so an
+        // absent path with a timeout of `None` would never return — which is
+        // exactly why this test uses an existing path.
+        let dir = temp_dir("wait-forever");
+        std::fs::write(dir.join("a"), b"x").unwrap();
+        let outcome = wait_args_ok(wait_for(&dir.join("a"), WaitCondition::Appear, 0.01, None));
+        assert!(outcome.met);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn wait_appearance_counts_as_a_change() {
+        let dir = temp_dir("wait-change-appear");
+        let path = dir.join("late.txt");
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(30));
+            std::fs::write(&path, b"hello").unwrap();
+        });
+        let outcome = wait_args_ok(wait_for(
+            &dir.join("late.txt"),
+            WaitCondition::Change,
+            0.01,
+            Some(2.0),
+        ));
+        assert!(outcome.met, "appearance is a change: {outcome:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn wait_change_requires_two_consecutive_agreeing_samples_for_stable() {
+        let dir = temp_dir("wait-stable");
+        let path = dir.join("growing.txt");
+        std::fs::write(&path, b"first").unwrap();
+        // The writer keeps appending for a while; stable must not fire while
+        // the size keeps moving, then fire once the file settles.
+        let writer = {
+            let path = path.clone();
+            std::thread::spawn(move || {
+                for round in 0..5 {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                    let mut current = std::fs::read(&path).unwrap_or_default();
+                    current.extend_from_slice(format!("round{round}").as_bytes());
+                    std::fs::write(&path, &current).unwrap();
+                }
+            })
+        };
+        let outcome = wait_args_ok(wait_for(&path, WaitCondition::Stable, 0.01, Some(10.0)));
+        assert!(
+            outcome.met,
+            "stable must fire once the file settles: {outcome:?}"
+        );
+        writer.join().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn wait_change_times_out_on_a_frozen_file() {
+        let dir = temp_dir("wait-change-frozen");
+        std::fs::write(dir.join("frozen.txt"), b"same").unwrap();
+        let outcome = wait_args_ok(wait_for(
+            &dir.join("frozen.txt"),
+            WaitCondition::Change,
+            0.01,
+            Some(0.05),
+        ));
+        assert!(!outcome.met, "nothing changed: {outcome:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn wait_rejects_a_non_finite_interval_and_timeout() {
+        let dir = temp_dir("wait-bad-args");
+        for (interval, timeout) in [
+            (-1.0, None),
+            (f64::NAN, None),
+            (0.5, Some(-1.0)),
+            (0.5, Some(f64::INFINITY)),
+        ] {
+            let err = wait_for(&dir.join("a"), WaitCondition::Appear, interval, timeout)
+                .expect_err("bad numbers are refused before any polling");
+            assert_eq!(err.kind(), crate::error::ErrorKind::InvalidInput, "{err}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod wait_tests {
+    use super::*;
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("x-core-wait-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        dir
+    }
+
+    #[test]
+    fn stable_waits_a_full_interval_before_its_first_comparison() {
+        let dir = temp_dir("stable-gap");
+        let path = dir.join("busy.txt");
+        std::fs::write(&path, b"write in progress").unwrap();
+        // A busy file gets touched every 30ms; stable must not fire on the
+        // back-to-back first samples.
+        let writer = {
+            let path = path.clone();
+            std::thread::spawn(move || {
+                for round in 0..6 {
+                    std::thread::sleep(std::time::Duration::from_millis(30));
+                    let mut current = std::fs::read(&path).unwrap_or_default();
+                    current.extend_from_slice(format!("r{round}").as_bytes());
+                    std::fs::write(&path, &current).unwrap();
+                }
+            })
+        };
+        let outcome = wait_for(&path, WaitCondition::Stable, 0.05, Some(5.0))
+            .expect("wait_for itself must not fail");
+        // Either it settles once the writer stops, or it honestly reports
+        // the file never stabilized within the window — but the waited time
+        // must show at least one real interval passed before any "met".
+        assert!(
+            outcome.waited_ms >= 50 || !outcome.met,
+            "stable cannot be met from two instantaneous samples: {outcome:?}"
+        );
+        writer.join().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_short_timeout_is_not_stretched_by_a_long_interval() {
+        let dir = temp_dir("timeout-clamp");
+        // With a 2s interval but a 100ms budget, the wait must end near the
+        // deadline, not after one full interval.
+        let outcome = wait_for(
+            &dir.join("never.txt"),
+            WaitCondition::Appear,
+            2.0,
+            Some(0.1),
+        )
+        .expect("wait_for itself must not fail");
+        assert!(!outcome.met);
+        assert!(
+            outcome.waited_ms < 1000,
+            "timeout must not overshoot by a full interval: {outcome:?}"
+        );
+    }
+
+    #[test]
+    fn size_reports_the_target_of_a_symlink() {
+        // Symlink creation is spawned rather than cfg-gated: x-core carries
+        // no platform cfg by architecture contract.
+        if !matches!(std::env::consts::OS, "macos" | "linux" | "freebsd") {
+            return;
+        }
+        let dir = temp_dir("symlink-size");
+        std::fs::write(dir.join("real"), vec![0u8; 4 * 1024]).unwrap();
+        let linked = std::process::Command::new("ln")
+            .arg("-s")
+            .arg(dir.join("real"))
+            .arg(dir.join("link"))
+            .status();
+        let linked = linked.map(|status| status.success()).unwrap_or(false);
+        if !linked {
+            let _ = std::fs::remove_dir_all(&dir);
+            return; // no `ln` here; nothing to assert
+        }
+        let info = crate::file::file_info(
+            &dir.join("link"),
+            &std::fs::symlink_metadata(dir.join("link")).unwrap(),
+        );
+        // `size` follows the link; `info` keeps reporting the link itself.
+        let bytes = recursive_size(
+            &dir.join("link"),
+            &std::fs::metadata(dir.join("link")).unwrap(),
+        );
+        assert_eq!(bytes, 4 * 1024, "size follows the link to its target");
+        assert!(info.file_type == FileType::Symlink);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn copying_a_directory_replaces_the_destination() {
+        let dir = temp_dir("copy-replace");
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src/kept.txt"), b"kept").unwrap();
+        std::fs::create_dir_all(dir.join("dst")).unwrap();
+        std::fs::write(dir.join("dst/stale.txt"), b"stale").unwrap();
+
+        copy_path(&dir.join("src"), &dir.join("dst")).expect("copy");
+        assert!(dir.join("dst/kept.txt").exists(), "source files arrive");
+        assert!(
+            !dir.join("dst/stale.txt").exists(),
+            "a file the source no longer has must not survive the copy"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

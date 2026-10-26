@@ -74,7 +74,10 @@ impl Default for Keys {
 
 impl Keys {
     /// Apply `key_<action> = "X"` pairs from the config; unknown actions and
-    /// malformed values are reported as warnings and skipped.
+    /// malformed values are reported as warnings and skipped. A remapped key
+    /// that collides with another action or with the fixed bindings (digits
+    /// jump pages, Tab / arrows / Enter / Esc / Ctrl+C / Ctrl+P are fixed)
+    /// is reported: the later binding would silently shadow the earlier one.
     pub fn from_config(config: &Config) -> (Self, Vec<String>) {
         let mut keys = Self::default();
         let mut warnings = Vec::new();
@@ -86,8 +89,29 @@ impl Keys {
             let mut chars = value.chars();
             match (chars.next(), chars.next()) {
                 (Some(ch), None) => {
+                    if ch.is_ascii_digit() {
+                        warnings.push(format!(
+                            "key_{} = `{ch}` is ignored: digits 1-9 jump pages and are fixed",
+                            action.name()
+                        ));
+                        continue;
+                    }
                     if let Some(slot) = keys.map.iter_mut().find(|(a, _)| *a == action) {
                         slot.1 = ch;
+                    } else {
+                        continue;
+                    }
+                    // Warn when the same character now serves two actions.
+                    if let Some(other) = keys
+                        .map
+                        .iter()
+                        .find(|(a, _)| *a != action && keys.key(*a) == ch)
+                    {
+                        warnings.push(format!(
+                            "key_{} = `{ch}` collides with key_{}; `{ch}` keeps triggering the first match",
+                            action.name(),
+                            other.0.name()
+                        ));
                     }
                 }
                 _ => warnings.push(format!(
@@ -126,7 +150,7 @@ impl Keys {
 mod tests {
     use super::*;
 
-    fn config_with(pairs: &[(&str, &str)]) -> Config {
+    pub(super) fn config_with(pairs: &[(&str, &str)]) -> Config {
         Config {
             keys: pairs
                 .iter()
@@ -164,5 +188,32 @@ mod tests {
             Keys::from_config(&config_with(&[("key_fly", "w"), ("key_quit", "quit")]));
         assert_eq!(warnings.len(), 2, "{warnings:?}");
         assert_eq!(keys.key(Action::Quit), 'q', "default stays in place");
+    }
+}
+
+#[cfg(test)]
+mod collision_tests {
+    use super::tests::config_with;
+    use super::*;
+
+    #[test]
+    fn a_digit_remap_is_warned_and_ignored() {
+        let (keys, warnings) = Keys::from_config(&config_with(&[("key_refresh", "3")]));
+        assert_eq!(keys.key(Action::Refresh), 'r', "default stays in place");
+        assert!(
+            warnings.iter().any(|w| w.contains("key_refresh")),
+            "{warnings:?}"
+        );
+    }
+
+    #[test]
+    fn a_duplicate_binding_is_reported() {
+        // Two actions bound to the same character: the collision must be
+        // visible, not silently resolved.
+        let (_keys, warnings) = Keys::from_config(&config_with(&[("key_kill", "q")]));
+        assert!(
+            warnings.iter().any(|w| w.contains("collides")),
+            "{warnings:?}"
+        );
     }
 }

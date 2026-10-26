@@ -21,7 +21,15 @@ if (-not $Version) {
     # release is marked prerelease gets a 404. List releases and take the
     # first entry: GitHub returns them newest-first, prereleases included.
     Info "resolving the latest release of $repo"
-    $rel = Invoke-RestMethod "https://api.github.com/repos/$repo/releases"
+    # Unauthenticated GitHub API calls are limited to 60 requests/hour per
+    # IP; behind a shared NAT that quota can be exhausted by other people,
+    # so say so instead of letting the raw HTTP error speak.
+    try {
+        $rel = Invoke-RestMethod "https://api.github.com/repos/$repo/releases"
+    } catch {
+        Write-Error "could not resolve the latest release: $_ (unauthenticated GitHub API requests are limited to 60 per hour per IP, which shared-NAT users can exhaust; pass -Version <tag> to skip the API call)"
+        exit 1
+    }
     $Version = $rel[0].tag_name
 }
 $asset = "x-$Version-windows-x86_64-setup.exe"

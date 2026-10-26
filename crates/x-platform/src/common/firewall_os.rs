@@ -59,6 +59,11 @@ impl FirewallManager for PlatformFirewall {
                         if tool == "ufw" {
                             return Ok(lowered.contains("status: active"));
                         }
+                        // nft/iptables have no "enabled" flag — the closest
+                        // honest signal is that the kernel holds a ruleset.
+                        // This answers "is a ruleset loaded", not "does every
+                        // packet traverse it": a ruleset of accept rules
+                        // still counts as loaded here.
                         return Ok(!lowered.trim().is_empty());
                     }
                     Err(_) => continue,

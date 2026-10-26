@@ -98,6 +98,42 @@ fn download(tag: &str, dest: &Path) -> Result<PathBuf> {
     Ok(dest.to_path_buf())
 }
 
+/// Check the downloaded archive against the release's `SHA256SUMS`.
+///
+/// Returns `Ok(false)` when the release does not publish a checksum file
+/// (older releases predate it) — reported, not fatal. A *mismatch* is fatal:
+/// the whole point of replacing the running binary is not to do it on a
+/// corrupted or tampered download.
+fn verify_checksum(tag: &str, archive: &Path) -> Result<bool> {
+    let asset = asset_for_current_platform();
+    let name = format!("x-{tag}-{asset}.tar.gz");
+    let url = format!("https://github.com/{REPO}/releases/download/{tag}/SHA256SUMS");
+    let Ok(response) = http_agent().get(&url).call() else {
+        // The checksum file is optional for old releases; the caller warns.
+        return Ok(false);
+    };
+    let sums = response
+        .into_string()
+        .map_err(|e| fail(format!("cannot read SHA256SUMS: {e}")))?;
+    let wanted = sums
+        .lines()
+        .find_map(|line| {
+            // sha256sum style: `<hex>  <filename>` — two spaces.
+            let (hex, file) = line.split_once(' ')?;
+            file.trim().eq_ignore_ascii_case(&name).then(|| hex.trim())
+        })
+        .ok_or_else(|| fail(format!("SHA256SUMS does not list {name}")))?;
+    let digest = x_core::file::hash_file(archive, x_core::file::HashAlgo::Sha256)
+        .map_err(|e| fail(format!("cannot hash the download: {e}")))?;
+    if !digest.hex.eq_ignore_ascii_case(wanted) {
+        return Err(fail(format!(
+            "checksum mismatch for {name}: expected {wanted}, got {}",
+            digest.hex
+        )));
+    }
+    Ok(true)
+}
+
 /// Extract the `x` binary from the tarball into `dest_dir` and return its path.
 fn unpack(archive: &Path, dest_dir: &Path) -> Result<PathBuf> {
     let gz = fs::File::open(archive)?;
@@ -135,14 +171,26 @@ fn replace_current_exe(new_bin: &Path) -> Result<PathBuf> {
     {
         // A running x.exe cannot be overwritten, but a renamed one keeps
         // running happily: move the old file aside, then bring the new one in.
-        let old = dir.join("x.exe.old");
+        let name = current
+            .file_name()
+            .ok_or_else(|| fail("running executable has no file name"))?
+            .to_os_string();
+        let old = dir.join(format!("{}.old", name.to_string_lossy()));
         let _ = fs::remove_file(&old);
         fs::rename(&current, &old)?;
-        fs::copy(new_bin, dir.join("x.exe"))?;
+        fs::copy(new_bin, dir.join(&name))?;
     }
     #[cfg(not(windows))]
     {
-        fs::copy(new_bin, dir.join("x"))?;
+        // The running binary may be named anything (`x`, `x-cli`, a distro
+        // package name), so replace the exact file current_exe() names — and
+        // do it with a rename, not an in-place copy: writing into a live
+        // text image fails with ETXTBSY, while a staged sibling renamed over
+        // it succeeds atomically. fs::copy carries the file mode over.
+        let staged = dir.join(format!(".x-new-{}", std::process::id()));
+        let _ = fs::remove_file(&staged);
+        fs::copy(new_bin, &staged)?;
+        fs::rename(&staged, &current)?;
     }
     Ok(dir.to_path_buf())
 }
@@ -162,6 +210,15 @@ pub fn dispatch(
     confirmer: &mut dyn Confirmer,
     args: &UpgradeArgs,
 ) -> Result<i32> {
+    // Dry-run first, before any network: the plan is a question about the
+    // future, not a reason to touch GitHub.
+    let running = env!("CARGO_PKG_VERSION").trim_start_matches('v');
+    if crate::dry_run_guard(
+        renderer,
+        &format!("check for the latest x release and upgrade from {running}"),
+    )? {
+        return Ok(0);
+    }
     let tag = newest_tag()?;
     let running = env!("CARGO_PKG_VERSION").trim_start_matches('v');
     let latest = tag.trim_start_matches('v');
@@ -179,9 +236,26 @@ pub fn dispatch(
         return Ok(commands::EXIT_DECLINED);
     }
 
-    let tmp = std::env::temp_dir().join(format!("x-upgrade-{latest}"));
+    // An unpredictable temp path: a fixed name under /tmp could be
+    // pre-planted (symlink) by another local user, and File::create would
+    // follow it. Timestamp + pid are enough: the directory did not exist a
+    // moment ago and is gone again below.
+    let unique = format!(
+        "{}-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0),
+        std::process::id()
+    );
+    let tmp = std::env::temp_dir().join(format!("x-upgrade-{latest}-{unique}"));
     fs::create_dir_all(&tmp)?;
     let archive = download(&tag, &tmp.join("x.tar.gz"))?;
+    if verify_checksum(&tag, &archive)? {
+        renderer.line("checksum ok (SHA256SUMS)")?;
+    } else {
+        renderer.line("note: this release publishes no SHA256SUMS; cannot verify the download")?;
+    }
     let new_bin = unpack(&archive, &tmp)?;
     let dir = replace_current_exe(&new_bin)?;
     let _ = fs::remove_dir_all(&tmp);

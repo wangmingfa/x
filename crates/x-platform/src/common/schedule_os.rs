@@ -279,6 +279,11 @@ fn append_crontab(line: &str) -> Result<()> {
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
+/// Remove by line number, as `x schedule list` printed it. The line number
+/// is resolved against a fresh read: if the crontab changed since the list,
+/// the remove targets whatever sits on that line now. `remove_checked` is
+/// the guard against that — pass the command column `list` showed as
+/// `--expect` and a changed line is refused instead of deleted.
 fn remove_crontab_line(name: &str) -> Result<()> {
     let output = Command::new("crontab")
         .arg("-l")

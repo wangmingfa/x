@@ -208,6 +208,7 @@ fn filter_prompt_filters_the_visible_page() {
     for event in text("8080") {
         app.on_key(event);
     }
+    app.on_tick(); // flush the debounced search scan
     app.on_key(key(KeyCode::Enter));
 
     assert_eq!(app.filter(), "8080");
@@ -227,6 +228,7 @@ fn escape_cancels_the_filter_prompt_without_applying_it() {
     for event in text("80") {
         app.on_key(event);
     }
+    app.on_tick(); // flush the debounced search scan
     app.on_key(key(KeyCode::Esc));
 
     assert!(matches!(app.modal(), Modal::None));
@@ -499,6 +501,7 @@ fn the_palette_opens_filters_and_runs_a_command() {
     for event in text("serv") {
         app.on_key(event);
     }
+    app.on_tick(); // flush the debounced search scan
     let matches = app.palette_matches();
     assert_eq!(matches.len(), 1, "{matches:?}");
     assert_eq!(matches[0].id, CommandId::Goto(View::Services));
@@ -517,6 +520,7 @@ fn the_palette_closes_cleanly_without_a_match() {
     for event in text("zzz") {
         app.on_key(event);
     }
+    app.on_tick(); // flush the debounced search scan
     app.on_key(key(KeyCode::Enter));
     assert!(matches!(app.modal(), Modal::None));
     assert_eq!(app.status(), "no matching command");
@@ -541,6 +545,7 @@ fn the_global_search_finds_processes_and_jumps_with_the_filter() {
     for event in text("node") {
         app.on_key(event);
     }
+    app.on_tick(); // flush the debounced search scan
     let families: Vec<&str> = app.search_hits().iter().map(|hit| hit.family).collect();
     assert!(families.contains(&"process"), "{families:?}");
     assert!(families.contains(&"port"), "{families:?}");
@@ -563,7 +568,8 @@ fn a_port_hit_lands_on_the_ports_page_with_the_query_kept() {
     for event in text("8080") {
         app.on_key(event);
     }
-    // Only the socket matches "8080"; the process name does not.
+    app.on_tick(); // flush the debounced search scan
+                   // Only the socket matches "8080"; the process name does not.
     assert_eq!(app.search_hits().len(), 1);
     assert_eq!(app.search_hits()[0].family, "port");
 
@@ -585,6 +591,7 @@ fn the_search_notes_families_it_cannot_read() {
     for event in text("node") {
         app.on_key(event);
     }
+    app.on_tick(); // flush the debounced search scan
     assert!(
         app.search_notes().iter().any(|note| note.contains("ports")),
         "notes: {:?}",
@@ -608,6 +615,7 @@ fn a_file_hit_selects_the_usage_row() {
     for event in text("big") {
         app.on_key(event);
     }
+    app.on_tick(); // flush the debounced search scan
     let file_hits: Vec<&SearchHit> = app
         .search_hits()
         .iter()
@@ -1008,6 +1016,7 @@ fn set_filter(app: &mut App, filter: &str) {
     for event in text(filter) {
         app.on_key(event);
     }
+    app.on_tick(); // flush the debounced search scan
     app.on_key(key(KeyCode::Enter));
 }
 
@@ -1053,4 +1062,22 @@ fn a_missing_rate_sorts_last_within_its_column() {
         index >= 1,
         "a row with an unreadable rate does not outrank a real one"
     );
+}
+
+#[test]
+fn esc_steps_back_from_a_failed_remote_fetch_instead_of_quitting() {
+    let stubs = Stubs::new();
+    let mut app = App::new(stubs.context());
+    app.goto_view(View::Remote);
+    // A fetch that failed leaves the app showing the error, not the host
+    // list; Esc must return to the host list, not exit the whole program.
+    app.remote_error = Some("connection refused".into());
+
+    app.on_key(key(KeyCode::Esc));
+    assert!(!app.should_quit(), "Esc must not quit from a remote error");
+    assert!(app.remote_error().is_none(), "the error view is dismissed");
+
+    // A second Esc, now back on the host list, does quit.
+    app.on_key(key(KeyCode::Esc));
+    assert!(app.should_quit(), "Esc on the host list quits");
 }

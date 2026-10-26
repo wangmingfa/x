@@ -104,6 +104,48 @@ pub enum FileCommand {
         #[arg(long, short = 'y')]
         yes: bool,
     },
+
+    /// Block until the path appears, changes, or settles. For scripts that
+    /// chain onto downloads and builds: exit 0 when the condition was met,
+    /// exit 3 when `--timeout` expired first.
+    Wait {
+        /// Path to watch.
+        path: String,
+
+        /// What to wait for: appear (exists), change (size/mtime moved),
+        /// stable (two samples agree).
+        #[arg(long, value_enum, default_value_t = WaitForArg::Appear)]
+        r#for: WaitForArg,
+
+        /// Seconds between samples.
+        #[arg(long, default_value_t = 0.5)]
+        interval: f64,
+
+        /// Give up after this many seconds and exit 3. Omit to wait forever.
+        #[arg(long)]
+        timeout: Option<f64>,
+    },
+}
+
+/// What `x file wait` watches for, as spelled on the command line.
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+pub enum WaitForArg {
+    /// The path exists.
+    Appear,
+    /// The path's size or mtime differs from the first sample.
+    Change,
+    /// Two consecutive samples agree on size and mtime.
+    Stable,
+}
+
+impl From<WaitForArg> for x_core::file::WaitCondition {
+    fn from(value: WaitForArg) -> Self {
+        match value {
+            WaitForArg::Appear => x_core::file::WaitCondition::Appear,
+            WaitForArg::Change => x_core::file::WaitCondition::Change,
+            WaitForArg::Stable => x_core::file::WaitCondition::Stable,
+        }
+    }
 }
 
 /// Checksum algorithm as spelled on the command line.
@@ -228,6 +270,35 @@ pub fn dispatch(
             }
             file.rename(path.as_ref(), new_name)?;
             renderer.line(format!("renamed {path} to {new_name}"))?;
+        }
+        FileCommand::Wait {
+            path,
+            r#for,
+            interval,
+            timeout,
+        } => {
+            let outcome =
+                x_core::file::wait_for(path.as_ref(), (*r#for).into(), *interval, *timeout)?;
+            let exit = if outcome.met { 0 } else { 3 };
+            if renderer.format() == OutputFormat::Json {
+                renderer.always_json(&outcome)?;
+                return Ok(exit);
+            }
+            let condition = clap::ValueEnum::to_possible_value(r#for)
+                .map(|value| value.get_name().to_owned())
+                .unwrap_or_default();
+            if outcome.met {
+                renderer.line(format!(
+                    "{path}: {condition} after {}ms ({})",
+                    outcome.waited_ms, outcome.detail
+                ))?;
+            } else {
+                renderer.line(format!(
+                    "{path}: timed out after {}ms waiting for {condition} ({})",
+                    outcome.waited_ms, outcome.detail
+                ))?;
+            }
+            return Ok(exit);
         }
     }
     Ok(0)

@@ -7,9 +7,13 @@
 # ever point at a tree you looked at and approved yourself.
 #
 # Usage:
-#   scripts/release-tag.sh     # interactive menu (release kind, then version bump)
-#   scripts/release-tag.sh v0.1.2          # explicit version, no menu
+#   scripts/release-tag.sh                  # interactive menu (release kind, then version bump)
+#   scripts/release-tag.sh v0.1.2           # explicit version, no menu
 #   scripts/release-tag.sh --yes v0.1.2-rc.1  # skip the final confirmation
+# Options (may appear in any position):
+#   -y, --yes        skip the final confirmation prompt
+#   -p, --preflight  run the preflight checks (fmt/clippy/test) before tagging
+#   -h, --help       print this header
 set -euo pipefail
 
 # --- colors (disabled when stdout is not a terminal) -----------------------------
@@ -106,12 +110,24 @@ delete_github_release() {
     printf 'no GitHub release found for %s (or delete failed); continuing\n' "$tag"
 }
 
+# Flags may appear in any position (`release-tag.sh v0.1.2 -p` must work the
+# same as `release-tag.sh -p v0.1.2`); the tag is the only non-flag argument.
 assume_yes=0
+do_preflight=0
 tag=""
 for arg in "$@"; do
     case "$arg" in
         -y|--yes) assume_yes=1 ;;
-        *) tag="$arg" ;;
+        -p|--preflight) do_preflight=1 ;;
+        -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
+        -*) err "unknown option: $arg"; sed -n '2,16p' "$0" >&2; exit 1 ;;
+        *)
+            if [ -n "$tag" ]; then
+                err "more than one tag given: $tag and $arg"
+                exit 1
+            fi
+            tag="$arg"
+            ;;
     esac
 done
 
@@ -322,12 +338,8 @@ fi
 ok "CHANGELOG.md is up to date for $tag"
 
 step "Preflight checks"
-# Full check takes a while; Enter skips it, -p/--preflight (or P at the prompt)
+# Full check takes a while; Enter skips it, -p/--preflight (in any position)
 # runs it. CI runs the same checks on every push, so skipping is safe-ish.
-do_preflight=0
-if [ "${1:-}" = "-p" ] || [ "${1:-}" = "--preflight" ]; then
-    do_preflight=1
-fi
 if [ "$interactive" = 1 ] && [ "$do_preflight" = 0 ]; then
     prompt "Run preflight checks (fmt/clippy/test, slow)? [y/N]: "
     read -r answer

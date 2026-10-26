@@ -460,6 +460,16 @@ pub fn watch(
     when: Option<WatchWhenArg>,
     exec: Option<&str>,
 ) -> Result<i32> {
+    // `--exec` changes the machine, so its plan must be shown before the
+    // polling even starts — dry-run is the earliest contract item.
+    if let Some(command) = exec {
+        if crate::dry_run_guard(
+            renderer,
+            &format!("run `{command}` when the {domain} watch fires"),
+        )? {
+            return Ok(0);
+        }
+    }
     let offset = context
         .system
         .info()
@@ -629,7 +639,19 @@ fn kill(
         return Ok(0);
     }
     if !assume_yes {
-        let question = format!("kill {} process(es)?", plan.target_pids().len());
+        // The question names the targets: a JSON caller sees no plan table
+        // before this point, so the prompt itself must carry enough to make
+        // an informed yes.
+        let targets = plan
+            .target_pids()
+            .iter()
+            .map(|pid| pid.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let question = format!(
+            "kill {} process(es) (pid {targets})?",
+            plan.target_pids().len()
+        );
         if !confirm_or_fail(confirmer, &question)? {
             if json {
                 renderer.always_json(&KillReport {
@@ -642,6 +664,26 @@ fn kill(
             }
             return Ok(super::EXIT_DECLINED);
         }
+    }
+
+    // The confirmation window is unbounded and the process table does not
+    // pause for it. Re-resolve the plan and refuse to act on a stale
+    // snapshot: a pid that was recycled in the window is exactly the case
+    // where "same numbers" and "same processes" come apart.
+    let recheck = context.port.plan(&query, PortSort::Port)?;
+    if recheck.target_pids() != plan.target_pids() {
+        if json {
+            renderer.always_json(&KillReport {
+                plan: &plan,
+                killed: None,
+                aborted: true,
+            })?;
+        } else {
+            renderer.line(
+                "targets changed since the plan was shown; no one was killed — re-run to see the new plan",
+            )?;
+        }
+        return Ok(8);
     }
 
     let killed = context.port.kill_plan(&plan, signal)?;

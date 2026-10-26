@@ -231,6 +231,16 @@ pub fn watch(
     when: Option<super::port::WatchWhenArg>,
     exec: Option<&str>,
 ) -> Result<i32> {
+    // Same dry-run contract as `x port watch --exec`: the plan comes first,
+    // before any polling or spawning.
+    if let Some(command) = exec {
+        if crate::dry_run_guard(
+            renderer,
+            &format!("run `{command}` when the process watch fires"),
+        )? {
+            return Ok(0);
+        }
+    }
     let offset = context
         .system
         .info()
@@ -554,7 +564,13 @@ fn kill(
     }
 
     if !assume_yes {
-        let question = format!("kill {} process(es)?", victims.len());
+        // Name the targets in the prompt: a JSON caller sees no plan table
+        // before this point, so the question itself must carry them.
+        let names: Vec<String> = victims
+            .iter()
+            .map(|victim| format!("{} ({})", victim.pid, victim.name))
+            .collect();
+        let question = format!("kill {} process(es): {}?", victims.len(), names.join(", "));
         if !super::port::confirm_or_fail(confirmer, &question)? {
             if json {
                 renderer.always_json(&KillReport {
@@ -568,6 +584,36 @@ fn kill(
             }
             return Ok(super::EXIT_DECLINED);
         }
+    }
+
+    // The confirmation window is unbounded and the process table does not
+    // pause for it: re-check that every pid still names the same process,
+    // so a recycled pid is not silently killed as a different program.
+    let drifted: Vec<String> = victims
+        .iter()
+        .filter(|victim| {
+            context
+                .process
+                .get(victim.pid)
+                .is_ok_and(|current| current.name != victim.name)
+        })
+        .map(|victim| format!("pid {} is no longer {}", victim.pid, victim.name))
+        .collect();
+    if !drifted.is_empty() {
+        if json {
+            renderer.always_json(&KillReport {
+                victims: &victims,
+                killed: 0,
+                failures: &[],
+                aborted: true,
+            })?;
+        } else {
+            renderer.line(format!(
+                "targets changed since the plan was shown; no one was killed: {}",
+                drifted.join("; ")
+            ))?;
+        }
+        return Ok(8);
     }
 
     let failures = context.process.kill_many(&pids, signal)?;

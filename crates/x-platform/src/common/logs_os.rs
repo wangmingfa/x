@@ -59,6 +59,19 @@ fn checked_script_name(raw: &str) -> Result<String> {
     Ok(name.replace('\'', "''"))
 }
 
+/// A selector that lands inside a quoted NSPredicate string must not carry
+/// the characters that would close or escape that string.
+#[cfg(target_os = "macos")]
+fn checked_predicate_name(raw: &str) -> Result<String> {
+    let name = checked_name(raw)?;
+    if name.contains(['"', '\'', '\\']) {
+        return Err(Error::invalid_input(format!(
+            "`{name}` cannot be used as a log predicate value"
+        )));
+    }
+    Ok(name)
+}
+
 // ---------------------------------------------------------------------------
 // Linux: journalctl
 // ---------------------------------------------------------------------------
@@ -164,7 +177,7 @@ fn log_show_args(scope: &LogScope) -> Result<Vec<String>> {
     match scope {
         LogScope::System => {}
         LogScope::Service(name) | LogScope::Process(name) => {
-            let name = checked_name(name)?;
+            let name = checked_predicate_name(name)?;
             let predicate = if name.bytes().all(|b| b.is_ascii_digit()) {
                 format!("processid == {name}")
             } else {

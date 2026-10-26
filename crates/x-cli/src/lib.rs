@@ -104,7 +104,7 @@ pub enum Command {
     #[command(subcommand)]
     Service(commands::service::ServiceCommand),
 
-    /// Files: inspect, open, reveal, trash, copy, move, rename.
+    /// Files: inspect, open, reveal, trash, copy, move, rename, wait.
     #[command(subcommand)]
     File(commands::file::FileCommand),
 

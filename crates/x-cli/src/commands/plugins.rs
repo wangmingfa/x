@@ -26,6 +26,9 @@ pub enum PluginsCommand {
         /// Name to install as (invoked as `x <name>`); defaults to the file stem.
         #[arg(long)]
         name: Option<String>,
+        /// Do not ask for confirmation.
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
 
     /// Remove an installed plugin.
@@ -72,23 +75,34 @@ pub fn dispatch(
             }
             renderer.table(&table)?;
         }
-        PluginsCommand::Install { source, name } => {
+        PluginsCommand::Install { source, name, yes } => {
             let from = std::path::PathBuf::from(source);
+            let derived_name = from
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .map(|s| s.trim_start_matches("x-").to_string())
+                .filter(|s| !s.is_empty());
+            let name = match name {
+                Some(name) => name.clone(),
+                None => derived_name
+                    .ok_or_else(|| Error::invalid_input("cannot derive a name; pass --name"))?,
+            };
+            // Installing a binary that immediately becomes invocable as
+            // `x <name>` changes the machine: dry-run first, then confirm —
+            // JSON never skips the question.
+            let action = format!("install plugin {name} from {}", from.display());
+            if crate::dry_run_guard(renderer, &action)? {
+                return Ok(0);
+            }
             if !from.is_file() {
                 return Err(Error::not_found(format!(
                     "{}: no such file",
                     from.display()
                 )));
             }
-            let name = match name {
-                Some(name) => name.clone(),
-                None => from
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .map(|s| s.trim_start_matches("x-").to_string())
-                    .filter(|s| !s.is_empty())
-                    .ok_or_else(|| Error::invalid_input("cannot derive a name; pass --name"))?,
-            };
+            if !super::confirm(renderer, confirmer, *yes, &action)? {
+                return Ok(super::EXIT_DECLINED);
+            }
             let installed = x_core::plugins::install(&from, &name)
                 .map_err(|e| Error::system(format!("cannot install {name}: {e}")))?;
             renderer.line(format!(
@@ -97,11 +111,12 @@ pub fn dispatch(
             ))?;
         }
         PluginsCommand::Remove { name, yes } => {
-            if !(*yes || renderer.format() == OutputFormat::Json) {
-                renderer.line(format!("about to remove plugin {name}"))?;
-                if !confirmer.confirm("continue?")? {
-                    return Err(Error::invalid_input("aborted by user"));
-                }
+            let action = format!("remove plugin {name}");
+            if crate::dry_run_guard(renderer, &action)? {
+                return Ok(0);
+            }
+            if !super::confirm(renderer, confirmer, *yes, &action)? {
+                return Ok(super::EXIT_DECLINED);
             }
             x_core::plugins::remove(name)
                 .map_err(|e| Error::not_found(format!("cannot remove {name}: {e}")))?;

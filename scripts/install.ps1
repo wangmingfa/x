@@ -17,7 +17,6 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $Repo    = 'https://github.com/wangmingfa/x'
-$Version = '0.1.0'
 $SrcDir  = "$env:TEMP\x-src"
 
 function Info($msg) { Write-Host "==> $msg" }
@@ -29,7 +28,15 @@ if ($FromRelease) {
         # newest release is marked prerelease gets a 404. List releases and
         # take the first entry: GitHub returns them newest-first.
         Info "resolving the latest release of $repo"
-        $rel = Invoke-RestMethod "https://api.github.com/repos/$repo/releases"
+        # Unauthenticated GitHub API calls are limited to 60 requests/hour
+        # per IP; behind a shared NAT that quota can be exhausted by other
+        # people, so say so instead of letting the raw HTTP error speak.
+        try {
+            $rel = Invoke-RestMethod "https://api.github.com/repos/$repo/releases"
+        } catch {
+            Write-Error "could not resolve the latest release: $_ (unauthenticated GitHub API requests are limited to 60 per hour per IP, which shared-NAT users can exhaust; pass -Version <tag> to skip the API call)"
+            exit 1
+        }
         $Version = $rel[0].tag_name
     }
     $asset = "x-$Version-windows-x86_64-setup.exe"
@@ -72,6 +79,10 @@ if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
     exit 1
 }
 
+# Only an unspecified -Version falls back to `main` (set below). A version
+# that cannot be checked out is an error, not a silent build of whatever the
+# cached clone happened to have checked out.
+if (-not $Version) { $Version = 'main' }
 Info "cloning/updating $Repo @ $Version"
 if (Test-Path "$SrcDir\.git") {
     git -C $SrcDir fetch --tags --quiet
@@ -79,7 +90,10 @@ if (Test-Path "$SrcDir\.git") {
     git clone --quiet $Repo $SrcDir
 }
 git -C $SrcDir checkout --quiet $Version 2>$null
-if ($LASTEXITCODE -ne 0) { git -C $SrcDir checkout --quiet main }
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "git ref '$Version' not found in $Repo (tag, branch or sha?)"
+    exit 1
+}
 
 Info "building release binary (this can take a few minutes)"
 Push-Location $SrcDir

@@ -405,6 +405,9 @@ pub struct App {
     /// Global search cache, recomputed when the query changes.
     search_hits: Vec<SearchHit>,
     search_notes: Vec<String>,
+    /// The search query changed but the (expensive) family scans have not
+    /// run yet — they run on the next idle tick, not per keystroke.
+    search_dirty: bool,
 
     last_refresh: std::time::Instant,
     cpu: f32,
@@ -477,6 +480,7 @@ impl App {
             scan: None,
             search_hits: Vec::new(),
             search_notes: Vec::new(),
+            search_dirty: false,
             last_refresh: std::time::Instant::now(),
             cpu: 0.0,
             visible_rows: DEFAULT_VISIBLE_ROWS,
@@ -1060,6 +1064,19 @@ impl App {
     /// Called when the refresh interval elapsed.
     pub fn on_tick(&mut self) {
         self.collect_net_top();
+        // A paused search runs its family scans here rather than on every
+        // keystroke: each scan lists processes, sockets, services and
+        // interfaces, which on a loaded host takes long enough to freeze
+        // the key loop.
+        if self.search_dirty {
+            if let Modal::Search { input, .. } = &self.modal {
+                let query = input.clone();
+                self.run_search(&query);
+                self.search_dirty = false;
+            } else {
+                self.search_dirty = false;
+            }
+        }
         if self.collect_scan() {
             // A scan finishing while the search overlay is open refreshes its
             // file family instead of leaving a stale empty group.
@@ -1114,9 +1131,13 @@ impl App {
             }
         }
         match key.code {
-            // On the remote page, Esc steps back from a snapshot to the host
-            // list before it quits.
-            KeyCode::Esc if self.view == View::Remote && self.remote_host.is_some() => {
+            // On the remote page, Esc steps back from a snapshot (or a failed
+            // fetch — `row_count` groups both under "result view") to the
+            // host list before it quits.
+            KeyCode::Esc
+                if self.view == View::Remote
+                    && (self.remote_host.is_some() || self.remote_error.is_some()) =>
+            {
                 self.remote_host = None;
                 self.remote_rows.clear();
                 self.remote_error = None;
@@ -1175,8 +1196,13 @@ impl App {
     }
 
     fn on_key_prompt(&mut self, key: KeyEvent, label: &'static str, mut input: String) {
-        // Enter commits, Escape abandons, everything else keeps editing: the
-        // dialog is re-armed explicitly, never left to whatever was in place.
+        // Enter commits, Escape (and Ctrl+C) abandon, everything else keeps
+        // editing: the dialog is re-armed explicitly, never left to whatever
+        // was in place.
+        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.modal = Modal::None;
+            return;
+        }
         match key.code {
             KeyCode::Enter => {
                 self.filter = input;
@@ -1208,6 +1234,11 @@ impl App {
     }
 
     fn on_key_palette(&mut self, key: KeyEvent, mut input: String, mut selected: usize) {
+        // Ctrl+C closes the dialog rather than typing a `c` into it.
+        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.modal = Modal::None;
+            return;
+        }
         match key.code {
             KeyCode::Esc => self.modal = Modal::None,
             KeyCode::Enter => {
@@ -1245,6 +1276,13 @@ impl App {
     }
 
     fn on_key_search(&mut self, key: KeyEvent, mut input: String, mut selected: usize) {
+        // Ctrl+C closes the dialog rather than typing a `c` into it.
+        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.modal = Modal::None;
+            self.search_hits.clear();
+            self.search_notes.clear();
+            return;
+        }
         match key.code {
             KeyCode::Esc => {
                 self.modal = Modal::None;
@@ -1252,6 +1290,13 @@ impl App {
                 self.search_notes.clear();
             }
             KeyCode::Enter => {
+                // The hits may lag the typed query (scans are debounced to
+                // the idle tick); before jumping, make them current.
+                if self.search_dirty {
+                    self.run_search(&input);
+                    self.search_dirty = false;
+                    selected = selected.min(self.search_hits.len().saturating_sub(1));
+                }
                 let hit = self.search_hits.get(selected).cloned();
                 self.modal = Modal::None;
                 match hit {
@@ -1279,13 +1324,13 @@ impl App {
             }
             KeyCode::Backspace => {
                 input.pop();
-                self.run_search(&input);
+                self.search_dirty = true;
                 selected = selected.min(self.search_hits.len().saturating_sub(1));
                 self.modal = Modal::Search { input, selected };
             }
             KeyCode::Char(c) => {
                 input.push(c);
-                self.run_search(&input);
+                self.search_dirty = true;
                 selected = selected.min(self.search_hits.len().saturating_sub(1));
                 self.modal = Modal::Search { input, selected };
             }

@@ -143,18 +143,29 @@ mod device {
     }
 
     /// BPF hands back a stream of [bh(header) | frame] records.
-    fn split_bpf_frames(data: &[u8]) -> Vec<Vec<u8>> {
+    ///
+    /// The frame length is `bh_caplen` (offset 8: the captured bytes), not
+    /// `bh_datalen` (offset 12: the on-wire length, which exceeds the
+    /// capture on truncation and would make the splitter eat padding or the
+    /// next record's header). Records are laid out word-aligned — xnu
+    /// advances by `BPF_WORDALIGN(hdrlen + caplen)` — so the stride rounds
+    /// up to a multiple of 4; without it a non-aligned record desynchronizes
+    /// the rest of the batch.
+    pub(crate) fn split_bpf_frames(data: &[u8]) -> Vec<Vec<u8>> {
+        const BPF_HDR_LEN: usize = 18; // timeval32 + caplen + datalen + hdrlen
         let mut frames = Vec::new();
         let mut offset = 0;
-        while offset + 18 <= data.len() {
+        while offset + BPF_HDR_LEN <= data.len() {
             let caplen =
-                u32::from_le_bytes(data[offset + 12..offset + 16].try_into().unwrap()) as usize;
-            offset += 18;
-            if offset + caplen > data.len() {
+                u32::from_le_bytes(data[offset + 8..offset + 12].try_into().unwrap()) as usize;
+            let start = offset + BPF_HDR_LEN;
+            if start + caplen > data.len() {
                 break;
             }
-            frames.push(data[offset..offset + caplen].to_vec());
-            offset += caplen;
+            frames.push(data[start..start + caplen].to_vec());
+            // BPF_WORDALIGN: round the record length up to 4 bytes.
+            offset = start + caplen;
+            offset = (offset + 3) & !3;
         }
         frames
     }
@@ -347,5 +358,41 @@ mod tests {
         }
         let err = UnixCaptureSampler::open(None).unwrap_err();
         assert_eq!(err.kind(), ErrorKind::PermissionDenied);
+    }
+
+    /// One BPF record: 18-byte header (`bh_caplen` at offset 8) plus the
+    /// captured bytes, word-aligned to the next record.
+    fn bpf_record(caplen: usize, payload_byte: u8) -> Vec<u8> {
+        let mut record = vec![0u8; 18];
+        record[8..12].copy_from_slice(&(caplen as u32).to_le_bytes());
+        record.extend(std::iter::repeat_n(payload_byte, caplen));
+        // BPF_WORDALIGN the record length.
+        while record.len() % 4 != 0 {
+            record.push(0);
+        }
+        record
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn bpf_frames_split_by_caplen_with_word_alignment() {
+        use super::device::split_bpf_frames;
+        // A truncated capture (datalen > caplen) followed by an intact
+        // record: the second record must still be read, at its aligned
+        // offset.
+        let first = bpf_record(10, 0xAA); // payload + 2 bytes padding
+        let second = bpf_record(4, 0xBB);
+        let mut data = first.clone();
+        data.extend(second.clone());
+
+        let frames = split_bpf_frames(&data);
+        assert_eq!(frames.len(), 2, "{frames:?}");
+        assert_eq!(frames[0], vec![0xAA; 10]);
+        assert_eq!(frames[1], vec![0xBB; 4]);
+
+        // A record that runs past the buffer is dropped whole, not sliced.
+        let tail = bpf_record(8, 0xCC);
+        let truncated = &tail[..tail.len() - 4];
+        assert!(split_bpf_frames(truncated).is_empty());
     }
 }

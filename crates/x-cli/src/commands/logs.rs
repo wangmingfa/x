@@ -48,6 +48,13 @@ pub struct LogsQuery {
     /// comparison is case insensitive, the spelling is not translated.
     #[arg(long)]
     pub level: Option<String>,
+
+    /// Show this many records around each `--grep` / `--level` hit
+    /// (both directions, clamped to the fetched window). Only widens what is
+    /// displayed; a follow still detects arrivals by the same whole-record
+    /// identity as before.
+    #[arg(long)]
+    pub context: Option<usize>,
 }
 
 /// `x logs` subcommands.
@@ -110,18 +117,18 @@ pub fn dispatch(
     }
 
     let page = reader.read(&scope, query.limit.unwrap_or(DEFAULT_LIMIT))?;
-    let entries = filter(page.entries, query);
+    let selected = select(page.entries, query);
 
     if renderer.format() == OutputFormat::Json {
         renderer.always_json(&LogPage {
             scope: page.scope,
             source: page.source,
-            entries,
+            entries: selected.into_iter().map(|(entry, _)| entry).collect(),
         })?;
         return Ok(0);
     }
 
-    if entries.is_empty() {
+    if selected.is_empty() {
         renderer.line(format!(
             "no records for {} from {}",
             page.scope, page.source
@@ -129,14 +136,25 @@ pub fn dispatch(
         return Ok(0);
     }
 
-    let mut table = Table::new(["timestamp", "level", "origin", "message"]);
-    for entry in &entries {
-        table.push(row![
+    // The match column appears only when `--context` was asked for: without
+    // it every shown record is a hit and the column would be noise.
+    let with_context = query.context.is_some();
+    let mut table = if with_context {
+        Table::new(["timestamp", "level", "origin", "message", "match"])
+    } else {
+        Table::new(["timestamp", "level", "origin", "message"])
+    };
+    for (entry, hit) in &selected {
+        let mut cells = row![
             entry.timestamp.clone().unwrap_or_else(|| "-".into()),
             entry.level.clone().unwrap_or_else(|| "-".into()),
             entry.origin.clone().unwrap_or_else(|| "-".into()),
             flatten(&entry.message),
-        ]);
+        ];
+        if with_context {
+            cells.push(crate::format::Cell::from(if *hit { "*" } else { "-" }));
+        }
+        table.push(cells);
     }
     renderer.table(&table)?;
     Ok(0)
@@ -181,10 +199,19 @@ fn follow(
     let mut polls = 0usize;
     loop {
         let page = reader.read(&scope, window)?;
-        let entries = filter(page.entries, query);
+        // Context widens only the first round's display; later rounds print
+        // arrivals as they come, the way the dedup contract promises.
+        let selected = if first_round && query.context.is_some() {
+            select(page.entries, query)
+        } else {
+            filter(page.entries, query)
+                .into_iter()
+                .map(|entry| (entry, true))
+                .collect()
+        };
 
         let mut fresh = Vec::new();
-        for (index, entry) in entries.iter().enumerate() {
+        for (entry, _hit) in selected.iter() {
             let known = seen.contains(&identity(entry));
             // Every row read is baselined, including the ones not printed, so
             // the deeper backlog is never re-emitted on a later round.
@@ -193,7 +220,7 @@ fn follow(
                 // Newest first: everything from here on was already printed.
                 break;
             }
-            if first_round && index >= display {
+            if first_round && fresh.len() >= display {
                 // The user asked for `display` rows, not the whole store.
                 continue;
             }
@@ -253,41 +280,91 @@ fn log_line(entry: &LogEntry) -> String {
     parts.join(" ")
 }
 
-/// Apply `--grep` and `--level` to a batch of records.
-fn filter(entries: Vec<LogEntry>, query: &LogsQuery) -> Vec<LogEntry> {
-    let levels: Option<Vec<String>> = query.level.as_ref().map(|raw| {
+/// Apply `--grep` and `--level` to a batch of records, keeping hit positions
+/// so `--context` can widen around them.
+///
+/// Without `--context` every kept record is a hit. With `--context n` each
+/// hit keeps its `n` neighbours on both sides (clamped to the fetched
+/// window), in the window's own order, so a reader sees what happened around
+/// the match without the rows being reordered or rewritten.
+fn select(entries: Vec<LogEntry>, query: &LogsQuery) -> Vec<(LogEntry, bool)> {
+    let hits: Vec<usize> = entries
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| matches_query(entry, query, &levels_for(query)))
+        .map(|(index, _)| index)
+        .collect();
+
+    let Some(context) = query.context.filter(|context| *context > 0) else {
+        let hit_set: std::collections::HashSet<usize> = hits.into_iter().collect();
+        return entries
+            .into_iter()
+            .enumerate()
+            .filter(|(index, _)| hit_set.contains(index))
+            .map(|(_, entry)| (entry, true))
+            .collect();
+    };
+
+    let mut keep = vec![false; entries.len()];
+    for &hit in &hits {
+        let start = hit.saturating_sub(context);
+        let end = (hit + context).min(entries.len().saturating_sub(1));
+        for slot in keep.iter_mut().take(end + 1).skip(start) {
+            *slot = true;
+        }
+    }
+    let hit_set: std::collections::HashSet<usize> = hits.into_iter().collect();
+    entries
+        .into_iter()
+        .zip(keep)
+        .enumerate()
+        .filter_map(|(index, (entry, kept))| kept.then_some((entry, hit_set.contains(&index))))
+        .collect()
+}
+
+/// The `--level` list lower-cased for comparison.
+fn levels_for(query: &LogsQuery) -> Option<Vec<String>> {
+    query.level.as_ref().map(|raw| {
         raw.split(',')
             .map(|level| level.trim().to_ascii_lowercase())
             .filter(|level| !level.is_empty())
             .collect()
-    });
+    })
+}
+
+/// Whether one record passes `--grep` and `--level` (both must pass — AND).
+fn matches_query(entry: &LogEntry, query: &LogsQuery, levels: &Option<Vec<String>>) -> bool {
+    if let Some(wanted) = levels {
+        let matches = entry
+            .level
+            .as_deref()
+            .is_some_and(|level| wanted.contains(&level.to_ascii_lowercase()));
+        if !matches {
+            return false;
+        }
+    }
+    match &query.grep {
+        None => true,
+        Some(needle) => {
+            let needle = needle.to_ascii_lowercase();
+            let haystack = format!(
+                "{} {} {}",
+                entry.message,
+                entry.origin.as_deref().unwrap_or_default(),
+                entry.level.as_deref().unwrap_or_default()
+            )
+            .to_ascii_lowercase();
+            haystack.contains(&needle)
+        }
+    }
+}
+
+/// Apply `--grep` and `--level` to a batch of records.
+fn filter(entries: Vec<LogEntry>, query: &LogsQuery) -> Vec<LogEntry> {
+    let levels = levels_for(query);
     entries
         .into_iter()
-        .filter(|entry| {
-            if let Some(wanted) = &levels {
-                let matches = entry
-                    .level
-                    .as_deref()
-                    .is_some_and(|level| wanted.contains(&level.to_ascii_lowercase()));
-                if !matches {
-                    return false;
-                }
-            }
-            match &query.grep {
-                None => true,
-                Some(needle) => {
-                    let needle = needle.to_ascii_lowercase();
-                    let haystack = format!(
-                        "{} {} {}",
-                        entry.message,
-                        entry.origin.as_deref().unwrap_or_default(),
-                        entry.level.as_deref().unwrap_or_default()
-                    )
-                    .to_ascii_lowercase();
-                    haystack.contains(&needle)
-                }
-            }
-        })
+        .filter(|entry| matches_query(entry, query, &levels))
         .collect()
 }
 
@@ -615,5 +692,112 @@ mod tests {
             line,
             "2026-10-02 10:00:00 +08:00 错误 [System] boom happened"
         );
+    }
+
+    // --- --context ----------------------------------------------------------
+
+    fn rows(messages: &[&str]) -> Vec<LogEntry> {
+        messages
+            .iter()
+            .map(|message| entry("info", "cron", message))
+            .collect()
+    }
+
+    #[test]
+    fn select_without_context_flags_every_kept_record_as_a_hit() {
+        let entries = rows(&["alpha", "beta boom", "gamma"]);
+        let query = query_with(Some("boom"), None);
+        let selected = select(entries, &query);
+        let (kept, all_hits): (Vec<_>, Vec<_>) = selected
+            .into_iter()
+            .map(|(entry, hit)| (entry.message, hit))
+            .unzip();
+        assert_eq!(kept, vec!["beta boom".to_string()]);
+        assert!(all_hits.iter().all(|&hit| hit));
+    }
+
+    #[test]
+    fn context_widens_hits_with_neighbours_in_window_order() {
+        let entries = rows(&["one", "two", "three boom", "four", "five"]);
+        let mut query = query_with(Some("boom"), None);
+        query.context = Some(1);
+        let selected = select(entries, &query);
+        let kept: Vec<&str> = selected
+            .iter()
+            .map(|(entry, _)| entry.message.as_str())
+            .collect();
+        // Window order is preserved, hits and neighbours interleaved.
+        assert_eq!(kept, vec!["two", "three boom", "four"]);
+        let hits: Vec<bool> = selected.iter().map(|(_, hit)| *hit).collect();
+        assert_eq!(hits, vec![false, true, false], "only the match is a hit");
+    }
+
+    #[test]
+    fn context_clamps_at_the_window_edges() {
+        let entries = rows(&["first boom", "two", "three"]);
+        let mut query = query_with(Some("boom"), None);
+        query.context = Some(5);
+        // The neighbourhood runs off the top of the window; it is clamped,
+        // not padded with rows that were never fetched.
+        let selected = select(entries, &query);
+        assert_eq!(selected.len(), 3);
+        assert!(selected[0].1);
+    }
+
+    #[test]
+    fn overlapping_context_neighbourhoods_do_not_duplicate_rows() {
+        let entries = rows(&["one boom", "two", "three boom", "four"]);
+        let mut query = query_with(Some("boom"), None);
+        query.context = Some(1);
+        let selected = select(entries, &query);
+        let kept: Vec<&str> = selected
+            .iter()
+            .map(|(entry, _)| entry.message.as_str())
+            .collect();
+        assert_eq!(kept, vec!["one boom", "two", "three boom", "four"]);
+        assert_eq!(
+            selected.iter().filter(|(_, hit)| *hit).count(),
+            2,
+            "two hits, not two copies"
+        );
+    }
+
+    #[test]
+    fn context_without_a_filter_is_a_no_op() {
+        // Every record already matches the empty filter, so there is nothing
+        // to widen around.
+        let entries = rows(&["one", "two"]);
+        let mut query = query();
+        query.context = Some(3);
+        let selected = select(entries, &query);
+        assert_eq!(selected.len(), 2);
+        assert!(selected.iter().all(|(_, hit)| *hit));
+    }
+
+    #[test]
+    fn follow_prints_context_rows_on_the_first_round_only() {
+        let stub = StubLogs::new(
+            "stub",
+            vec![
+                entry("info", "cron", "newer"),
+                entry("err", "cron", "middle boom"),
+                entry("info", "cron", "older"),
+            ],
+        );
+        let buffer = Buffer::default();
+        let mut renderer = Renderer::to_sink(OutputFormat::Plain, false, buffer.clone());
+        let mut q = query_with(Some("boom"), None);
+        q.context = Some(1);
+        // Enough rounds for a second pass over the same store.
+        q.count = Some(3);
+        q.interval = 0.05;
+
+        follow(&stub, &mut renderer, LogScope::System, &q).expect("follow");
+        let printed = buffer.text();
+        // First round: the hit plus both neighbours, oldest first, printed
+        // once. Later rounds print nothing new and never repeat them.
+        assert_eq!(printed.matches("older").count(), 1, "{printed}");
+        assert_eq!(printed.matches("middle boom").count(), 1, "{printed}");
+        assert_eq!(printed.matches("newer").count(), 1, "{printed}");
     }
 }

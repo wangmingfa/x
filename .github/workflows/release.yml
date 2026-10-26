@@ -179,7 +179,10 @@ jobs:
           "num=$num" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: Install Inno Setup
-        run: choco install innosetup --yes
+        # Pinned: an unpinned Inno upgrade would make today's installer and
+        # next month's differ for the same tag. --allow-downgrade keeps the
+        # pin working when the runner's choco cache carries a newer version.
+        run: choco install innosetup --yes --version=6.5.1 --allow-downgrade
 
       - name: Compile installer
         shell: pwsh
@@ -231,17 +234,40 @@ jobs:
         run: |
           # The notes are generated, and they spell out the asset names. If a
           # build renames or drops one, publishing notes that promise a file
-          # nobody can download is worse than a failed job. The pattern is
-          # anchored on the tag so a commit subject that mentions some `x-...`
-          # in backticks cannot be mistaken for an asset.
-          pattern='`x-'"${GITHUB_REF_NAME}"'-[^`]+`'
-          expected=$(grep -oE "$pattern" release-notes.md | tr -d '`' | sort -u) || true
-          actual=$(find artifacts -maxdepth 1 -type f -printf '%f\n' | sort)
-          if [ "$expected" != "$actual" ]; then
-              printf 'the release notes promise:\n%s\n\nthis build produced:\n%s\n' "$expected" "$actual" >&2
+          # nobody can download is worse than a failed job.
+          #
+          # But the notes also carry commit subjects, and a subject may
+          # mention some backticked `x-...` name in prose that is not an
+          # asset (e.g. `x-v0.1.2-windows-x86_64`, no archive suffix). So a
+          # name only counts as a promise when it is anchored on the tag and
+          # carries a real asset file suffix (.tar.gz / .exe); everything
+          # else is prose and is ignored.
+          pattern='`x-'"${GITHUB_REF_NAME}"'-[^`]*\.(tar\.gz|exe)`'
+          promised=$(grep -oE "$pattern" release-notes.md | tr -d '`' | sort -u) || true
+          built=$(find artifacts -maxdepth 1 -type f -printf '%f\n' | sort)
+          # promised-but-not-built: the notes advertise a file nobody can
+          # download. built-but-not-promised: the release ships a file the
+          # notes never mention. Both are worth failing the job for.
+          unkept=$(comm -23 <(printf '%s\n' "$promised") <(printf '%s\n' "$built"))
+          unmentioned=$(comm -13 <(printf '%s\n' "$promised") <(printf '%s\n' "$built"))
+          if [ -n "$unkept" ] || [ -n "$unmentioned" ]; then
+              printf 'the release notes promise:\n%s\n\nthis build produced:\n%s\n' "$promised" "$built" >&2
+              [ -z "$unkept" ] || printf '\npromised in the notes but not built:\n%s\n' "$unkept" >&2
+              [ -z "$unmentioned" ] || printf '\nbuilt but not named in the notes:\n%s\n' "$unmentioned" >&2
               exit 1
           fi
-          printf 'assets named in the notes:\n%s\n' "$expected"
+          printf 'assets named in the notes:\n%s\n' "$promised"
+
+      - name: Generate SHA256SUMS
+        run: |
+          # One `<sha256hex>  <filename>` line per asset, in the exact shape
+          # `sha256sum -c SHA256SUMS` expects, so a downloaded release can be
+          # verified without trusting the transport. Generated after the
+          # notes check so that check compares only the real assets.
+          cd artifacts
+          find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%P\0' \
+              | sort -z | xargs -0 sha256sum > SHA256SUMS
+          cat SHA256SUMS
 
       - name: Create release
         uses: softprops/action-gh-release@v2

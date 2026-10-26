@@ -159,6 +159,21 @@ impl Table {
 
     fn render_table(&self, out: &mut impl Write, color: bool) -> io::Result<()> {
         let widths = self.widths();
+        // Padding counts display columns, not chars: a CJK cell occupies two
+        // columns and `{:<width$}` cannot see that. ANSI escape sequences
+        // count as zero columns, which is what keeps the colored first
+        // header aligned with the column it names.
+        let visible_width = |cell: &str| -> usize {
+            let mut total = 0usize;
+            let mut rest = cell;
+            while let Some(index) = rest.find('\x1b') {
+                total += rest[..index].width();
+                let after = &rest[index + 1..];
+                let end = after.find('m').map(|i| i + 1).unwrap_or(after.len());
+                rest = &after[end..];
+            }
+            total + rest.width()
+        };
         let write_row = |out: &mut dyn Write, cells: &[String]| -> io::Result<()> {
             let last = cells.len().saturating_sub(1);
             for (index, cell) in cells.iter().enumerate() {
@@ -171,7 +186,8 @@ impl Table {
                     Some(width) if index != last => width,
                     _ => 0,
                 };
-                write!(out, "{cell:<width$}")?;
+                let pad = width.saturating_sub(visible_width(cell));
+                write!(out, "{cell}{}", " ".repeat(pad))?;
             }
             writeln!(out)
         };
@@ -195,7 +211,7 @@ impl Table {
         for row in &self.rows {
             let line = row
                 .iter()
-                .map(|cell| cell.replace(['\t', '\n'], " "))
+                .map(|cell| cell.replace(['\t', '\n', '\r'], " "))
                 .collect::<Vec<_>>()
                 .join("\t");
             writeln!(out, "{line}")?;
@@ -205,15 +221,23 @@ impl Table {
 }
 
 /// Render one CSV record: quote fields that contain separators, quotes or
-/// newlines, double the quotes inside, join with commas.
+/// newlines, double the quotes inside, join with commas. A field that could
+/// be read as a formula by a spreadsheet (`= + - @` first) gets a leading
+/// apostrophe so opening the file never executes anything; carriage returns
+/// are escaped because RFC 4180 lines end in CRLF and a raw CR would be
+/// indistinguishable from a record break.
 fn csv_line(fields: &[String]) -> String {
     fields
         .iter()
         .map(|field| {
-            if field.contains(',') || field.contains('"') || field.contains('\n') {
-                format!("\"{}\"", field.replace('"', "\"\""))
+            let mut safe = field.replace('\r', "\\r");
+            if safe.starts_with(['=', '+', '-', '@']) {
+                safe.insert(0, '\'');
+            }
+            if safe.contains(',') || safe.contains('"') || safe.contains('\n') {
+                format!("\"{}\"", safe.replace('"', "\"\""))
             } else {
-                field.clone()
+                safe
             }
         })
         .collect::<Vec<_>>()
@@ -510,5 +534,35 @@ mod tests {
         let mut renderer = Renderer::to_sink(OutputFormat::Json, false, buffer.clone());
         renderer.line("port 8080 is free").expect("write");
         assert_eq!(buffer.text(), "port 8080 is free\n");
+    }
+}
+
+#[cfg(test)]
+mod csv_injection_tests {
+    use super::*;
+
+    #[test]
+    fn csv_neutralizes_formula_prefixed_fields() {
+        // A cell that starts like a formula would execute when opened in a
+        // spreadsheet; the leading apostrophe defuses it. Quoting still
+        // applies on top when the field has separators or quotes.
+        assert_eq!(
+            csv_line(&["=WEBSERVER(\"a\")".into()]),
+            "\"'=WEBSERVER(\"\"a\"\")\""
+        );
+        assert_eq!(csv_line(&["+1".into()]), "'+1");
+        assert_eq!(csv_line(&["@cmd".into()]), "'@cmd");
+        // The standard neutralization set is `= + - @`.
+        assert_eq!(csv_line(&["-2".into()]), "'-2");
+        // Ordinary cells are untouched.
+        assert_eq!(csv_line(&["node".into(), "8080".into()]), "node,8080");
+    }
+
+    #[test]
+    fn csv_escapes_carriage_returns() {
+        // RFC 4180 lines end in CRLF, so a raw CR inside a cell would be
+        // indistinguishable from a record break.
+        assert_eq!(csv_line(&["a\rb".into()]), "a\\rb");
+        assert_eq!(csv_line(&["a,b\rc".into()]), "\"a,b\\rc\"");
     }
 }

@@ -18,6 +18,19 @@ use std::process::Command;
 use x_core::error::{Error, Result};
 use x_core::startup::{StartupItem, StartupManager, StartupSource};
 
+/// A startup item name must be a bare name: it is joined into plist /
+/// .desktop / registry paths, so separators or `..` would address a file
+/// outside the store (and let `disable` rename or rewrite an arbitrary
+/// path).
+fn require_plain_name(name: &str) -> Result<()> {
+    if name.is_empty() || name.contains(['/', '\\', ':']) || name.contains("..") {
+        return Err(Error::invalid_input(format!(
+            "'{name}' is not a valid startup item name; expected a bare name without separators"
+        )));
+    }
+    Ok(())
+}
+
 /// The platform startup adapter.
 pub struct PlatformStartup;
 
@@ -56,6 +69,7 @@ impl StartupManager for PlatformStartup {
     }
 
     fn enable(&self, name: &str) -> Result<()> {
+        require_plain_name(name)?;
         #[cfg(windows)]
         {
             // Registry Run cannot be "re-enabled" after deletion without the
@@ -109,6 +123,7 @@ impl StartupManager for PlatformStartup {
     }
 
     fn disable(&self, name: &str) -> Result<()> {
+        require_plain_name(name)?;
         #[cfg(windows)]
         {
             // HKCU first, then HKLM (HKLM needs admin; the error carries it).
@@ -283,12 +298,22 @@ fn registry_run_items() -> Result<Vec<StartupItem>> {
             if !trimmed.starts_with("REG_SZ") && !trimmed.contains("REG_SZ") {
                 continue;
             }
-            let mut fields = trimmed.splitn(4, ' ');
-            let name = fields.next().unwrap_or_default().trim().to_string();
-            let command = fields
-                .last()
-                .map(|c| c.trim().to_string())
-                .filter(|c| !c.is_empty());
+            // `reg query` separates the name, the type and the value with
+            // runs of spaces, so plain `splitn(' ')` yields empty fields and
+            // the command column ended up empty on every line. Split on
+            // whitespace and split the tokens around the type instead — this
+            // also keeps value names that contain spaces intact.
+            let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+            let (name, command) = match tokens
+                .iter()
+                .position(|token| token.eq_ignore_ascii_case("REG_SZ"))
+            {
+                Some(index) => (
+                    tokens[..index].join(" "),
+                    Some(tokens[index + 1..].join(" ")),
+                ),
+                None => continue,
+            };
             if name.is_empty() {
                 continue;
             }
@@ -410,4 +435,29 @@ fn run(program: &str, args: &[&str]) -> Result<()> {
             &stderr
         }
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn traversal_names_are_rejected_before_any_path_is_built() {
+        for evil in [
+            "../Library/com.apple.something",
+            "..\\evil",
+            "..",
+            "a/../b",
+            "",
+            "/etc/launchd",
+            "C:\\evil",
+        ] {
+            let err = require_plain_name(evil).expect_err("must be refused");
+            assert_eq!(err.kind(), x_core::error::ErrorKind::InvalidInput, "{evil}");
+        }
+        // Ordinary names, including ones with dots inside, stay valid.
+        for fine in ["com.example.agent", "my-app", "sshd"] {
+            require_plain_name(fine).expect("fine name");
+        }
+    }
 }

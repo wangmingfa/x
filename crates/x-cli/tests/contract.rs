@@ -259,6 +259,65 @@ fn dry_run_changes_nothing_even_when_confirmed() {
     );
 }
 
+/// `watch --exec` spawns a process when it fires, so it must be gated by
+/// `--dry-run` before any polling starts — the plan is the whole answer.
+#[test]
+fn watch_exec_honours_dry_run() {
+    let stubs = Stubs::new()
+        .with_ports(vec![stub_socket(8080, 42, "node")])
+        .with_processes(vec![stub_process(42, Some(1), "node")]);
+
+    let port = x(
+        &stubs,
+        &[
+            "port",
+            "watch",
+            "--count",
+            "1",
+            "--exec",
+            "touch /tmp/x-dry-run-must-not-exist",
+            "--dry-run",
+        ],
+        true,
+    );
+    assert_eq!(port.code, 0, "{}", port.stdout);
+    assert!(port.stdout.contains("dry-run"), "{}", port.stdout);
+    assert!(
+        !std::path::Path::new("/tmp/x-dry-run-must-not-exist").exists(),
+        "dry-run must not spawn the trigger command"
+    );
+
+    let ps = x(
+        &stubs,
+        &[
+            "ps",
+            "watch",
+            "--count",
+            "1",
+            "--exec",
+            "touch /tmp/x-dry-run-must-not-exist",
+            "--dry-run",
+        ],
+        true,
+    );
+    assert_eq!(ps.code, 0, "{}", ps.stdout);
+    assert!(ps.stdout.contains("dry-run"), "{}", ps.stdout);
+    assert!(
+        !std::path::Path::new("/tmp/x-dry-run-must-not-exist").exists(),
+        "dry-run must not spawn the trigger command"
+    );
+}
+
+/// `x upgrade` replaces the running binary: dry-run must answer with the
+/// plan alone, without contacting GitHub.
+#[test]
+fn upgrade_honours_dry_run() {
+    let out = x(&Stubs::new(), &["upgrade", "--dry-run"], true);
+    assert_eq!(out.code, 0, "{}", out.stdout);
+    assert!(out.stdout.contains("dry-run"), "{}", out.stdout);
+    assert_eq!(out.asked, 0, "dry-run never asks");
+}
+
 #[test]
 fn decline_changes_nothing_even_in_json() {
     let stubs = Stubs::new()
@@ -287,4 +346,41 @@ fn dry_run_matches_the_stub_context_without_a_host() {
     assert_eq!(out.code, 0);
     assert_eq!(out.asked, 0);
     assert!(out.stdout.contains("dry-run"), "{}", out.stdout);
+}
+
+/// `x plugins` mutates the plugin directory, so it is under the same
+/// contract as every other destructive command: dry-run first, JSON never
+/// skips the question, a refusal is 130.
+#[test]
+fn plugins_honour_the_destructive_contract() {
+    let stubs = Stubs::new();
+
+    let dry = x(&stubs, &["plugins", "remove", "ghost", "--dry-run"], true);
+    assert_eq!(dry.code, 0, "{}", dry.stdout);
+    assert!(dry.stdout.contains("dry-run"), "{}", dry.stdout);
+    assert_eq!(dry.asked, 0, "dry-run never asks");
+
+    let json_declined = x(&stubs, &["--json", "plugins", "remove", "ghost"], false);
+    assert_eq!(
+        json_declined.code, 130,
+        "JSON is a format, not a permission"
+    );
+    assert!(
+        json_declined.stdout.contains("\"aborted\""),
+        "{}",
+        json_declined.stdout
+    );
+
+    let install_dry = x(
+        &stubs,
+        &["plugins", "install", "/nonexistent/plugin", "--dry-run"],
+        true,
+    );
+    assert_eq!(install_dry.code, 0, "{}", install_dry.stdout);
+    assert!(
+        install_dry.stdout.contains("dry-run"),
+        "{}",
+        install_dry.stdout
+    );
+    assert_eq!(install_dry.asked, 0);
 }

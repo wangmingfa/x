@@ -1265,6 +1265,7 @@ impl Stubs {
             .network(Arc::clone(&self.network) as Arc<dyn NetworkManager>)
             .service(Arc::clone(&self.service) as Arc<dyn ServiceManager>)
             .disk(Arc::clone(&self.disk) as Arc<dyn DiskManager>)
+            .file(std::sync::Arc::new(NoopFile))
             .firewall(Arc::clone(&self.firewall) as Arc<dyn crate::firewall::FirewallManager>)
             .logs(Arc::clone(&self.logs) as Arc<dyn crate::logs::LogReader>)
             .device(Arc::clone(&self.device) as Arc<dyn crate::device::DeviceManager>)

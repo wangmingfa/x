@@ -274,7 +274,7 @@ fn ports(frame: &mut Frame, app: &mut App, area: Rect) {
                     .map(|addr| addr.to_string())
                     .unwrap_or_else(|| row.endpoint()),
             ])
-            .style(selected_row(start + index, app.selected()))
+            .style(selected_row(index, app.selected()))
         })
         .collect();
 
@@ -304,7 +304,7 @@ fn processes(frame: &mut Frame, app: &mut App, area: Rect) {
         .enumerate()
         .skip(start)
         .take(inner_height.max(1))
-        .map(|(index, (depth, row))| process_row(start + index, depth, app.selected(), row))
+        .map(|(index, (depth, row))| process_row(index, depth, app.selected(), row))
         .collect();
 
     let mode = if app.tree_mode() { " | tree" } else { "" };
@@ -469,7 +469,7 @@ fn network(frame: &mut Frame, app: &mut App, area: Rect) {
                 row.pid.map(|p| p.to_string()).unwrap_or_default(),
                 row.process_name.clone().unwrap_or_default(),
             ])
-            .style(selected_row(start + index, app.selected()))
+            .style(selected_row(index, app.selected()))
         })
         .collect();
     frame.render_widget(
@@ -511,7 +511,7 @@ fn services(frame: &mut Frame, app: &mut App, area: Rect) {
                     None => "-".to_string(),
                 },
             ])
-            .style(selected_row(start + index, app.selected()))
+            .style(selected_row(index, app.selected()))
         })
         .collect();
     frame.render_widget(
@@ -634,7 +634,7 @@ fn disks(frame: &mut Frame, app: &mut App, area: Rect) {
                 row.files.to_string(),
                 row.dirs.to_string(),
             ])
-            .style(selected_row(start + index, app.selected()))
+            .style(selected_row(index, app.selected()))
         })
         .collect();
     let title = if app.usage_scanning() {
@@ -783,7 +783,7 @@ fn net_top(frame: &mut Frame, app: &mut App, area: Rect) {
                 row.conns.to_string(),
                 row.source.clone(),
             ])
-            .style(selected_row(start + index, app.selected()))
+            .style(selected_row(index, app.selected()))
         })
         .collect();
 
@@ -936,14 +936,48 @@ fn dialog(frame: &mut Frame, app: &App, area: Rect) {
         }
         Modal::Search { input, selected } => {
             let hits = app.search_hits();
-            let visible = popup.height.saturating_sub(4) as usize;
-            let start = selected.saturating_sub(visible.saturating_sub(1));
+            // The popup fits this many list lines after the input line and
+            // the borders; family headers count against it too, so the
+            // selected hit is never pushed out of view by the headers above.
+            let budget = popup.height.saturating_sub(3) as usize;
+            // Walk the window start back until the block ending at the
+            // selected hit (headers included) fits the budget.
+            let end = (*selected).min(hits.len().saturating_sub(1));
+            let mut start = end;
+            while !hits.is_empty() {
+                let mut needed = 0usize;
+                let mut family = "";
+                for hit in &hits[start..=end] {
+                    if hit.family != family {
+                        family = hit.family;
+                        needed += 1;
+                    }
+                    needed += 1;
+                }
+                if needed <= budget || start == 0 {
+                    break;
+                }
+                start -= 1;
+            }
             let mut lines: Vec<Line> = vec![Line::styled(
                 format!("> {input}_"),
                 crate::theme::current().accent(false),
             )];
             let mut family = "";
-            for (index, hit) in hits.iter().enumerate().skip(start).take(visible) {
+            for (index, hit) in hits.iter().enumerate().skip(start) {
+                if lines.len() >= budget {
+                    break;
+                }
+                if hit.family != family {
+                    family = hit.family;
+                    lines.push(Line::styled(
+                        format!(" {family}"),
+                        crate::theme::current().warning(),
+                    ));
+                    if lines.len() >= budget {
+                        break;
+                    }
+                }
                 if hit.family != family {
                     family = hit.family;
                     lines.push(Line::styled(

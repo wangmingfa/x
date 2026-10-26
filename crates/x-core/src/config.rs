@@ -79,7 +79,16 @@ pub fn load(path: &std::path::Path) -> (Config, Vec<String>) {
             continue;
         };
         let key = key.trim();
-        let value = value.trim().trim_matches('"');
+        // Unquote exactly one pair: `trim_matches` would eat every quote in
+        // `"""json"""` and accept malformed TOML as if it were fine.
+        let value = {
+            let raw = value.trim();
+            if raw.len() >= 2 && raw.starts_with('"') && raw.ends_with('"') {
+                &raw[1..raw.len() - 1]
+            } else {
+                raw
+            }
+        };
         match key {
             "default_format" => match value {
                 "table" | "plain" | "json" | "jsonl" | "csv" => {

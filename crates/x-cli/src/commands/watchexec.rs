@@ -22,6 +22,15 @@ pub fn run_triggered(
     when: Option<WatchWhenArg>,
     summary: &str,
 ) -> Result<i32> {
+    // `--exec` changes the machine, so `--dry-run` must stop it before any
+    // process is spawned — the guard runs here, at the single funnel every
+    // watch domain passes through.
+    if crate::dry_run_guard(
+        renderer,
+        &format!("run `{command}` when the {domain} watch fires ({summary})"),
+    )? {
+        return Ok(0);
+    }
     let condition = when.map_or("any".to_string(), |w| w.label().to_string());
     renderer.line(format!(
         "trigger: {domain} watch ({condition}) fired: {summary}"

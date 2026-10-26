@@ -36,6 +36,11 @@ pub enum ScheduleCommand {
     Remove {
         /// Task name as shown by `list`.
         name: String,
+        /// Refuse to remove if the entry no longer matches this command
+        /// (the command column `list` showed) — closes the gap between
+        /// listing and removing.
+        #[arg(long)]
+        expect: Option<String>,
         /// Do not ask for confirmation.
         #[arg(long, short = 'y')]
         yes: bool,
@@ -102,7 +107,7 @@ pub fn dispatch(
             schedule.add(name, spec, job)?;
             renderer.line(format!("scheduled {name}"))?;
         }
-        ScheduleCommand::Remove { name, yes } => {
+        ScheduleCommand::Remove { name, yes, expect } => {
             if crate::dry_run_guard(renderer, &format!("remove scheduled task {name}"))? {
                 return Ok(0);
             }
@@ -114,7 +119,10 @@ pub fn dispatch(
             )? {
                 return Ok(super::EXIT_DECLINED);
             }
-            schedule.remove(name)?;
+            match expect {
+                Some(expected) => schedule.remove_checked(name, expected)?,
+                None => schedule.remove(name)?,
+            }
             renderer.line(format!("removed {name}"))?;
         }
     }

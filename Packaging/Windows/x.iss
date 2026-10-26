@@ -64,6 +64,56 @@ Name: "path";        Description: "Add {#MyAppName} to your PATH"; GroupDescript
 { no value, so the two would be a silent second route through the same registry  }
 { value. The install is per-user (LocalAppData, no admin), so we must target      }
 { HKCU rather than HKLM.                                                         }
+
+const
+  HWND_BROADCAST = $FFFF;
+  WM_SETTINGCHANGE = $001A;
+  SMTO_ABORTIFHUNG = $0002;
+
+{ Widely-used recipe for calling the Unicode user32 API from [Code]: the }
+{ PChar parameter arrives as a pointer to the wide characters of         }
+{ 'Environment', which is exactly the LPARAM the message wants.          }
+function SendMessageTimeoutW(hWnd: LongWord; Msg: LongWord; wParam: LongWord;
+  lParam: PChar; fuFlags: LongWord; uTimeout: LongWord;
+  var lpdwResult: LongWord): LongWord;
+  external 'SendMessageTimeoutW@user32.dll stdcall';
+
+{ Broadcast WM_SETTINGCHANGE ("Environment" changed) so Explorer and newly }
+{ started processes reload the PATH without a re-login. }
+procedure BroadcastEnvironmentChange;
+var
+  DummyResult: LongWord;
+begin
+  SendMessageTimeoutW(HWND_BROADCAST, WM_SETTINGCHANGE, 0, 'Environment',
+    SMTO_ABORTIFHUNG, 5000, DummyResult);
+end;
+
+{ True when Entry is already one of Path's `;`-separated entries. A plain }
+{ Pos() substring test is not enough: an existing `C:\Users\a\x-tools`    }
+{ would suppress adding `C:\Users\a\x`. Entries are compared whole,       }
+{ trimmed, and case-insensitively (Windows path matching ignores case).   }
+function PathHasEntry(Path: string; Entry: string): Boolean;
+var
+  Rest: string;
+  Item: string;
+  Semi: Integer;
+begin
+  Result := False;
+  Entry := Trim(Entry);
+  Rest := Path + ';';
+  while Pos(';', Rest) > 0 do
+  begin
+    Semi := Pos(';', Rest);
+    Item := Trim(Copy(Rest, 1, Semi - 1));
+    if (Item <> '') and (Lowercase(Item) = Lowercase(Entry)) then
+    begin
+      Result := True;
+      exit;
+    end;
+    Delete(Rest, 1, Semi);
+  end;
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   OrigPath: string;
@@ -76,12 +126,13 @@ begin
     begin
       AppDir := ExpandConstant('{app}');
       NewPath := OrigPath;
-      if Pos(AppDir, NewPath) = 0 then
+      if not PathHasEntry(NewPath, AppDir) then
       begin
         if (Length(NewPath) > 0) and (Copy(NewPath, Length(NewPath), 1) <> ';') then
           NewPath := NewPath + ';';
         NewPath := NewPath + AppDir;
         RegWriteStringValue(HKCU, 'Environment', 'Path', NewPath);
+        BroadcastEnvironmentChange;
       end;
     end;
   end;
