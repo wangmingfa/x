@@ -186,6 +186,7 @@ fn each_page_draws_its_own_body() {
         .with_disks(vec![disk_row("C:\\", 90.0)]);
     let mut app = App::new(stubs.context());
     app.set_usage_fixture(PathBuf::from("r"), sample_usage());
+    flush_disks(&mut app);
 
     press(&mut app, KeyCode::Char('2'));
     let screen = render(&mut app, 100, 30);
@@ -238,6 +239,7 @@ fn the_dashboard_draws_the_live_cards() {
         ])
         .with_disks(vec![disk_row("C:\\", 90.0)]);
     let mut app = App::new(stubs.context());
+    flush_disks(&mut app);
 
     let screen = render(&mut app, 100, 30);
     assert!(screen.contains("12.5%"), "cpu gauge:\n{screen}");
@@ -520,4 +522,18 @@ fn the_highlighted_row_is_the_selected_row_after_scrolling() {
         app.scroll(),
         data_rows[0]
     );
+}
+
+/// Wait for the background disk listing to land; the pages that need it
+/// harvest it through ticks, the same way a real session does.
+fn flush_disks(app: &mut App) {
+    for _ in 0..400 {
+        if app.disks_pending() {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            app.on_tick();
+        } else {
+            break;
+        }
+    }
+    app.on_tick();
 }

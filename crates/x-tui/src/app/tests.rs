@@ -458,7 +458,8 @@ fn the_dashboard_summarizes_cpu_memory_disks_and_sockets() {
             established_socket(51000, 443),
         ]);
 
-    let app = App::new(stubs.context());
+    let mut app = App::new(stubs.context());
+    flush_disks(&mut app);
 
     assert_eq!(app.view(), View::Dashboard);
     assert_eq!(app.cpu(), 12.5);
@@ -1080,4 +1081,31 @@ fn esc_steps_back_from_a_failed_remote_fetch_instead_of_quitting() {
     // A second Esc, now back on the host list, does quit.
     app.on_key(key(KeyCode::Esc));
     assert!(app.should_quit(), "Esc on the host list quits");
+}
+
+/// Wait for the background disk listing to land, the way a real session
+/// does: the list runs on a helper thread and is harvested by ticks.
+fn flush_disks(app: &mut App) {
+    for _ in 0..400 {
+        if app.disks_pending() {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            app.on_tick();
+        } else {
+            break;
+        }
+    }
+    app.on_tick();
+}
+
+#[test]
+fn the_disk_listing_never_blocks_the_switch() {
+    let stubs = Stubs::new().with_disks(vec![disk_row("/data", 40.0)]);
+    let mut app = App::new(stubs.context());
+    // The first visit must not block: the listing runs on a helper thread
+    // and the switch is instant. Give the thread a moment, then a tick.
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    app.on_tick();
+    assert!(!app.disks_pending() || !app.disks().is_empty());
+    flush_disks(&mut app);
+    assert_eq!(app.disks().len(), 1, "the listing landed");
 }

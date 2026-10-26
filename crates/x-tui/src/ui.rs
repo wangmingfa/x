@@ -614,6 +614,15 @@ fn disks(frame: &mut Frame, app: &mut App, area: Rect) {
         panes[0],
     );
 
+    // The list arrives from a helper thread; an empty table with an
+    // in-flight slot means "on its way", not "no disks".
+    if app.disks().is_empty() && app.disks_pending() {
+        frame.render_widget(
+            Paragraph::new("listing filesystems…").style(crate::theme::current().dim()),
+            panes[0],
+        );
+    }
+
     let inner_height = inner_rows(app, panes[1]);
     let start = app.scroll();
     let rows: Vec<Row> = app

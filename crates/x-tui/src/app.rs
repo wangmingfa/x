@@ -8,6 +8,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use x_core::disk::{DirUsage, DiskInfo};
+
+/// One in-flight disk enumeration: rows on success, an error message on
+/// failure. The mailbox pattern is the same one net top and the usage
+/// scan use.
+type DiskFetch = Arc<Mutex<Option<std::result::Result<Vec<DiskInfo>, String>>>>;
+
 use x_core::error::Result;
 use x_core::net_top::{diff, NetSnapshot, NetTopReport, NetTopSampler};
 use x_core::network::{AddressInfo, DnsConfig, InterfaceInfo, RouteInfo};
@@ -401,6 +407,11 @@ pub struct App {
     collapsed: BTreeSet<PathBuf>,
     /// Mailbox of the in-flight scan; `None` once collected.
     scan: Option<Arc<Mutex<Option<Vec<DirUsage>>>>>,
+    /// In-flight disk listing: enumerating volumes takes better than a
+    /// second on macOS, which froze the UI thread on every visit to the
+    /// Dashboard or Disks page. The list now runs on a helper thread and
+    /// lands through the same mailbox pattern as the usage scan.
+    disks_slot: Option<DiskFetch>,
 
     /// Global search cache, recomputed when the query changes.
     search_hits: Vec<SearchHit>,
@@ -478,6 +489,7 @@ impl App {
             usage: Vec::new(),
             collapsed: BTreeSet::new(),
             scan: None,
+            disks_slot: None,
             search_hits: Vec::new(),
             search_notes: Vec::new(),
             search_dirty: false,
@@ -735,10 +747,10 @@ impl App {
             Ok(usage) => self.memory = Some(usage),
             Err(error) => errors.push(error.message().to_string()),
         }
-        match self.context.disk.list() {
-            Ok(rows) => self.disks = rows,
-            Err(error) => errors.push(error.message().to_string()),
-        }
+        // The disk list comes from a helper thread: enumerating volumes
+        // blocks for well over a second on some machines, and the page
+        // must not freeze on it.
+        self.spawn_disk_refresh();
         match self.context.port.list(&PortListOptions::default()) {
             Ok(rows) => self.port_summary = Some(PortSummary::from_rows(&rows)),
             Err(error) => errors.push(error.message().to_string()),
@@ -810,9 +822,60 @@ impl App {
     }
 
     fn refresh_disks(&mut self) -> Result<()> {
-        self.disks = self.context.disk.list()?;
+        // Same reason as the dashboard: the volume list is slow, and it
+        // must never block the draw loop on the way in.
+        self.spawn_disk_refresh();
         self.start_scan();
         Ok(())
+    }
+
+    /// Kick off one disk enumeration on a helper thread, if none is in
+    /// flight. The result lands through [`Self::collect_disks`] on the
+    /// next tick; until then the page keeps showing the previous rows
+    /// (or a hint, when there are none yet).
+    fn spawn_disk_refresh(&mut self) {
+        if self.disks_slot.is_some() {
+            return;
+        }
+        let context = self.context.clone();
+        let slot: DiskFetch = Arc::new(Mutex::new(None));
+        self.disks_slot = Some(slot.clone());
+        std::thread::spawn(move || {
+            let outcome = context
+                .disk
+                .list()
+                .map_err(|error| error.message().to_string());
+            // A dropped mailbox only means the result is never shown; the
+            // enumerating thread itself cannot fail.
+            if let Ok(mut guard) = slot.lock() {
+                *guard = Some(outcome);
+            }
+        });
+    }
+
+    /// `true` while a disk enumeration is in flight, so the pages can say
+    /// so instead of showing an empty table.
+    pub fn disks_pending(&self) -> bool {
+        self.disks_slot.is_some()
+    }
+
+    /// Pick up a finished disk enumeration. Returns `true` when new rows
+    /// arrived.
+    fn collect_disks(&mut self) -> bool {
+        let outcome = self
+            .disks_slot
+            .as_ref()
+            .and_then(|slot| slot.lock().ok())
+            .and_then(|mut guard| guard.take());
+        let Some(outcome) = outcome else {
+            return false;
+        };
+        self.disks_slot = None;
+        match outcome {
+            Ok(rows) => self.disks = rows,
+            Err(message) => self.status = message,
+        }
+        true
     }
 
     /// Collect a finished remote fetch, if any. The fetch itself runs on a
@@ -1064,6 +1127,7 @@ impl App {
     /// Called when the refresh interval elapsed.
     pub fn on_tick(&mut self) {
         self.collect_net_top();
+        self.collect_disks();
         // A paused search runs its family scans here rather than on every
         // keystroke: each scan lists processes, sockets, services and
         // interfaces, which on a loaded host takes long enough to freeze
