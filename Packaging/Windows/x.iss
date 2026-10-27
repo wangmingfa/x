@@ -71,11 +71,11 @@ const
   WM_SETTINGCHANGE = $001A;
   SMTO_ABORTIFHUNG = $0002;
 
-{ Widely-used recipe for calling the Unicode user32 API from [Code]: the }
-{ PChar parameter arrives as a pointer to the wide characters of         }
-{ 'Environment', which is exactly the LPARAM the message wants.          }
+{ Inno's Pascal Script has no PChar: for external DLL calls it marshals a }
+{ String parameter to a null-terminated wide buffer, which is exactly the }
+{ LPARAM WM_SETTINGCHANGE wants for the 'Environment' string.            }
 function SendMessageTimeoutW(hWnd: LongWord; Msg: LongWord; wParam: LongWord;
-  lParam: PChar; fuFlags: LongWord; uTimeout: LongWord;
+  lParam: String; fuFlags: LongWord; uTimeout: LongWord;
   var lpdwResult: LongWord): LongWord;
   external 'SendMessageTimeoutW@user32.dll stdcall';
 
