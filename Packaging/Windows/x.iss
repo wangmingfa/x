@@ -66,7 +66,8 @@ Name: "path";        Description: "Add {#MyAppName} to your PATH"; GroupDescript
 { HKCU rather than HKLM.                                                         }
 
 const
-  HWND_BROADCAST = $FFFF;
+  { HWND_BROADCAST is a built-in in Inno Setup 6 — redeclaring it is a }
+  { compile error. }
   WM_SETTINGCHANGE = $001A;
   SMTO_ABORTIFHUNG = $0002;
 
