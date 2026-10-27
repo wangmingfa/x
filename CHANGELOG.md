@@ -8,6 +8,7 @@ produce is a claim nobody can trace back to a commit.
 
 ### Fixes
 
+- **packaging:** use String, not PChar, in the x.iss external declaration Inno's Pascal Script has no PChar type; external DLL String parameters are marshalled to a null-terminated wide buffer, which is what SendMessageTimeoutW wants for the 'Environment' LPARAM. (3e2373d)
 - **packaging:** drop HWND_BROADCAST from x.iss — Inno 6 predefines it The compiler aborts on the duplicate identifier; WM_SETTINGCHANGE and SMTO_ABORTIFHUNG stay declared because Inno does not predefine those. (ab5ceda)
 - **release:** pin Inno Setup to a version that exists on the choco feed 6.5.1 was never published to the community feed (the 6.x line there is 6.7.1 / 6.7.0 / 6.6.1 / …), so the release job died at the install step. Pin 6.7.1, verified against the feed's download endpoint. (4bd85ce)
 
@@ -278,5 +279,6 @@ Subjects with no recognised `type:` prefix, kept verbatim.
 
 ### Fixes
 
+- **packaging:** drop HWND_BROADCAST from x.iss — Inno 6 predefines it The compiler aborts on the duplicate identifier; WM_SETTINGCHANGE and SMTO_ABORTIFHUNG stay declared because Inno does not predefine those. (ab5ceda)
 - **release:** pin Inno Setup to a version that exists on the choco feed 6.5.1 was never published to the community feed (the 6.x line there is 6.7.1 / 6.7.0 / 6.6.1 / …), so the release job died at the install step. Pin 6.7.1, verified against the feed's download endpoint. (4bd85ce)
 
