@@ -90,9 +90,16 @@ fn table<'a>(headers: &[(&'a str, usize)], title: &str) -> Table<'a> {
         .column_spacing(1)
 }
 
-/// Rows the table body fits, and the window the keyboard should scroll within.
+/// Rows of data a table fits inside `area`, and the window the keyboard
+/// should scroll within.
+///
+/// A table drawn by [`table`] spends two lines on the block borders and one
+/// more on the header, so the data window is `height - 3`. Reporting one row
+/// too many (`height - 2`) lets the selection sit on the last row of the
+/// window while that row is drawn clipped by the bottom border — the
+/// highlight disappears exactly when the user scrolls to it.
 fn inner_rows(app: &mut App, area: Rect) -> usize {
-    let rows = area.height.saturating_sub(2) as usize;
+    let rows = area.height.saturating_sub(3) as usize;
     app.note_viewport(rows);
     rows.max(1)
 }
@@ -664,7 +671,8 @@ fn disks(frame: &mut Frame, app: &mut App, area: Rect) {
 
 fn scrollbar(frame: &mut Frame, app: &App, area: Rect) {
     let total = app.rows();
-    if total <= area.height.saturating_sub(2) as usize {
+    // Same data window the table really fits: borders plus header.
+    if total <= area.height.saturating_sub(3) as usize {
         return;
     }
     let mut state = ScrollbarState::new(total).position(app.selected());

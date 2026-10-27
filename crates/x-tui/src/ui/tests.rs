@@ -524,6 +524,69 @@ fn the_highlighted_row_is_the_selected_row_after_scrolling() {
     );
 }
 
+/// The window the keyboard scrolls within must match what the table really
+/// fits. It spends two lines on borders and one on the header, so a viewport
+/// one row too tall leaves the selection on a row the bottom border clips —
+/// scrolling to the end makes the highlight vanish.
+#[test]
+fn the_last_data_row_stays_visible_when_the_selection_reaches_the_end() {
+    let ports: Vec<PortInfo> = (0..40)
+        .map(|index| stub_socket(10_000 + index as u16, 42, &format!("proc{index}")))
+        .collect();
+    let stubs = Stubs::new().with_ports(ports);
+    let mut app = App::new(stubs.context());
+    press(&mut app, KeyCode::Char('2')); // Ports page
+
+    // Draw first so the real viewport is reported, then walk to the end.
+    let _ = render(&mut app, 100, 20);
+    for _ in 0..39 {
+        press(&mut app, KeyCode::Down);
+    }
+    assert_eq!(app.selected(), 39);
+    let _ = render(&mut app, 100, 20);
+
+    let header_bg = crate::theme::current().header().bg;
+    let mut terminal = Terminal::new(TestBackend::new(100, 20)).expect("test backend");
+    terminal
+        .draw(|frame| draw(frame, &mut app))
+        .expect("draw frame");
+    let buffer = terminal.backend().buffer();
+    let mut highlighted: Vec<String> = Vec::new();
+    for y in 0..buffer.area.height {
+        let mut line = String::new();
+        let mut is_selected = false;
+        for x in 0..buffer.area.width {
+            let cell = buffer.cell((x, y)).expect("cell");
+            if cell.style().bg == header_bg {
+                is_selected = true;
+            }
+            line.push_str(cell.symbol());
+        }
+        if is_selected {
+            highlighted.push(line.trim_end().to_string());
+        }
+    }
+    // The header keeps the warning background in some themes; only data rows
+    // matter here, and only one of them may carry the selection.
+    let selected_lines: Vec<String> = highlighted
+        .iter()
+        .filter(|line| line.contains("proc"))
+        .cloned()
+        .collect();
+    assert_eq!(
+        selected_lines.len(),
+        1,
+        "the selected row must be drawn exactly once (selected={}, scroll={}): {highlighted:?}",
+        app.selected(),
+        app.scroll()
+    );
+    assert!(
+        selected_lines[0].contains("proc39"),
+        "the last row must be on screen, not clipped by the border: {}",
+        selected_lines[0]
+    );
+}
+
 /// Wait for the background disk listing to land; the pages that need it
 /// harvest it through ticks, the same way a real session does.
 fn flush_disks(app: &mut App) {
