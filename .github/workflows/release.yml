@@ -182,7 +182,10 @@ jobs:
         # Pinned: an unpinned Inno upgrade would make today's installer and
         # next month's differ for the same tag. --allow-downgrade keeps the
         # pin working when the runner's choco cache carries a newer version.
-        run: choco install innosetup --yes --version=6.5.1 --allow-downgrade
+        # 6.7.1 is the newest Inno 6.x on the community feed; verify the
+        # exact version at https://community.chocolatey.org/packages/innosetup
+        # before bumping it.
+        run: choco install innosetup --yes --version=6.7.1 --allow-downgrade
 
       - name: Compile installer
         shell: pwsh
