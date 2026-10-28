@@ -56,6 +56,21 @@ fn press(app: &mut App, code: KeyCode) {
     app.on_key(key(code));
 }
 
+/// Wait for the helper thread that reads the visible page to report.
+///
+/// Page reads run off the draw loop, so a test that jumps pages has to wait
+/// the way a real session does: tick until the rows land.
+fn settle(app: &mut App) {
+    for _ in 0..400 {
+        app.on_tick();
+        if !app.page_pending() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    panic!("the page read never reported");
+}
+
 fn type_text(app: &mut App, text: &str) {
     for c in text.chars() {
         app.on_key(key(KeyCode::Char(c)));
@@ -189,10 +204,14 @@ fn each_page_draws_its_own_body() {
     flush_disks(&mut app);
 
     press(&mut app, KeyCode::Char('2'));
+
+    settle(&mut app);
     let screen = render(&mut app, 100, 30);
     assert!(screen.contains("sockets"), "ports body missing:\n{screen}");
 
     press(&mut app, KeyCode::Char('3'));
+
+    settle(&mut app);
     let screen = render(&mut app, 100, 30);
     assert!(
         screen.contains("processes | sort cpu"),
@@ -200,6 +219,8 @@ fn each_page_draws_its_own_body() {
     );
 
     press(&mut app, KeyCode::Char('4'));
+
+    settle(&mut app);
     let screen = render(&mut app, 100, 30);
     assert!(
         screen.contains("interfaces"),
@@ -207,6 +228,8 @@ fn each_page_draws_its_own_body() {
     );
 
     press(&mut app, KeyCode::Char('5'));
+
+    settle(&mut app);
     let screen = render(&mut app, 100, 30);
     assert!(
         screen.contains("display name") && screen.contains("sshd"),
@@ -214,6 +237,8 @@ fn each_page_draws_its_own_body() {
     );
 
     press(&mut app, KeyCode::Char('6'));
+
+    settle(&mut app);
     let screen = render(&mut app, 100, 30);
     assert!(
         screen.contains("test-host"),
@@ -221,6 +246,8 @@ fn each_page_draws_its_own_body() {
     );
 
     press(&mut app, KeyCode::Char('7'));
+
+    settle(&mut app);
     let screen = render(&mut app, 100, 30);
     assert!(
         screen.contains("usage r enter toggles") && screen.contains("C:\\"),
@@ -313,6 +340,8 @@ fn the_confirm_dialog_spells_out_the_plan() {
     let mut app = App::new(stubs.context());
 
     press(&mut app, KeyCode::Char('2'));
+
+    settle(&mut app);
     press(&mut app, KeyCode::Char('c'));
     let screen = render(&mut app, 100, 30);
 
@@ -336,6 +365,8 @@ fn the_socket_detail_is_drawn_with_a_kill_hint() {
     let mut app = App::new(stubs.context());
 
     press(&mut app, KeyCode::Char('2'));
+
+    settle(&mut app);
     press(&mut app, KeyCode::Enter);
     let screen = render(&mut app, 100, 30);
 
@@ -357,6 +388,8 @@ fn the_socket_detail_shows_reported_queue_lengths() {
     let mut app = App::new(stubs.context());
 
     press(&mut app, KeyCode::Char('2'));
+
+    settle(&mut app);
     press(&mut app, KeyCode::Enter);
     let screen = render(&mut app, 100, 30);
 
@@ -372,6 +405,8 @@ fn the_service_detail_is_drawn_read_only() {
     let mut app = App::new(stubs.context());
 
     press(&mut app, KeyCode::Char('5'));
+
+    settle(&mut app);
     press(&mut app, KeyCode::Enter);
     let screen = render(&mut app, 100, 30);
 
@@ -392,7 +427,10 @@ fn the_process_tree_folds_end_to_end() {
     let mut app = App::new(stubs.context());
 
     press(&mut app, KeyCode::Char('3'));
+
+    settle(&mut app);
     press(&mut app, KeyCode::Char('t'));
+    settle(&mut app); // `t` re-reads the page in tree mode
     let screen = render(&mut app, 100, 30);
     assert!(
         screen.contains("processes | sort cpu | tree"),
@@ -419,6 +457,8 @@ fn the_disks_page_draws_the_usage_tree_and_folds_it() {
     app.set_usage_fixture(PathBuf::from("r"), sample_usage());
 
     press(&mut app, KeyCode::Char('7'));
+
+    settle(&mut app);
     let screen = render(&mut app, 100, 30);
     assert!(
         screen.contains("usage r enter toggles"),
@@ -441,6 +481,8 @@ fn the_status_line_prompts_for_the_filter() {
     let mut app = App::new(stubs.context());
 
     press(&mut app, KeyCode::Char('2'));
+
+    settle(&mut app);
     press(&mut app, KeyCode::Char('f'));
     type_text(&mut app, "no");
     let screen = render(&mut app, 100, 30);
@@ -460,6 +502,7 @@ fn the_highlighted_row_is_the_selected_row_after_scrolling() {
     let stubs = Stubs::new().with_ports(ports);
     let mut app = App::new(stubs.context());
     press(&mut app, KeyCode::Char('2')); // Ports page
+    settle(&mut app);
 
     // A small viewport forces the scroll to follow the selection.
     app.note_viewport(10);
@@ -536,6 +579,7 @@ fn the_last_data_row_stays_visible_when_the_selection_reaches_the_end() {
     let stubs = Stubs::new().with_ports(ports);
     let mut app = App::new(stubs.context());
     press(&mut app, KeyCode::Char('2')); // Ports page
+    settle(&mut app);
 
     // Draw first so the real viewport is reported, then walk to the end.
     let _ = render(&mut app, 100, 20);

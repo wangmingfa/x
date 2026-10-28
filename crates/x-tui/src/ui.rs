@@ -126,13 +126,21 @@ fn format_speed(bps: u64) -> String {
 }
 
 /// Keep the active filter visible in the table title.
+///
+/// The page's rows are read on a helper thread, so the frame and the headers
+/// are on screen before the data is. Saying so in the title is what keeps an
+/// empty-looking table from being read as "there is nothing here".
 fn titled(base: &str, app: &App) -> String {
     let filter = app.filter().trim();
-    if filter.is_empty() {
+    let mut title = if filter.is_empty() {
         base.to_string()
     } else {
         format!("{base} | filter {filter:?}")
+    };
+    if app.page_reading_this() {
+        title.push_str(" | reading…");
     }
+    title
 }
 
 // ---------------------------------------------------------------------------

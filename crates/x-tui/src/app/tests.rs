@@ -44,9 +44,31 @@ fn app_with_sockets(count: u16) -> (Stubs, App) {
     (stubs, app)
 }
 
+/// Wait for the helper thread that reads the visible page to report.
+///
+/// Page reads run off the draw loop, so a test that jumps pages and then
+/// asserts on the rows has to wait exactly like a real session does: sleep a
+/// little, tick, repeat while a read is in flight.
+fn settle(app: &mut App) {
+    for _ in 0..400 {
+        if !app.page_pending() {
+            // One more tick so a read that finished during the last sleep is
+            // harvested rather than left in the slot.
+            app.on_tick();
+            if !app.page_pending() {
+                return;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        app.on_tick();
+    }
+    panic!("the page read never reported");
+}
+
 fn app_at(stubs: &Stubs, view: View) -> App {
     let mut app = App::new(stubs.context());
     app.goto_view(view);
+    settle(&mut app);
     app
 }
 
@@ -137,6 +159,42 @@ fn view_cycles_and_wraps_in_both_directions() {
     assert_eq!(app.view(), View::Dashboard, "right from the last wraps");
 }
 
+/// Switching pages must not wait for the OS.
+///
+/// The page the user is leaving may be slow (`cpu_usage` sleeps 200 ms to
+/// measure a delta, a volume walk costs over a second). Reading inline made
+/// the digit key feel broken: the frame only appeared after the old page's
+/// call returned. The switch now returns immediately and the rows land on a
+/// later tick.
+#[test]
+fn a_page_switch_paints_before_the_rows_are_read() {
+    let stubs = Stubs::new()
+        .with_ports(vec![stub_socket(8080, 42, "node")])
+        .with_processes(vec![stub_process(7, None, "node")]);
+    let mut app = App::new(stubs.context());
+    settle(&mut app);
+
+    // Right after the key press the page is already the new one, but its
+    // rows are not: they are still being read on the helper thread. Reading
+    // inline would leave the rows populated here, which is exactly the
+    // freeze the user saw — nothing is drawn until the OS call returns.
+    app.on_key(key(KeyCode::Char('3')));
+    assert_eq!(app.view(), View::Processes, "the page switched");
+    assert!(
+        app.processes().is_empty(),
+        "the rows arrived inside the key press; the frame waited for them"
+    );
+    assert!(
+        app.page_reading_this(),
+        "the switch starts a read instead of waiting for one"
+    );
+
+    // They land on a later tick, which is what fills the frame.
+    settle(&mut app);
+    assert!(!app.page_reading_this(), "the read finished");
+    assert_eq!(app.processes().len(), 1, "the rows landed");
+}
+
 #[test]
 fn digits_jump_straight_to_a_page() {
     let (_stubs, mut app) = app_with_sockets(1);
@@ -154,6 +212,7 @@ fn digits_jump_straight_to_a_page() {
 fn selection_is_clamped_to_the_last_row() {
     let (stubs, mut app) = app_with_sockets(3);
     app.goto_view(View::Ports);
+    settle(&mut app);
     let _ = &stubs;
     assert_eq!(app.rows(), 3);
 
@@ -172,6 +231,7 @@ fn selection_is_clamped_to_the_last_row() {
 fn scrolling_follows_the_selection_inside_the_reported_viewport() {
     let (stubs, mut app) = app_with_sockets(10);
     app.goto_view(View::Ports);
+    settle(&mut app);
     app.note_viewport(3);
 
     app.on_key(key(KeyCode::Down));
@@ -210,6 +270,7 @@ fn filter_prompt_filters_the_visible_page() {
     }
     app.on_tick(); // flush the debounced search scan
     app.on_key(key(KeyCode::Enter));
+    settle(&mut app); // the filtered read lands off the draw loop
 
     assert_eq!(app.filter(), "8080");
     assert!(matches!(app.modal(), Modal::None));
@@ -222,6 +283,7 @@ fn filter_prompt_filters_the_visible_page() {
 fn escape_cancels_the_filter_prompt_without_applying_it() {
     let (stubs, mut app) = app_with_sockets(3);
     app.goto_view(View::Ports);
+    settle(&mut app);
     app.note_viewport(10);
 
     app.on_key(key(KeyCode::Char('f')));
@@ -241,6 +303,7 @@ fn escape_cancels_the_filter_prompt_without_applying_it() {
 fn killing_a_socket_needs_confirmation_and_then_runs_the_plan() {
     let (stubs, mut app) = app_with_sockets(1);
     app.goto_view(View::Ports);
+    settle(&mut app);
 
     app.on_key(key(KeyCode::Char('c')));
     let modal = app.modal().clone();
@@ -276,6 +339,7 @@ fn killing_a_socket_needs_confirmation_and_then_runs_the_plan() {
 fn declining_the_dialog_kills_nothing() {
     let (stubs, mut app) = app_with_sockets(1);
     app.goto_view(View::Ports);
+    settle(&mut app);
 
     app.on_key(key(KeyCode::Char('c')));
     app.on_key(key(KeyCode::Char('n')));
@@ -289,6 +353,7 @@ fn declining_the_dialog_kills_nothing() {
 fn a_dialog_swallows_page_keys() {
     let (stubs, mut app) = app_with_sockets(2);
     app.goto_view(View::Ports);
+    settle(&mut app);
 
     app.on_key(key(KeyCode::Char('c')));
     app.on_key(key(KeyCode::Tab));
@@ -324,6 +389,7 @@ fn killing_a_process_confirms_the_pid_and_name() {
 fn pages_without_something_to_kill_say_so() {
     let (_stubs, mut app) = app_with_sockets(1);
     app.goto_view(View::System);
+    settle(&mut app);
 
     app.on_key(key(KeyCode::Char('c')));
     assert_eq!(app.status(), "nothing to kill on this page");
@@ -341,6 +407,7 @@ fn a_failed_refresh_reports_the_error_and_keeps_the_rows() {
         "must be root",
     ));
     app.refresh();
+    settle(&mut app);
 
     assert_eq!(app.status(), "must be root");
     assert_eq!(
@@ -360,6 +427,7 @@ fn every_page_refreshes_its_own_capability() {
 
     for view in View::ALL {
         app.goto_view(view);
+        settle(&mut app);
         app.note_viewport(10);
         let expected = match view {
             View::Dashboard => 0,
@@ -398,6 +466,7 @@ fn quit_keys_are_q_escape_and_control_c_but_not_a_bare_c() {
 
     let (stubs, mut app) = app_with_sockets(1);
     app.goto_view(View::Ports);
+    settle(&mut app);
     app.on_key(key(KeyCode::Char('c')));
     assert!(!app.should_quit(), "a bare c kills the selection instead");
     assert!(matches!(app.modal(), Modal::Confirm { .. }));
@@ -480,7 +549,8 @@ fn a_failing_dashboard_card_does_not_blank_the_others() {
         .port
         .fail_with(StubFailure::new(ErrorKind::System, "socket table exploded"));
 
-    let app = App::new(stubs.context());
+    let mut app = App::new(stubs.context());
+    settle(&mut app);
 
     assert!(app.system().is_some(), "the facts card survives");
     assert!(app.port_summary().is_none());
@@ -510,6 +580,7 @@ fn the_palette_opens_filters_and_runs_a_command() {
     app.on_key(key(KeyCode::Enter));
     assert!(matches!(app.modal(), Modal::None));
     assert_eq!(app.view(), View::Services);
+    settle(&mut app);
     assert_eq!(app.services().len(), 1, "the command refreshed the page");
 }
 
@@ -555,6 +626,7 @@ fn the_global_search_finds_processes_and_jumps_with_the_filter() {
     assert!(matches!(app.modal(), Modal::None));
     assert_eq!(app.view(), View::Processes);
     assert_eq!(app.filter(), "node");
+    settle(&mut app);
     assert_eq!(app.processes().len(), 1);
 }
 
@@ -577,6 +649,7 @@ fn a_port_hit_lands_on_the_ports_page_with_the_query_kept() {
     app.on_key(key(KeyCode::Enter));
     assert_eq!(app.view(), View::Ports);
     assert_eq!(app.filter(), "8080");
+    settle(&mut app);
     assert_eq!(app.ports().len(), 1);
 }
 
@@ -616,6 +689,7 @@ fn a_file_hit_selects_the_usage_row() {
     app.usage_root = std::env::temp_dir();
     app.usage = sample_usage();
     app.goto_view(View::Disks);
+    settle(&mut app);
 
     app.on_key(key(KeyCode::Char('/')));
     for event in text("big") {
@@ -650,6 +724,7 @@ fn the_process_tree_folds_and_unfolds() {
 
     app.on_key(key(KeyCode::Char('t')));
     assert!(app.tree_mode());
+    settle(&mut app);
     let depths: Vec<usize> = app.process_rows().iter().map(|(depth, _)| *depth).collect();
     assert_eq!(depths, [0, 1, 2]);
     assert_eq!(app.rows(), 3);
@@ -786,6 +861,7 @@ fn selecting_a_process_can_jump_to_its_ports() {
     app.on_key(key(KeyCode::Char('p')));
     assert_eq!(app.view(), View::Ports);
     assert_eq!(app.filter(), "node");
+    settle(&mut app);
     assert_eq!(app.ports().len(), 1);
     assert_eq!(app.ports()[0].local_port, 8080);
     assert_eq!(app.status(), "ports of node");
@@ -969,6 +1045,7 @@ fn sort_on_the_process_page_does_not_touch_net_top_ordering() {
     let mut app = net_top_app_with(net_top_report_fixture());
     app.on_key(key(KeyCode::Char('s')));
     app.goto_view(View::Processes);
+    settle(&mut app);
 
     app.on_key(key(KeyCode::Char('s')));
 
@@ -985,6 +1062,7 @@ fn net_top_enter_jumps_to_the_ports_of_that_pid() {
     assert_eq!(app.net_top_rows()[0].pid, 100);
 
     app.on_key(key(KeyCode::Enter));
+    settle(&mut app);
 
     assert_eq!(app.view(), View::Ports);
     assert_eq!(app.filter(), "node");
@@ -1084,6 +1162,7 @@ fn esc_steps_back_from_a_failed_remote_fetch_instead_of_quitting() {
     let stubs = Stubs::new();
     let mut app = App::new(stubs.context());
     app.goto_view(View::Remote);
+    settle(&mut app);
     // A fetch that failed leaves the app showing the error, not the host
     // list; Esc must return to the host list, not exit the whole program.
     app.remote_error = Some("connection refused".into());

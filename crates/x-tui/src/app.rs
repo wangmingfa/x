@@ -14,6 +14,64 @@ use x_core::disk::{DirUsage, DiskInfo};
 /// scan use.
 type DiskFetch = Arc<Mutex<Option<std::result::Result<Vec<DiskInfo>, String>>>>;
 
+/// One in-flight page read, written by a helper thread.
+type PageFetch = Arc<Mutex<Option<PageData>>>;
+
+/// What one helper thread should read. Captured when the read is spawned, so
+/// the rows that land belong to the filter and sort that were in effect when
+/// the user asked for them.
+#[derive(Debug, Clone, PartialEq)]
+struct PageRequest {
+    view: View,
+    search: Option<String>,
+    sort: ProcessSort,
+    tree: bool,
+}
+
+/// Rows of a single page, produced off the draw loop.
+#[derive(Debug)]
+enum PageData {
+    /// The dashboard summarizes several capabilities, so each part fails on
+    /// its own instead of blanking the others.
+    Dashboard {
+        system: std::result::Result<SystemInfo, String>,
+        cpu: std::result::Result<f32, String>,
+        memory: std::result::Result<MemoryUsage, String>,
+        ports: std::result::Result<PortSummary, String>,
+    },
+    Ports(std::result::Result<Vec<PortInfo>, String>),
+    Processes(std::result::Result<ProcessRows, String>),
+    Network(std::result::Result<NetworkRows, String>),
+    Services(std::result::Result<Vec<ServiceInfo>, String>),
+    System(std::result::Result<SystemRows, String>),
+}
+
+/// The processes page shows one of two shapes; which one follows the mode
+/// that was in effect when the read was spawned.
+#[derive(Debug)]
+enum ProcessRows {
+    Flat(Vec<ProcessInfo>),
+    Tree(Box<ProcessTree>),
+}
+
+/// Everything the network page draws.
+#[derive(Debug)]
+struct NetworkRows {
+    interfaces: Vec<InterfaceInfo>,
+    addresses: Vec<AddressInfo>,
+    routes: Vec<RouteInfo>,
+    dns: DnsConfig,
+    connections: Vec<PortInfo>,
+}
+
+/// Everything the system page draws.
+#[derive(Debug)]
+struct SystemRows {
+    info: SystemInfo,
+    cpu: f32,
+    memory: MemoryUsage,
+}
+
 use x_core::error::Result;
 use x_core::net_top::{diff, NetSnapshot, NetTopReport, NetTopSampler};
 use x_core::network::{AddressInfo, DnsConfig, InterfaceInfo, RouteInfo};
@@ -412,6 +470,13 @@ pub struct App {
     /// Dashboard or Disks page. The list now runs on a helper thread and
     /// lands through the same mailbox pattern as the usage scan.
     disks_slot: Option<DiskFetch>,
+    /// In-flight page read, with the request it answers. Every
+    /// row-producing read runs on a helper thread, so a digit key paints the
+    /// frame first and fills the table when the data lands: switching pages
+    /// is never gated by the OS call behind it. Pairing the request with the
+    /// mailbox is what lets rows arrive late without overwriting a page the
+    /// user has already asked for differently.
+    page_slot: Option<(PageRequest, PageFetch)>,
 
     /// Global search cache, recomputed when the query changes.
     search_hits: Vec<SearchHit>,
@@ -490,6 +555,7 @@ impl App {
             collapsed: BTreeSet::new(),
             scan: None,
             disks_slot: None,
+            page_slot: None,
             search_hits: Vec::new(),
             search_notes: Vec::new(),
             search_dirty: false,
@@ -713,120 +779,186 @@ impl App {
     }
 
     /// Re-read the snapshot for the visible page.
+    ///
+    /// Every read that talks to the OS runs on a helper thread and lands
+    /// through [`Self::collect_page_read`]: switching pages paints the frame
+    /// first and fills the table when the data arrives. Reading inline made
+    /// the digit keys feel broken on a busy host — `cpu_usage` alone sleeps
+    /// 200 ms to measure a delta, and a volume enumeration costs over a
+    /// second on macOS, so the frame the user asked for appeared only after
+    /// the machine had answered.
     pub fn refresh(&mut self) {
-        let result = match self.view {
-            View::Dashboard => self.refresh_dashboard(),
-            View::Ports => self.refresh_ports(),
-            View::Processes => self.refresh_processes(),
-            View::Network => self.refresh_network(),
-            View::Services => self.refresh_services(),
-            View::System => self.refresh_system(),
-            View::Disks => self.refresh_disks(),
-            View::Remote => self.refresh_remote(),
-            View::NetTop => self.refresh_net_top(),
-        };
-        if let Err(error) = result {
-            self.status = error.message().to_string();
+        match self.view {
+            // The disks page reads nothing inline: both halves are already
+            // behind a helper thread.
+            View::Disks => {
+                self.spawn_disk_refresh();
+                self.start_scan();
+            }
+            // Remote and net top harvest their own mailboxes here; their
+            // requests are driven by Enter, not by the refresh cadence.
+            View::Remote => {
+                let _ = self.collect_remote();
+            }
+            View::NetTop => self.spawn_net_top_round(),
+            View::Dashboard => {
+                // Volumes are the one thing the dashboard summarizes that is
+                // far too slow to wait for.
+                self.spawn_disk_refresh();
+                self.spawn_page_read();
+            }
+            View::Ports | View::Processes | View::Network | View::Services | View::System => {
+                self.spawn_page_read();
+            }
         }
         self.last_refresh = std::time::Instant::now();
     }
 
-    /// The dashboard is the one page that summarizes several capabilities at
-    /// once, so a failing one is reported but never blanks the rest.
-    fn refresh_dashboard(&mut self) -> Result<()> {
-        let mut errors: Vec<String> = Vec::new();
-        match self.context.system.info() {
-            Ok(info) => self.system = Some(info),
-            Err(error) => errors.push(error.message().to_string()),
-        }
-        match self.context.system.cpu_usage() {
-            Ok(usage) => self.cpu = usage.total_percent,
-            Err(error) => errors.push(error.message().to_string()),
-        }
-        match self.context.system.memory_usage() {
-            Ok(usage) => self.memory = Some(usage),
-            Err(error) => errors.push(error.message().to_string()),
-        }
-        // The disk list comes from a helper thread: enumerating volumes
-        // blocks for well over a second on some machines, and the page
-        // must not freeze on it.
-        self.spawn_disk_refresh();
-        match self.context.port.list(&PortListOptions::default()) {
-            Ok(rows) => self.port_summary = Some(PortSummary::from_rows(&rows)),
-            Err(error) => errors.push(error.message().to_string()),
-        }
-        if !errors.is_empty() {
-            self.status = errors.join("; ");
-        }
-        Ok(())
-    }
-
-    fn refresh_ports(&mut self) -> Result<()> {
-        // `?` keeps the previous rows on failure: a transient error should
-        // show a message, not blank the screen.
-        self.ports = self.context.port.list(&PortListOptions {
-            listening_only: false,
-            search: self.search(),
-            ..Default::default()
-        })?;
-        Ok(())
-    }
-
-    fn refresh_processes(&mut self) -> Result<()> {
-        // Only the visible page is refreshed: sampling CPU on every process is
-        // the most expensive call in the workspace.
-        let options = ProcessListOptions {
+    /// What a read started right now would ask for.
+    fn page_request(&self) -> PageRequest {
+        PageRequest {
+            view: self.view,
             search: self.search(),
             sort: self.process_sort,
-            with_usage: true,
-            limit: Some(200),
-            user: None,
-        };
-        if self.tree_mode {
-            self.process_tree = Some(self.context.process.tree(&options)?);
-        } else {
-            self.processes = self.context.process.list(&options)?;
+            tree: self.tree_mode,
         }
-        Ok(())
     }
 
-    fn refresh_network(&mut self) -> Result<()> {
-        self.interfaces = self.context.network.interfaces()?;
-        self.addresses = self.context.network.addresses()?;
-        self.routes = self.context.network.routes()?;
-        self.dns = self.context.network.dns()?;
-        self.connections = self.context.port.list(&PortListOptions {
-            search: self.search(),
-            ..Default::default()
-        })?;
-        // Listeners are the ports page's job; this table is about connections.
-        self.connections
-            .retain(|row| row.state != ConnectionState::Listen);
-        Ok(())
+    /// Start reading the visible page on a helper thread.
+    ///
+    /// A read already in flight is abandoned rather than waited for: its
+    /// mailbox is dropped, so whatever it eventually produces is thrown away
+    /// and only the newest question is ever answered. That is what makes a
+    /// page switch instant even when the page being left is slow — waiting
+    /// for the old read first would put the freeze right back.
+    fn spawn_page_read(&mut self) {
+        let request = self.page_request();
+        // One read in flight per question. A read answering the same
+        // question is left to finish; one answering an older question is
+        // dropped on the floor by replacing the slot.
+        if self
+            .page_slot
+            .as_ref()
+            .is_some_and(|(in_flight, _)| *in_flight == request)
+        {
+            return;
+        }
+        let context = self.context.clone();
+        let slot: PageFetch = Arc::new(Mutex::new(None));
+        self.page_slot = Some((request.clone(), slot.clone()));
+        std::thread::spawn(move || {
+            let data = read_page(&context, &request);
+            // A dropped mailbox only means the result is never shown; the
+            // reading thread itself cannot fail.
+            if let Ok(mut guard) = slot.lock() {
+                *guard = Some(data);
+            }
+        });
     }
 
-    fn refresh_services(&mut self) -> Result<()> {
-        self.services = self.context.service.list(&ServiceListOptions {
-            search: self.search(),
-            running_only: false,
-            ..Default::default()
-        })?;
-        Ok(())
+    /// `true` while a page read is in flight, so a page with no rows yet can
+    /// say "reading" instead of "nothing here".
+    pub fn page_pending(&self) -> bool {
+        self.page_slot.is_some()
     }
 
-    fn refresh_system(&mut self) -> Result<()> {
-        self.system = Some(self.context.system.info()?);
-        self.cpu = self.context.system.cpu_usage()?.total_percent;
-        self.memory = Some(self.context.system.memory_usage()?);
-        Ok(())
+    /// `true` when the in-flight read answers the page on screen. A read
+    /// started on another page (or with another filter) is not pending for
+    /// this one, and the page should not wait on it before saying it is
+    /// empty.
+    pub fn page_reading_this(&self) -> bool {
+        self.page_slot
+            .as_ref()
+            .is_some_and(|(request, _)| *request == self.page_request())
     }
 
-    fn refresh_disks(&mut self) -> Result<()> {
-        // Same reason as the dashboard: the volume list is slow, and it
-        // must never block the draw loop on the way in.
-        self.spawn_disk_refresh();
-        self.start_scan();
-        Ok(())
+    /// Pick up a finished page read. Returns `true` when it was applied.
+    ///
+    /// Rows that answer a request the user has already moved away from are
+    /// dropped rather than applied: a filter typed in the meantime must not
+    /// be overwritten by the answer to the previous question.
+    fn collect_page_read(&mut self) -> bool {
+        let landed = self
+            .page_slot
+            .as_ref()
+            .and_then(|(_, slot)| slot.lock().ok())
+            .and_then(|mut guard| guard.take());
+        let Some(data) = landed else {
+            return false;
+        };
+        let Some((request, _)) = self.page_slot.take() else {
+            return false;
+        };
+        if request == self.page_request() {
+            self.apply_page(data);
+        } else {
+            // The page, filter or sort changed while the read was running:
+            // dropping the stale rows and asking again is what keeps a slow
+            // read from painting over the question the user asked after it.
+            self.spawn_page_read();
+        }
+        true
+    }
+
+    fn apply_page(&mut self, data: PageData) {
+        match data {
+            PageData::Dashboard {
+                system,
+                cpu,
+                memory,
+                ports,
+            } => {
+                // The dashboard summarizes several capabilities at once, so a
+                // failing one is reported without blanking the rest.
+                let mut errors: Vec<String> = Vec::new();
+                match system {
+                    Ok(info) => self.system = Some(info),
+                    Err(error) => errors.push(error),
+                }
+                match cpu {
+                    Ok(percent) => self.cpu = percent,
+                    Err(error) => errors.push(error),
+                }
+                match memory {
+                    Ok(usage) => self.memory = Some(usage),
+                    Err(error) => errors.push(error),
+                }
+                match ports {
+                    Ok(summary) => self.port_summary = Some(summary),
+                    Err(error) => errors.push(error),
+                }
+                if !errors.is_empty() {
+                    self.status = errors.join("; ");
+                }
+            }
+            // A failed read keeps the previous rows: a transient error should
+            // show a message, not blank the screen.
+            PageData::Ports(Ok(rows)) => self.ports = rows,
+            PageData::Ports(Err(error)) => self.status = error,
+            PageData::Processes(Ok(ProcessRows::Flat(rows))) => self.processes = rows,
+            PageData::Processes(Ok(ProcessRows::Tree(tree))) => self.process_tree = Some(*tree),
+            PageData::Processes(Err(error)) => self.status = error,
+            PageData::Network(Ok(rows)) => {
+                self.interfaces = rows.interfaces;
+                self.addresses = rows.addresses;
+                self.routes = rows.routes;
+                self.dns = rows.dns;
+                self.connections = rows.connections;
+            }
+            PageData::Network(Err(error)) => self.status = error,
+            PageData::Services(Ok(rows)) => self.services = rows,
+            PageData::Services(Err(error)) => self.status = error,
+            PageData::System(Ok(rows)) => {
+                self.system = Some(rows.info);
+                self.cpu = rows.cpu;
+                self.memory = Some(rows.memory);
+            }
+            PageData::System(Err(error)) => self.status = error,
+        }
+        // The row count changed under the cursor; keep the selection inside
+        // the new list rather than pointing past its end.
+        self.selected = self.selected.min(self.row_count().saturating_sub(1));
+        self.clamp_scroll();
     }
 
     /// Kick off one disk enumeration on a helper thread, if none is in
@@ -880,7 +1012,7 @@ impl App {
 
     /// Collect a finished remote fetch, if any. The fetch itself runs on a
     /// helper thread (ssh blocks), so this only harvests the shared slot.
-    fn refresh_remote(&mut self) -> Result<()> {
+    fn collect_remote(&mut self) -> Result<()> {
         if let Some(fetch) = &self.remote_fetch {
             let finished = fetch.lock().ok().and_then(|mut slot| slot.take());
             if let Some(finished) = finished {
@@ -938,12 +1070,12 @@ impl App {
     /// like the disk walker it reports through a mailbox slot instead of
     /// stalling the draw loop. Sampling starts on the first visit to the
     /// page and keeps one round in flight from then on.
-    fn refresh_net_top(&mut self) -> Result<()> {
+    fn spawn_net_top_round(&mut self) {
         let Some(sampler) = self.net_top.as_ref() else {
-            return Ok(());
+            return;
         };
         if self.net_top_slot.is_some() {
-            return Ok(());
+            return;
         }
         let sampler = sampler.clone();
         let context = self.context.clone();
@@ -958,7 +1090,6 @@ impl App {
                 *guard = Some(snapshot);
             }
         });
-        Ok(())
     }
 
     /// Pick up a finished sampling round and diff it against the previous
@@ -1128,6 +1259,9 @@ impl App {
     pub fn on_tick(&mut self) {
         self.collect_net_top();
         self.collect_disks();
+        // The visible page's rows arrive here. `collect` keeps the note about
+        // what is still reading accurate for the draw.
+        self.collect_page_read();
         // A paused search runs its family scans here rather than on every
         // keystroke: each scan lists processes, sockets, services and
         // interfaces, which on a loaded host takes long enough to freeze
@@ -2053,6 +2187,114 @@ impl App {
             Err(error) => format!("{verb} failed: {}", error.message()),
         };
         self.refresh();
+    }
+}
+
+/// Read one page's rows. Runs on a helper thread, so it takes the context
+/// and the request by value instead of borrowing `App`.
+///
+/// Every failure comes back as its own message rather than an `Error`: the
+/// reader thread has nobody to return to, and the dashboard wants one
+/// failure reported without losing the parts that did answer.
+fn read_page(context: &SystemContext, request: &PageRequest) -> PageData {
+    let message = |error: x_core::error::Error| error.message().to_string();
+    match request.view {
+        View::Dashboard => {
+            // Deliberately no disk enumeration here: the dashboard spawns
+            // that separately, so it can land while these reads run.
+            PageData::Dashboard {
+                system: context.system.info().map_err(message),
+                cpu: context
+                    .system
+                    .cpu_usage()
+                    .map(|usage| usage.total_percent)
+                    .map_err(message),
+                memory: context.system.memory_usage().map_err(message),
+                ports: context
+                    .port
+                    .list(&PortListOptions::default())
+                    .map(|rows| PortSummary::from_rows(&rows))
+                    .map_err(message),
+            }
+        }
+        View::Ports => PageData::Ports(
+            context
+                .port
+                .list(&PortListOptions {
+                    listening_only: false,
+                    search: request.search.clone(),
+                    ..Default::default()
+                })
+                .map_err(message),
+        ),
+        View::Processes => {
+            // Sampling CPU per process is the most expensive read in the
+            // workspace, which is exactly why it runs here and not inline.
+            let options = ProcessListOptions {
+                search: request.search.clone(),
+                sort: request.sort,
+                with_usage: true,
+                limit: Some(200),
+                user: None,
+            };
+            let rows = if request.tree {
+                context
+                    .process
+                    .tree(&options)
+                    .map(|tree| ProcessRows::Tree(Box::new(tree)))
+            } else {
+                context.process.list(&options).map(ProcessRows::Flat)
+            };
+            PageData::Processes(rows.map_err(message))
+        }
+        View::Network => {
+            let read = || -> std::result::Result<NetworkRows, String> {
+                let interfaces = context.network.interfaces().map_err(message)?;
+                let addresses = context.network.addresses().map_err(message)?;
+                let routes = context.network.routes().map_err(message)?;
+                let dns = context.network.dns().map_err(message)?;
+                let mut connections = context
+                    .port
+                    .list(&PortListOptions {
+                        search: request.search.clone(),
+                        ..Default::default()
+                    })
+                    .map_err(message)?;
+                // Listeners are the ports page's job; this table is about
+                // connections.
+                connections.retain(|row| row.state != ConnectionState::Listen);
+                Ok(NetworkRows {
+                    interfaces,
+                    addresses,
+                    routes,
+                    dns,
+                    connections,
+                })
+            };
+            PageData::Network(read())
+        }
+        View::Services => PageData::Services(
+            context
+                .service
+                .list(&ServiceListOptions {
+                    search: request.search.clone(),
+                    running_only: false,
+                    ..Default::default()
+                })
+                .map_err(message),
+        ),
+        View::System => {
+            let read = || -> std::result::Result<SystemRows, String> {
+                let info = context.system.info().map_err(message)?;
+                let cpu = context.system.cpu_usage().map_err(message)?.total_percent;
+                let memory = context.system.memory_usage().map_err(message)?;
+                Ok(SystemRows { info, cpu, memory })
+            };
+            PageData::System(read())
+        }
+        // Disks, remote and net top have their own mailboxes and never reach
+        // this function.
+        View::Disks | View::Remote | View::NetTop => PageData::Ports(Ok(Vec::new())),
     }
 }
 
