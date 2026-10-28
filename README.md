@@ -431,6 +431,21 @@ x bench --check --samples 3 || echo "有读操作超预算"
 
 ## 开发
 
+从仓库直接跑，不用先安装（`x-app` 的产物名是 `x`）：
+
+```sh
+cargo run -p x-app -- port                # 等价于 target/debug/x port
+cargo run -p x-app -- ps --json
+cargo run -p x-app -- ui                  # 交互式界面，需要真实 TTY
+cargo run --release -p x-app -- sys info  # 看 release 下的真实耗时
+```
+
+`--` 之后才是 `x` 自己的参数。想看某个子命令的全部选项，用
+`cargo run -p x-app -- port --help`。界面类命令（`ui` / `tui`）要求终端是 TTY，
+在 CI 或重定向到管道时会直接报错退出，这是刻意的——一次性输出请用对应子命令。
+
+检查：
+
 ```sh
 cargo fmt --all
 cargo clippy --all-targets --all-features
