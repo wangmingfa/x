@@ -362,8 +362,9 @@ PowerShell SslStream、类 Unix 用 openssl s_client），x 负责参数校验�
 
 ### 交互式 TUI（`x tui` / `x ui`）
 
-七个页面：Dashboard（首页）、Ports、Processes、Network、Services、
-System、Disks；侧边栏列页，数字 `1`–`7` 直达，`Tab`/左右键循环。
+九个页面：Dashboard（首页）、Ports、Processes、Network、Services、
+System、Disks、Remote、Net top；侧边栏列页，数字 `1`–`9` 直达，
+`Tab`/左右键循环，`j`/`k` 或上下键移动选中行。
 可见页每 1.5 秒自动刷新，失败保留旧数据、错误进状态栏。
 
 - 首页：CPU / 内存仪表、端口计数（监听 / 已建立 / 全部）、系统事实与
@@ -374,8 +375,8 @@ System、Disks；侧边栏列页，数字 `1`–`7` 直达，`Tab`/左右键循�
   对应页面并带上过滤；某家族采样失败会在结果里就地注明
 - 进程页：`t` 树形（父进程缩进），`Space` 折叠/展开，`s` 轮换排序键
 - 端口页与进程页：`Enter` 详情（端口给持有进程 / PID / 用户 / 对端，
-  内核报告队列长度时一并给出；进程给命令行与资源占用），`k` 杀掉
-  （先出计划确认），`p` 直接看选中进程持有的端口
+  内核报告队列长度时一并给出；进程给命令行与资源占用），`c` 杀掉
+  （先出计划确认；`key_kill` 可改），`p` 直接看选中进程持有的端口
 - Disks：挂载表 + 启动目录的用量树，后台扫描、`Enter` 折叠
 - `f` 过滤当前页；`r` 手动刷新；`q` 退出
 

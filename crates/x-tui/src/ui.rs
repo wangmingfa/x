@@ -833,22 +833,43 @@ fn net_top(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn footer(frame: &mut Frame, app: &App, area: Rect) {
+    // The kill key is written from the binding rather than as a literal: the
+    // default moved from `k` to `c` and this line kept advertising the old
+    // one, which is worse than no hint at all.
+    let kill = app.kill_key();
     let keys = match app.view() {
-        View::Dashboard => "1-9 pages   / search   ctrl+p commands   r refresh   q quit",
-        View::Ports => "enter details   k kill   / search   f filter   r refresh   q quit",
-        View::Processes => {
-            if app.tree_mode() {
-                "enter details   k kill   space fold   t tree off   s sort   p ports   / search   f filter   r refresh   q quit"
-            } else {
-                "enter details   k kill   t tree   s sort   p ports   / search   f filter   r refresh   q quit"
-            }
+        // The dashboard and the system page have no selectable rows, so the
+        // movement keys are not advertised there.
+        View::Dashboard => {
+            "1-9 pages   / search   ctrl+p commands   r refresh   q quit".to_string()
         }
-        View::Network => "enter details   k kill   / search   f filter   r refresh   q quit",
-        View::Services => "enter details   / search   f filter   r refresh   q quit",
-        View::System => "/ search   ctrl+p commands   r refresh   q quit",
-        View::Disks => "enter fold   / search   ctrl+p commands   r refresh   q quit",
-        View::Remote => "enter fetch snapshot   up/down choose host   r refresh   q quit",
-        View::NetTop => "enter ports   p ports   s sort   f filter pid   r resample   q quit",
+        View::Ports => {
+            format!(
+                "enter details   {kill} kill   j/k move   / search   f filter   r refresh   q quit"
+            )
+        }
+        View::Processes if app.tree_mode() => {
+            format!("enter details   {kill} kill   space fold   t tree off   s sort   p ports   j/k move   / search   f filter   r refresh   q quit")
+        }
+        View::Processes => {
+            format!("enter details   {kill} kill   t tree   s sort   p ports   j/k move   / search   f filter   r refresh   q quit")
+        }
+        View::Network => {
+            format!(
+                "enter details   {kill} kill   j/k move   / search   f filter   r refresh   q quit"
+            )
+        }
+        View::Services => {
+            "enter details   j/k move   / search   f filter   r refresh   q quit".to_string()
+        }
+        View::System => "/ search   ctrl+p commands   r refresh   q quit".to_string(),
+        View::Disks => {
+            "enter fold   j/k move   / search   ctrl+p commands   r refresh   q quit".to_string()
+        }
+        View::Remote => "enter fetch snapshot   j/k choose host   r refresh   q quit".to_string(),
+        View::NetTop => {
+            "enter ports   p ports   s sort   f filter pid   r resample   q quit".to_string()
+        }
     };
     frame.render_widget(
         Paragraph::new(keys).style(crate::theme::current().dim()),
@@ -1041,9 +1062,9 @@ fn dialog(frame: &mut Frame, app: &App, area: Rect) {
             lines.push(Line::from(""));
             lines.push(Line::styled(
                 if target.is_some() {
-                    "k kill    any other key closes"
+                    format!("{} kill    any other key closes", app.kill_key())
                 } else {
-                    "any key closes"
+                    "any key closes".to_string()
                 },
                 crate::theme::current().accent(false),
             ));

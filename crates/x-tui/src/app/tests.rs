@@ -208,6 +208,27 @@ fn digits_jump_straight_to_a_page() {
     assert_eq!(app.status(), "", "jumping is not an error");
 }
 
+/// `j` and `k` are one feature; shipping half of it is a trap.
+///
+/// `j` moved down but `k` was never bound, so a vim user scrolling a long
+/// list could go down and not back up — the muscle memory fires before the
+/// missing half becomes visible.
+#[test]
+fn j_and_k_move_the_selection_both_ways() {
+    let (_stubs, mut app) = app_with_sockets(3);
+    app.goto_view(View::Ports);
+    settle(&mut app);
+
+    app.on_key(key(KeyCode::Char('j')));
+    app.on_key(key(KeyCode::Char('j')));
+    assert_eq!(app.selected(), 2, "j walks down");
+
+    app.on_key(key(KeyCode::Char('k')));
+    assert_eq!(app.selected(), 1, "k walks back up");
+    app.on_key(key(KeyCode::Char('k')));
+    assert_eq!(app.selected(), 0, "k stops at the first row");
+}
+
 #[test]
 fn selection_is_clamped_to_the_last_row() {
     let (stubs, mut app) = app_with_sockets(3);

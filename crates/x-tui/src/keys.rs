@@ -1,11 +1,12 @@
 //! Configurable key bindings for the TUI.
 //!
 //! Bindings come from `config.toml` as `key_<action> = "<char>"` lines, e.g.
-//! `key_quit = "Q"`. Navigation keys (arrows, Tab, Home/End, PageUp/Down,
-//! Enter, Esc, Ctrl+C, Ctrl+P and the digit page jumps) stay fixed — they are
-//! muscle memory from every other TUI; only the letter commands are
-//! remappable. An unknown action name or a value that is not exactly one
-//! character is reported as a warning and the default stays in place.
+//! `key_quit = "Q"`. Navigation keys (arrows, `j`/`k`, Tab, Home/End,
+//! PageUp/Down, Enter, Esc, Ctrl+C, Ctrl+P and the digit page jumps) stay
+//! fixed — they are muscle memory from every other TUI; only the letter
+//! commands are remappable. An unknown action name or a value that is not
+//! exactly one character is reported as a warning and the default stays in
+//! place.
 
 use x_core::config::Config;
 
@@ -92,6 +93,17 @@ impl Keys {
                     if ch.is_ascii_digit() {
                         warnings.push(format!(
                             "key_{} = `{ch}` is ignored: digits 1-9 jump pages and are fixed",
+                            action.name()
+                        ));
+                        continue;
+                    }
+                    // `j` and `k` are the fixed movement keys. Letting a
+                    // command take one over would leave the list movable in
+                    // one direction only — the half-bound state this warning
+                    // exists to prevent.
+                    if ch == 'j' || ch == 'k' {
+                        warnings.push(format!(
+                            "key_{} = `{ch}` is ignored: j/k move the selection and are fixed",
                             action.name()
                         ));
                         continue;
@@ -202,6 +214,20 @@ mod collision_tests {
         assert_eq!(keys.key(Action::Refresh), 'r', "default stays in place");
         assert!(
             warnings.iter().any(|w| w.contains("key_refresh")),
+            "{warnings:?}"
+        );
+    }
+
+    #[test]
+    fn a_movement_key_cannot_be_taken_over() {
+        // `j`/`k` are how the list is walked in both directions. A command
+        // bound to one of them would shadow half of that.
+        let (keys, warnings) = Keys::from_config(&config_with(&[("key_kill", "k")]));
+        assert_eq!(keys.key(Action::Kill), 'c', "default stays in place");
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("key_kill") && w.contains("j/k")),
             "{warnings:?}"
         );
     }

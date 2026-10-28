@@ -684,6 +684,15 @@ impl App {
         self.tree_mode
     }
 
+    /// The key that asks to kill the selection.
+    ///
+    /// The footer and the palette advertise it, and both used to hard-code
+    /// `k` long after the default moved to `c`. Reading it from the bindings
+    /// keeps the hint honest, including when `config.toml` remaps it.
+    pub fn kill_key(&self) -> char {
+        self.keys.key(crate::keys::Action::Kill)
+    }
+
     /// The visible process rows: the flat list, or the tree flattened with
     /// folded subtrees omitted. Each row carries its depth.
     pub fn process_rows(&self) -> Vec<(usize, &ProcessInfo)> {
@@ -1382,10 +1391,12 @@ impl App {
                 self.selected = self.row_count().saturating_sub(1);
                 self.clamp_scroll();
             }
-            // `j` and the arrows walk the list; killing owns the other key,
-            // which is what this tool is mostly for.
+            // `j`/`k` and the arrows walk the list; killing owns the other
+            // key, which is what this tool is mostly for. Both directions take
+            // the vim key: one direction only is worse than neither, because
+            // the muscle memory has already fired by the time you notice.
             KeyCode::Down | KeyCode::Char('j') => self.move_by(1),
-            KeyCode::Up => self.move_by(-1),
+            KeyCode::Up | KeyCode::Char('k') => self.move_by(-1),
             KeyCode::PageDown => self.move_by(10),
             KeyCode::PageUp => self.move_by(-10),
             KeyCode::Enter => self.activate_selection(),

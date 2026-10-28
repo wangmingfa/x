@@ -375,7 +375,7 @@ fn the_socket_detail_is_drawn_with_a_kill_hint() {
         "title missing:\n{screen}"
     );
     assert!(
-        screen.contains("k kill    any other key closes"),
+        screen.contains("c kill    any other key closes"),
         "kill hint missing:\n{screen}"
     );
 }
@@ -413,7 +413,7 @@ fn the_service_detail_is_drawn_read_only() {
     assert!(screen.contains("service sshd"), "title missing:\n{screen}");
     assert!(screen.contains("any key closes"), "hint missing:\n{screen}");
     assert!(
-        !screen.contains("k kill"),
+        !screen.contains("c kill"),
         "a read-only dialog offers a kill:\n{screen}"
     );
 }

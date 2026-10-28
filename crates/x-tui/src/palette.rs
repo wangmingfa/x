@@ -70,7 +70,7 @@ pub fn commands() -> Vec<Command> {
         Command {
             id: CommandId::Kill,
             label: "kill selection",
-            hint: "k",
+            hint: "c",
         },
         Command {
             id: CommandId::ToggleTree,
