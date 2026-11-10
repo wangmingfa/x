@@ -151,9 +151,21 @@ fn unpack(archive: &Path, dest_dir: &Path) -> Result<PathBuf> {
             continue;
         }
         let out = dest_dir.join("x");
+        // The archive states what mode the binary should carry. Reading it
+        // matters: `File::create` stamps 0644, and a root-owned 0644 `x` in
+        // /usr/local/bin answers "permission denied" to every non-root call.
+        let mode = entry.header().mode().unwrap_or(0o755);
         let mut out_file = fs::File::create(&out)?;
         std::io::copy(&mut entry, &mut out_file)?;
         out_file.flush()?;
+        drop(out_file);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            // The exec bit is what makes this a runnable binary; a packer that
+            // recorded 0400 must not ship one nobody can start.
+            fs::set_permissions(&out, fs::Permissions::from_mode((mode & 0o777) | 0o111))?;
+        }
         return Ok(out);
     }
     Err(fail("archive did not contain the x binary"))
@@ -186,10 +198,20 @@ fn replace_current_exe(new_bin: &Path) -> Result<PathBuf> {
         // package name), so replace the exact file current_exe() names — and
         // do it with a rename, not an in-place copy: writing into a live
         // text image fails with ETXTBSY, while a staged sibling renamed over
-        // it succeeds atomically. fs::copy carries the file mode over.
+        // it succeeds atomically.
         let staged = dir.join(format!(".x-new-{}", std::process::id()));
         let _ = fs::remove_file(&staged);
         fs::copy(new_bin, &staged)?;
+        // Second gate on executability: `unpack` should already have stamped
+        // the mode, but this path is the one that decides what ends up in
+        // /usr/local/bin — a change to `unpack` must not be able to ship an
+        // install nobody can run again.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(new_bin)?.permissions().mode();
+            fs::set_permissions(&staged, fs::Permissions::from_mode((mode & 0o777) | 0o111))?;
+        }
         fs::rename(&staged, &current)?;
     }
     Ok(dir.to_path_buf())
@@ -265,4 +287,83 @@ pub fn dispatch(
         serde_json::json!({ "upgraded": true, "from": running, "to": latest, "path": dir }),
         format!("upgraded {running} -> {latest} ({})", dir.display()),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A scratch directory that is removed again when the test ends.
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(label: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "x-upgrade-test-{}-{}",
+                label,
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).expect("scratch dir");
+            Self(dir)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Pack a gzip tarball carrying bare-named entries with the given modes.
+    fn pack(dir: &Path, entries: &[(&str, u32)]) -> PathBuf {
+        let path = dir.join("bundle.tar.gz");
+        let file = fs::File::create(&path).expect("archive");
+        let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+        let mut builder = tar::Builder::new(encoder);
+        for (name, mode) in entries {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(0);
+            header.set_mode(*mode);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, name, std::io::empty())
+                .expect("entry");
+        }
+        builder.into_inner().expect("finish archive");
+        path
+    }
+
+    /// The extracted binary must be runnable.
+    ///
+    /// `File::create` stamps 0644, and a root-owned 0644 `x` in
+    /// /usr/local/bin answers "permission denied" to every non-root call —
+    /// exactly what a sudo upgrade produced before the mode was read from
+    /// the archive.
+    #[cfg(unix)]
+    #[test]
+    fn the_unpacked_binary_keeps_the_archives_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let scratch = Scratch::new("unpack");
+        let archive = pack(&scratch.0, &[("decoy", 0o777), ("x", 0o755)]);
+        let bin = unpack(&archive, &scratch.0).expect("unpack");
+        assert!(bin.ends_with("x"), "picked the bare-named entry: {bin:?}");
+        let mode = fs::metadata(&bin).expect("stat").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o755, "the archive said 0755");
+    }
+
+    /// A packer that records a mode without exec bits must not be able to
+    /// ship a binary nobody can start.
+    #[cfg(unix)]
+    #[test]
+    fn the_unpacked_binary_is_executable_even_when_the_archive_says_otherwise() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let scratch = Scratch::new("unpack-noexec");
+        let archive = pack(&scratch.0, &[("x", 0o400)]);
+        let bin = unpack(&archive, &scratch.0).expect("unpack");
+        let mode = fs::metadata(&bin).expect("stat").permissions().mode() & 0o777;
+        assert!(mode & 0o111 != 0, "mode {mode:o} has no exec bits");
+    }
 }
