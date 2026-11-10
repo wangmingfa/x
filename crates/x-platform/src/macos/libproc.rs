@@ -145,8 +145,17 @@ extern "C" {
 }
 
 /// Every pid the kernel will show us.
+///
+/// `proc_listallpids` returns a **count of pids**, not a byte count — the
+/// header is explicit (`int proc_listallpids(void *buffer, int buffersize)`
+/// returns "the number of pids"). Dividing it by `size_of::<i32>()` reads only
+/// an eighth of the table in one go and, worse, the "buffer was filled" test
+/// then compares a count against a byte size, so the retry never fires. The
+/// two bugs nearly cancelled out: the table silently came back at a quarter
+/// size, and whichever processes fell into the lost tail were invisible to
+/// every socket read — `x port 8080` said "free" while a `node` held it.
 pub fn list_pids() -> Vec<i32> {
-    let mut buffer = vec![0i32; 8192];
+    let mut buffer = vec![0i32; 4096];
     let mut pids = Vec::new();
 
     loop {
@@ -156,12 +165,20 @@ pub fn list_pids() -> Vec<i32> {
         if written <= 0 {
             break;
         }
-        let count = (written as usize) / mem::size_of::<i32>();
-        pids.extend(buffer.iter().take(count).copied().filter(|p| *p > 0));
-        if (written as usize) < size as usize {
+        let count = written as usize;
+        // A partial fill means we have the whole table. A full fill means the
+        // kernel truncated at `capacity`; grow and ask again.
+        let filled_completely = count >= buffer.len();
+        pids.extend(
+            buffer
+                .iter()
+                .take(count.min(buffer.len()))
+                .copied()
+                .filter(|p| *p > 0),
+        );
+        if !filled_completely {
             break;
         }
-        // The buffer was filled completely: a process may have been missed.
         buffer.resize(buffer.len() * 2, 0);
     }
 
@@ -430,6 +447,33 @@ mod tests {
         // current user.
         let mine = pids.iter().filter(|p| **p > 1_000).count();
         assert!(mine > 0, "no user process visible in {pids:?}");
+    }
+
+    /// The pid table must be the whole table.
+    ///
+    /// `proc_listallpids` returns a count of pids, and reading it as a byte
+    /// count silently dropped three quarters of the table. Processes in the
+    /// lost tail were invisible to socket attribution, so `x port 8080`
+    /// claimed a busy port was free. Compare our result against a single
+    /// oversized call: anything less means we are still misreading the return
+    /// value.
+    #[test]
+    fn the_pid_table_is_not_truncated() {
+        let mut buffer = vec![0i32; 1 << 20];
+        let size = (buffer.len() * mem::size_of::<i32>()) as c_int;
+        // SAFETY: the buffer is exactly `size` bytes, which is what we declare.
+        let reported =
+            unsafe { proc_listallpids(buffer.as_mut_ptr() as *mut c_void, size) } as usize;
+        assert!(reported > 0, "the kernel reported no pids at all");
+
+        let ours = list_pids();
+        // Processes start and exit between the two calls, so an exact match is
+        // not meaningful; a quarter-size table is.
+        assert!(
+            ours.len() + 8 >= reported,
+            "read {} of {reported} pids — the return value is being misread",
+            ours.len()
+        );
     }
 
     #[test]
