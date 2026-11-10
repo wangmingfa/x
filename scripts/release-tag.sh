@@ -304,31 +304,6 @@ case "$tag" in
         ;;
 esac
 
-# The tag and the compiled-in version must agree: `x --version` prints
-# CARGO_PKG_VERSION, and `x upgrade` compares that against the newest tag.
-# Tagging v0.1.2 while Cargo.toml still says 0.1.0 ships binaries that report
-# 0.1.0 forever — and then re-download their own release every time, because
-# the upgrade check never converges to "already up to date". This is what the
-# interactive menu's bump was always supposed to mean.
-release_version="${tag#v}"
-current_version=$(sed -n '/^\[workspace\.package\]/,/^\[/{s/^version[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p}' Cargo.toml | head -1)
-if [ "$current_version" != "$release_version" ]; then
-    step "Bumping Cargo.toml version $current_version -> $release_version"
-    tmp=$(mktemp)
-    awk -v ver="$release_version" '
-        /^\[workspace\.package\]/ { inpkg = 1; print; next }
-        inpkg && /^\[/ { inpkg = 0 }
-        inpkg && /^version[[:space:]]*=/ {
-            sub(/^version[[:space:]]*=[[:space:]]*"[^"]*"/, "version = \"" ver "\"")
-            inpkg = 0
-        }
-        { print }
-    ' Cargo.toml > "$tmp" && mv "$tmp" Cargo.toml
-    git add Cargo.toml
-    git commit -m "chore(release): bump version to $release_version"
-    ok "version bumped to $release_version"
-fi
-
 step "CHANGELOG for $tag"
 ./scripts/changelog.sh --heading "$tag" -o CHANGELOG.md
 if [ -n "$(git status --porcelain -- CHANGELOG.md)" ]; then

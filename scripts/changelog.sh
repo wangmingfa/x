@@ -111,12 +111,9 @@ fi
 # filter, committing the changelog would add an entry to the changelog, which
 # changes the file, which makes the release script stop again: no run would
 # ever settle. release-tag.sh prints the exact subject this filter matches.
-# The version-bump commit is the same kind of release machinery: listing it
-# would only ever describe the tag the heading already names.
 commits_for() {
     git log --no-merges --format="%h${TAB}%s" \
-        --invert-grep --grep='^docs: regenerate CHANGELOG' \
-        --grep='^chore(release): bump version' "$1"
+        --invert-grep --grep='^docs: regenerate CHANGELOG' "$1"
 }
 
 tag_date() {
