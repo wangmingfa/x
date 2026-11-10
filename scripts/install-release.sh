@@ -26,11 +26,21 @@ set -eu
 
 X_VERSION="${X_VERSION:-}"
 X_REPO="${X_REPO:-wangmingfa/x}"
+ASSUME_YES=0
+
+# The default prefix hangs off HOME. A stripped environment (some CI, cron)
+# runs without it, and unset HOME would silently turn ~/.local into /.local —
+# or explode under `set -u` before the friendly message can. Check first, so
+# the fallback below can reference $HOME without a guard.
+[ -n "${HOME:-}" ] || {
+  printf '\033[31m==>\033[0m HOME is not set; pass --prefix=DIR to name the install location\n' >&2
+  exit 1
+}
+
 # ~/.local/bin keeps the install user-owned: `x upgrade` later replaces the
 # binary in place without sudo, and the sudo fallback below still covers an
 # explicit --prefix=/usr/local.
 PREFIX="${PREFIX:-$HOME/.local}"
-ASSUME_YES=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -102,13 +112,19 @@ tar -xzf "$TMP_DIR/x.tar.gz" -C "$TMP_DIR/stage"
 [ -f "$TMP_DIR/stage/x" ] || fail "archive did not contain the x binary"
 
 info "installing to $BIN_DIR/x"
-mkdir -p "$BIN_DIR"
-if [ -w "$BIN_DIR" ]; then
+# `mkdir -p` creates the whole ~/.local chain when it does not exist yet. If
+# even that fails (root-owned prefix, read-only home), the sudo branch below
+# takes over — which is why the mode is set inside each branch: a chmod on a
+# root-owned file fails, and under `set -eu` that would abort the install
+# after the binary was already in place.
+if mkdir -p "$BIN_DIR" 2>/dev/null && [ -w "$BIN_DIR" ]; then
   cp "$TMP_DIR/stage/x" "$BIN_DIR/x"
+  chmod 0755 "$BIN_DIR/x"
 else
+  sudo mkdir -p "$BIN_DIR"
   sudo cp "$TMP_DIR/stage/x" "$BIN_DIR/x"
+  sudo chmod 0755 "$BIN_DIR/x"
 fi
-chmod 0755 "$BIN_DIR/x"
 
 info "installed: $("$BIN_DIR/x" --version 2>/dev/null || echo x)"
 case ":$PATH:" in

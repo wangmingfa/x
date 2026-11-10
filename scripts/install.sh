@@ -18,11 +18,21 @@ set -eu
 
 X_VERSION="${X_VERSION:-0.1.0}"
 X_REPO="${X_REPO:-https://github.com/wangmingfa/x}"
+ASSUME_YES=0
+
+# The default prefix hangs off HOME. A stripped environment (some CI, cron)
+# runs without it, and unset HOME would silently turn ~/.local into /.local —
+# or explode under `set -u` before the friendly message can. Check first, so
+# the fallback below can reference $HOME without a guard.
+[ -n "${HOME:-}" ] || {
+  printf '\033[31m==>\033[0m HOME is not set; pass --prefix=DIR to name the install location\n' >&2
+  exit 1
+}
+
 # ~/.local/bin keeps the install user-owned: `x upgrade` later replaces the
 # binary in place without sudo, and the sudo fallback below still covers an
 # explicit --prefix=/usr/local.
 PREFIX="${PREFIX:-$HOME/.local}"
-ASSUME_YES=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -39,6 +49,7 @@ SRC_DIR="${X_SRC_DIR:-$HOME/.cache/x-src}"
 
 info() { printf '\033[32m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[33m==>\033[0m %s\n' "$*"; }
+fail() { printf '\033[31m==>\033[0m %s\n' "$*" >&2; exit 1; }
 
 if ! command -v cargo >/dev/null 2>&1; then
   echo "cargo (Rust toolchain) is required. Install from https://rustup.rs" >&2
@@ -83,13 +94,19 @@ if [ ! -f "$BIN_SRC" ]; then
 fi
 
 info "installing to $BIN_DIR/x"
-mkdir -p "$BIN_DIR"
-if [ -w "$BIN_DIR" ]; then
+# `mkdir -p` creates the whole ~/.local chain when it does not exist yet. If
+# even that fails (root-owned prefix, read-only home), the sudo branch below
+# takes over — which is why the mode is set inside each branch: a chmod on a
+# root-owned file fails, and under `set -eu` that would abort the install
+# after the binary was already in place.
+if mkdir -p "$BIN_DIR" 2>/dev/null && [ -w "$BIN_DIR" ]; then
   cp "$BIN_SRC" "$BIN_DIR/x"
+  chmod 0755 "$BIN_DIR/x"
 else
+  sudo mkdir -p "$BIN_DIR"
   sudo cp "$BIN_SRC" "$BIN_DIR/x"
+  sudo chmod 0755 "$BIN_DIR/x"
 fi
-chmod 0755 "$BIN_DIR/x"
 
 info "installed: $("$BIN_DIR/x" --version 2>/dev/null || echo x)"
 case ":$PATH:" in
