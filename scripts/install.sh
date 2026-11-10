@@ -5,7 +5,9 @@
 #   curl -fsSL https://raw.githubusercontent.com/wangmingfa/x/main/scripts/install.sh | sh
 #
 # Environment / flags:
-#   PREFIX=DIR        install prefix (default /usr/local)
+#   PREFIX=DIR        install prefix (default ~/.local — installs to
+#                     ~/.local/bin, which needs no sudo; pass --prefix=/usr/local
+#                     to keep the old behaviour)
 #   X_VERSION=0.1.0   git ref to check out (tag, branch or sha)
 #   X_REPO=URL        git repository (default https://github.com/wangmingfa/x)
 #   --prefix=DIR      same as PREFIX
@@ -16,14 +18,17 @@ set -eu
 
 X_VERSION="${X_VERSION:-0.1.0}"
 X_REPO="${X_REPO:-https://github.com/wangmingfa/x}"
-PREFIX="/usr/local"
+# ~/.local/bin keeps the install user-owned: `x upgrade` later replaces the
+# binary in place without sudo, and the sudo fallback below still covers an
+# explicit --prefix=/usr/local.
+PREFIX="${PREFIX:-$HOME/.local}"
 ASSUME_YES=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --prefix=*) PREFIX="${1#*=}" ;;
     -y|--yes) ASSUME_YES=1 ;;
-    -h|--help) sed -n '3,13p' "$0"; exit 0 ;;
+    -h|--help) sed -n '3,15p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 1 ;;
   esac
   shift
@@ -89,6 +94,16 @@ chmod 0755 "$BIN_DIR/x"
 info "installed: $("$BIN_DIR/x" --version 2>/dev/null || echo x)"
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
-  *) warn "add $BIN_DIR to your PATH (e.g. export PATH=$BIN_DIR:\$PATH), then open a new terminal" ;;
+  *)
+    warn "$BIN_DIR is not in your PATH. Add it and open a new terminal, e.g.:"
+    warn "  zsh:  echo 'export PATH=\"$BIN_DIR:\$PATH\"' >> ~/.zshrc"
+    warn "  bash: echo 'export PATH=\"$BIN_DIR:\$PATH\"' >> ~/.bashrc"
+    ;;
 esac
+# An old copy earlier in PATH would shadow the fresh install and make the
+# upgrade command replace the wrong file later.
+existing=$(command -v x 2>/dev/null || true)
+if [ -n "$existing" ] && [ "$existing" != "$BIN_DIR/x" ]; then
+  warn "an x already resolves to $existing; make sure $BIN_DIR comes first in PATH, or remove the old copy"
+fi
 info "done"

@@ -6,7 +6,9 @@
 #   curl -fsSL https://raw.githubusercontent.com/wangmingfa/x/main/scripts/install-release.sh | sh
 #
 # Environment / flags:
-#   PREFIX=DIR        install prefix (default /usr/local)
+#   PREFIX=DIR        install prefix (default ~/.local — installs to
+#                     ~/.local/bin, which needs no sudo; pass --prefix=/usr/local
+#                     to keep the old behaviour)
 #   X_VERSION=TAG     release tag to install (default: latest release)
 #   X_REPO=OWNER/NAME GitHub repository (default wangmingfa/x)
 #   --prefix=DIR      same as PREFIX
@@ -24,7 +26,10 @@ set -eu
 
 X_VERSION="${X_VERSION:-}"
 X_REPO="${X_REPO:-wangmingfa/x}"
-PREFIX="/usr/local"
+# ~/.local/bin keeps the install user-owned: `x upgrade` later replaces the
+# binary in place without sudo, and the sudo fallback below still covers an
+# explicit --prefix=/usr/local.
+PREFIX="${PREFIX:-$HOME/.local}"
 ASSUME_YES=0
 
 while [ $# -gt 0 ]; do
@@ -108,6 +113,16 @@ chmod 0755 "$BIN_DIR/x"
 info "installed: $("$BIN_DIR/x" --version 2>/dev/null || echo x)"
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
-  *) warn "add $BIN_DIR to your PATH (e.g. export PATH=$BIN_DIR:\$PATH), then open a new terminal" ;;
+  *)
+    warn "$BIN_DIR is not in your PATH. Add it and open a new terminal, e.g.:"
+    warn "  zsh:  echo 'export PATH=\"$BIN_DIR:\$PATH\"' >> ~/.zshrc"
+    warn "  bash: echo 'export PATH=\"$BIN_DIR:\$PATH\"' >> ~/.bashrc"
+    ;;
 esac
+# An old copy earlier in PATH would shadow the fresh install and make the
+# upgrade command replace the wrong file later.
+existing=$(command -v x 2>/dev/null || true)
+if [ -n "$existing" ] && [ "$existing" != "$BIN_DIR/x" ]; then
+  warn "an x already resolves to $existing; make sure $BIN_DIR comes first in PATH, or remove the old copy"
+fi
 info "done"
