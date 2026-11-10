@@ -8,6 +8,7 @@ produce is a claim nobody can trace back to a commit.
 
 ### Fixes
 
+- **upgrade:** keep the binary executable when replacing it (75c48b7)
 - **macos:** read proc_listallpids' return as a pid count, not bytes (348858b)
 - **tui:** bind k to move up, and stop advertising k as kill Three separate drifts, all of them showing up as "the disks page will not scroll back up": (10d0a7a)
 - **tui:** count the header when reporting how many rows the table fits inner_rows reported height-2, but a bordered table with a header only has height-3 data lines. The selection could therefore land on the last row of the window while that row was drawn clipped by the bottom border, so scrolling to the end made the highlight disappear. Report height-3, and use the same figure for the scrollbar's "everything fits" test. (7277fb3)
@@ -185,6 +186,25 @@ Subjects with no recognised `type:` prefix, kept verbatim.
 - P0 数据补全：内存 Swap/Pagefile 与内存压力（三平台） Co-Authored-By: AtomCode (glm5.3-flash) <noreply@atomgit.com> (0e71953)
 - P0 数据补全：系统信息与 CPU 详情（三平台） - sys info：上次重启时间、时区、UTC 偏移、locale、用户、shell、终端；   P/E 核心数（macOS perflevel / Windows EfficiencyClass / Linux cpufreq 推断） - sys cpu：Load Average、当前与最大频率、每核频率列、温度（Linux sysfs）、   governor（Linux）；三平台共用的两段采样逻辑收敛到 common::cpu_sysinfo - 修复 Windows GetLogicalProcessorInformationEx 记录遍历：把 Relationship   当成了记录长度，导致 Ex 路径永远失败并回退到旧 API - Linux/Windows 纯函数（cpufreq 集群、温度筛选、记录遍历等）带单测；   macOS 实测对齐 sysctl/uptime，另两平台 cargo check 通过 (13c813a)
 - README：路线图按 P0-P4 分层展开，条目全部单行 (2aaea7b)
+
+## v0.1.1 (2026-11-10)
+
+### Fixes
+
+- **macos:** read proc_listallpids' return as a pid count, not bytes (348858b)
+- **tui:** bind k to move up, and stop advertising k as kill Three separate drifts, all of them showing up as "the disks page will not scroll back up": (10d0a7a)
+- **tui:** count the header when reporting how many rows the table fits inner_rows reported height-2, but a bordered table with a header only has height-3 data lines. The selection could therefore land on the last row of the window while that row was drawn clipped by the bottom border, so scrolling to the end made the highlight disappear. Report height-3, and use the same figure for the scrollbar's "everything fits" test. (7277fb3)
+- **packaging:** use String, not PChar, in the x.iss external declaration Inno's Pascal Script has no PChar type; external DLL String parameters are marshalled to a null-terminated wide buffer, which is what SendMessageTimeoutW wants for the 'Environment' LPARAM. (3e2373d)
+- **packaging:** drop HWND_BROADCAST from x.iss — Inno 6 predefines it The compiler aborts on the duplicate identifier; WM_SETTINGCHANGE and SMTO_ABORTIFHUNG stay declared because Inno does not predefine those. (ab5ceda)
+- **release:** pin Inno Setup to a version that exists on the choco feed 6.5.1 was never published to the community feed (the 6.x line there is 6.7.1 / 6.7.0 / 6.6.1 / …), so the release job died at the install step. Pin 6.7.1, verified against the feed's download endpoint. (4bd85ce)
+
+### Performance
+
+- **tui:** read each page's rows off the draw loop Digit keys now paint the frame and return before the page's rows exist. Every row-producing read (ports, processes, tree, network, services, system, and the dashboard's four cards) runs on a helper thread and is harvested on the next tick, so a page switch is never gated by the OS call behind it. The dashboard was the visible case: cpu_usage samples over a 200 ms window on macOS, and that sleep blocked the key press. (3c3d0b4)
+
+### Documentation
+
+- **readme:** show how to run x from a checkout The development section listed fmt/clippy/test but never said how to run the binary you just built. Add the cargo run invocations, note that the -- separates cargo's arguments from x's, and record that the TUI commands refuse a non-TTY on purpose. (820dac5)
 
 ## v0.1.0-rc.2 (2026-10-10)
 
