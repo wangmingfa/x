@@ -72,13 +72,45 @@ fn newest_tag() -> Result<String> {
         .map_err(|e| fail(format!("release lookup read failed: {e}")))?;
     let releases: serde_json::Value = serde_json::from_str(&body)
         .map_err(|e| fail(format!("release listing is not JSON: {e}")))?;
-    releases
+    let tags: Vec<String> = releases
         .as_array()
-        .and_then(|list| list.first())
-        .and_then(|first| first.get("tag_name"))
-        .and_then(|tag| tag.as_str())
-        .map(str::to_owned)
-        .ok_or_else(|| fail("no releases published yet"))
+        .map(|list| {
+            list.iter()
+                .filter_map(|release| release.get("tag_name"))
+                .filter_map(|tag| tag.as_str())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    highest_release(&tags).ok_or_else(|| fail("no releases published yet"))
+}
+
+/// Highest release by semver-ish ordering: the numeric triple first, then a
+/// prerelease loses to its own release (`0.1.0-rc.1` < `0.1.0`).
+///
+/// GitHub orders the release list by creation date, which deleting and
+/// re-publishing scrambles — the newest release is the highest version, not
+/// the first row of the listing.
+fn highest_release(tags: &[String]) -> Option<String> {
+    fn key(tag: &str) -> ((u64, u64, u64), bool, String) {
+        let trimmed = tag.trim_start_matches('v');
+        let (base, pre) = match trimmed.split_once('-') {
+            Some((base, pre)) => (base, Some(pre.to_string())),
+            None => (trimmed, None),
+        };
+        let mut nums = [0u64; 3];
+        for (slot, part) in nums.iter_mut().zip(base.split('.')) {
+            *slot = part.parse().unwrap_or(0);
+        }
+        // `bool` puts a release above its own prereleases; the prerelease
+        // string breaks ties between rc.1 and rc.2.
+        (
+            (nums[0], nums[1], nums[2]),
+            pre.is_none(),
+            pre.unwrap_or_default(),
+        )
+    }
+    tags.iter().max_by(|a, b| key(a).cmp(&key(b))).cloned()
 }
 
 /// Download the release tarball into `dest` and return its path.
@@ -288,6 +320,44 @@ pub fn dispatch(
         serde_json::json!({ "upgraded": true, "from": running, "to": latest, "path": dir }),
         format!("upgraded {running} -> {latest} ({})", dir.display()),
     )
+}
+
+#[cfg(test)]
+mod highest_release_tests {
+    use super::highest_release;
+
+    fn tags(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn the_highest_version_wins_regardless_of_listing_order() {
+        assert_eq!(
+            highest_release(&tags(&["v0.1.0", "v0.1.1", "v0.1.0-rc.2"])),
+            Some("v0.1.1".to_string())
+        );
+        assert_eq!(
+            highest_release(&tags(&["v0.1.1", "v0.1.0"])),
+            Some("v0.1.1".to_string())
+        );
+    }
+
+    #[test]
+    fn a_release_outranks_its_own_prereleases() {
+        assert_eq!(
+            highest_release(&tags(&["v0.1.0-rc.2", "v0.1.0-rc.1"])),
+            Some("v0.1.0-rc.2".to_string())
+        );
+        assert_eq!(
+            highest_release(&tags(&["v0.1.0-rc.1", "v0.1.0"])),
+            Some("v0.1.0".to_string())
+        );
+    }
+
+    #[test]
+    fn an_empty_listing_has_no_newest_release() {
+        assert_eq!(highest_release(&[]), None);
+    }
 }
 
 // Every test here exercises the archive's mode, which only exists on unix —

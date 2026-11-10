@@ -188,17 +188,57 @@ pick() {
 }
 
 if [ -z "$tag" ]; then
-    step "Reading version from Cargo.toml [workspace.package]"
-    version=$(sed -n '/^\[workspace\.package\]/,/^\[/{s/^version[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p}' Cargo.toml | head -1)
-    if [ -z "$version" ]; then
-        err "could not read version from Cargo.toml"
-        exit 1
+    # The bump menu should suggest the next version relative to what users
+    # actually run — the newest published release — not whatever number
+    # Cargo.toml happens to carry. `/releases` instead of `/releases/latest`:
+    # that endpoint 404s while a prerelease is newest.
+    step "Reading the newest release from GitHub"
+    version=$(
+        curl -fsSL --max-time 15 "https://api.github.com/repos/$(gh_repo_slug)/releases" 2>/dev/null |
+            sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' |
+            # The list is ordered by release creation date, which deleting and
+            # re-publishing scrambles; the newest release is the highest
+            # version, not the first row. `sort -V` would do, except BSD's
+            # orders `0.1.0-rc.2` above `0.1.0`, so the ordering is done by
+            # hand: padded numeric triple, then release-vs-prerelease, then
+            # the prerelease name.
+            awk '
+                function key(tag) {
+                    sub(/^v/, "", tag)
+                    pre = ""
+                    i = index(tag, "-")
+                    if (i > 0) {
+                        pre = substr(tag, i + 1)
+                        tag = substr(tag, 1, i - 1)
+                    }
+                    n = split(tag, parts, ".")
+                    return sprintf("%012d",
+                        (parts[1] + 0) * 1000000 + (parts[2] + 0) * 1000 + (parts[3] + 0)) \
+                        "/" (pre == "" ? "1" : "0" pre)
+                }
+                { k = key($0); if (k > best) { best = k; best_tag = $0 } }
+                END { print best_tag }
+            '
+    )
+    if [ -n "$version" ]; then
+        version=${version#v}
+        ok "newest release is v$version"
+    else
+        warn "could not read the newest release from GitHub (offline, or rate limited); falling back to Cargo.toml [workspace.package]"
+        version=$(sed -n '/^\[workspace\.package\]/,/^\[/{s/^version[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p}' Cargo.toml | head -1)
+        if [ -z "$version" ]; then
+            err "could not read version from Cargo.toml"
+            exit 1
+        fi
+        ok "Cargo.toml says $version"
     fi
     tag="v$version"
 
     if [ "$interactive" = 1 ]; then
-        # Parse current version into major.minor.patch
-        IFS='.' read -r major minor patch <<< "$version"
+        # Parse current version into major.minor.patch. A prerelease tag
+        # (0.1.2-rc.1) contributes only its base — the suffix is the newest
+        # release's own choice, not something to bump through.
+        IFS='.' read -r major minor patch <<< "${version%%-*}"
 
         # 1. Release kind: stable or pre-release
         set +e
