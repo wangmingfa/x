@@ -154,8 +154,9 @@ fn unpack(archive: &Path, dest_dir: &Path) -> Result<PathBuf> {
         // The archive states what mode the binary should carry. Reading it
         // matters: `File::create` stamps 0644, and a root-owned 0644 `x` in
         // /usr/local/bin answers "permission denied" to every non-root call.
-        let mode = entry.header().mode().unwrap_or(0o755);
         let mut out_file = fs::File::create(&out)?;
+        #[cfg(unix)]
+        let mode = entry.header().mode().unwrap_or(0o755);
         std::io::copy(&mut entry, &mut out_file)?;
         out_file.flush()?;
         drop(out_file);
@@ -289,7 +290,10 @@ pub fn dispatch(
     )
 }
 
-#[cfg(test)]
+// Every test here exercises the archive's mode, which only exists on unix —
+// gating the whole module keeps `Scratch` and `pack` from being dead code on
+// Windows.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
