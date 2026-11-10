@@ -286,6 +286,9 @@ pub enum Command {
 
     /// Replace this binary with the newest GitHub release.
     Upgrade(commands::upgrade::UpgradeArgs),
+
+    /// Remove this binary and its upgrade leftovers.
+    Uninstall(commands::uninstall::UninstallArgs),
 }
 
 /// Signal to deliver to a process.
@@ -496,6 +499,7 @@ fn dispatch(
             commands::netdiag::dispatch_headers(context, renderer, args)
         }
         Some(Command::Upgrade(args)) => commands::upgrade::dispatch(renderer, confirmer, args),
+        Some(Command::Uninstall(args)) => commands::uninstall::dispatch(renderer, confirmer, args),
     }
 }
 
