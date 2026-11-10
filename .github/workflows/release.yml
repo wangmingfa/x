@@ -77,8 +77,10 @@ jobs:
           # branch the run happened to start from.
           if [ "$GITHUB_REF_TYPE" = tag ]; then
             echo "tag=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
           else
             echo "tag=v0.0.0-dev" >> "$GITHUB_OUTPUT"
+            echo "version=0.0.0-dev" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Build
@@ -87,6 +89,10 @@ jobs:
           TARGETS: ${{ matrix.targets }}
           # Read by rustc for Apple targets only; empty elsewhere does nothing.
           MACOSX_DEPLOYMENT_TARGET: ${{ matrix.deployment_target }}
+          # The tag is the version this binary reports (`x --version`, the
+          # upgrade check, MCP serverInfo). Injecting it at compile time keeps
+          # the tag and the binary in step without a version-bump commit.
+          X_RELEASE_VERSION: ${{ steps.stamp.outputs.version }}
         run: |
           for target in $TARGETS; do
               rustup target add "$target"
@@ -159,9 +165,6 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Build release binary
-        run: cargo build --release --locked -p x-app
-
       - name: Version from the tag
         id: ver
         shell: pwsh
@@ -177,6 +180,14 @@ jobs:
           $num = $tag -replace '^v',''
           "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "num=$num" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Build release binary
+        # Same injection as the matrix Build step: the installer's binary must
+        # report the tag version like every other artifact. The ver step runs
+        # first so the output exists by the time this expression is evaluated.
+        env:
+          X_RELEASE_VERSION: ${{ steps.ver.outputs.num }}
+        run: cargo build --release --locked -p x-app
 
       - name: Install Inno Setup
         # Pinned: an unpinned Inno upgrade would make today's installer and

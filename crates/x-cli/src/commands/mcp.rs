@@ -101,7 +101,7 @@ fn handle_message(
             "result": {
                 "protocolVersion": "2024-11-05",
                 "capabilities": { "tools": {} },
-                "serverInfo": { "name": "x", "version": env!("CARGO_PKG_VERSION") }
+                "serverInfo": { "name": "x", "version": crate::RELEASE_VERSION }
             }
         })),
         "ping" => Some(json!({ "jsonrpc": "2.0", "id": id, "result": {} })),

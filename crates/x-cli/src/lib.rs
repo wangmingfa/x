@@ -21,6 +21,18 @@ pub mod format;
 pub use commands::dry_run_guard;
 pub use commands::EXIT_DECLINED;
 
+/// The version this binary reports, everywhere.
+///
+/// Release builds get the git tag injected by the workflow as
+/// `X_RELEASE_VERSION`, so what `x --version` prints is exactly the tag that
+/// produced the binary — the tag is the single source of truth and no
+/// version-bump commit is needed. Every other build (local `cargo build`, a
+/// source install) falls back to the workspace version in Cargo.toml.
+pub const RELEASE_VERSION: &str = match option_env!("X_RELEASE_VERSION") {
+    Some(version) => version,
+    None => env!("CARGO_PKG_VERSION"),
+};
+
 use std::io::Write;
 use std::process::ExitCode;
 
@@ -34,7 +46,7 @@ use crate::format::{should_colorize, Confirmer, OutputFormat, Renderer, StdinCon
 #[derive(Debug, Parser)]
 #[command(
     name = "x",
-    version,
+    version = RELEASE_VERSION,
     about,
     long_about = "x inspects processes, ports, network, services, disks and system health \
                   with one consistent vocabulary on Windows, Linux and macOS.",
@@ -520,5 +532,17 @@ fn report(error: &Error, color: bool, os: Option<x_core::system::OsFamily>) {
     }
     if let Some(source) = error.source_error() {
         let _ = writeln!(stderr, "cause: {source}");
+    }
+}
+
+#[cfg(test)]
+mod release_version_tests {
+    /// CI builds tests without the injection env, so the fallback is what
+    /// tests and local runs report. A release build never runs tests, but if
+    /// someone compiles the test harness with `X_RELEASE_VERSION` set this
+    /// fails loudly instead of quietly asserting the wrong fallback.
+    #[test]
+    fn without_injection_the_workspace_version_is_reported() {
+        assert_eq!(crate::RELEASE_VERSION, env!("CARGO_PKG_VERSION"));
     }
 }

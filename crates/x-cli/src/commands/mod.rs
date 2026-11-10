@@ -49,7 +49,7 @@ use crate::format::{Confirmer, OutputFormat, Renderer};
 /// Print adapter and contract versions, useful when reporting a bug.
 pub fn version(renderer: &mut Renderer) -> Result<i32> {
     let info = serde_json::json!({
-        "x": env!("CARGO_PKG_VERSION"),
+        "x": crate::RELEASE_VERSION,
         "contract": x_core::CONTRACT_VERSION,
         "contract_doc": "docs/contract.md",
         "platform": x_platform::platform_name(),

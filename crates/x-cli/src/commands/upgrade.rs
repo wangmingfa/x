@@ -39,7 +39,7 @@ pub struct UpgradeArgs {
 
 fn http_agent() -> ureq::Agent {
     ureq::AgentBuilder::new()
-        .user_agent(concat!("x/", env!("CARGO_PKG_VERSION")))
+        .user_agent(&format!("x/{}", crate::RELEASE_VERSION))
         .build()
 }
 
@@ -235,7 +235,7 @@ pub fn dispatch(
 ) -> Result<i32> {
     // Dry-run first, before any network: the plan is a question about the
     // future, not a reason to touch GitHub.
-    let running = env!("CARGO_PKG_VERSION").trim_start_matches('v');
+    let running = crate::RELEASE_VERSION.trim_start_matches('v');
     if crate::dry_run_guard(
         renderer,
         &format!("check for the latest x release and upgrade from {running}"),
@@ -243,7 +243,7 @@ pub fn dispatch(
         return Ok(0);
     }
     let tag = newest_tag()?;
-    let running = env!("CARGO_PKG_VERSION").trim_start_matches('v');
+    let running = crate::RELEASE_VERSION.trim_start_matches('v');
     let latest = tag.trim_start_matches('v');
     if latest == running && !args.force {
         return report(
