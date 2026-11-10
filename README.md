@@ -39,8 +39,9 @@ powershell -c "irm https://raw.githubusercontent.com/wangmingfa/x/main/scripts/i
   二进制里，无需判架构）；Linux 按 `uname -m` 取 `Linux-x86_64` / `Linux-aarch64`；
   Windows 下载 Inno 安装包静默安装。装到 `PREFIX/bin`（默认 `~/.local/bin`，用户
   目录、无需 sudo，装完 `x upgrade` 升级也不需要；要装系统目录传
-  `--prefix=/usr/local`，Windows 由安装包落位到 `%LOCALAPPDATA%\x`），并把该目录
-  不在 PATH 时提示怎么加。
+  `--prefix=/usr/local`，Windows 由安装包落位到 `%LOCALAPPDATA%\x`）。装完若该目录
+  不在 PATH 里，脚本会询问是否把一行 `export PATH=...` 追加进当前 shell 的 rc 文件
+  （确认才写、重复安装不重复追加；`--yes` 跳过改动并打印手动命令）。
 - 装指定版本：`X_VERSION=v0.1.2`（bash）或 `-Version v0.1.2`（PowerShell）。
 - 注：把安装目录写进用户 PATH 后，**需重开终端（或新开一个窗口）**，`x` 命令才会
   生效——已打开的终端不会自动读取新的 PATH。Windows 安装脚本结束时也会打印该提示。

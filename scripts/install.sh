@@ -112,9 +112,51 @@ info "installed: $("$BIN_DIR/x" --version 2>/dev/null || echo x)"
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
   *)
-    warn "$BIN_DIR is not in your PATH. Add it and open a new terminal, e.g.:"
-    warn "  zsh:  echo 'export PATH=\"$BIN_DIR:\$PATH\"' >> ~/.zshrc"
-    warn "  bash: echo 'export PATH=\"$BIN_DIR:\$PATH\"' >> ~/.bashrc"
+    # PATH rarely picks up ~/.local/bin by itself: Ubuntu's bash does on the
+    # next login (the directory check in its default ~/.profile now passes),
+    # macOS never does. Offer to append one line to the rc the user's shell
+    # actually reads, then say so.
+    rc=""
+    case "${SHELL:-}" in
+      */zsh) rc="$HOME/.zshrc" ;;
+      */bash)
+        if [ -f "$HOME/.bashrc" ]; then rc="$HOME/.bashrc"
+        else rc="$HOME/.bash_profile"  # macOS bash reads this one at login
+        fi
+        ;;
+    esac
+    if [ -z "$rc" ]; then
+      # Unknown or unset SHELL: guess from whichever rc already exists.
+      if [ -f "$HOME/.zshrc" ]; then rc="$HOME/.zshrc"
+      elif [ -f "$HOME/.bashrc" ]; then rc="$HOME/.bashrc"
+      elif [ -f "$HOME/.bash_profile" ]; then rc="$HOME/.bash_profile"
+      else rc="$HOME/.zshrc"
+      fi
+    fi
+    path_line="export PATH=\"$BIN_DIR:\$PATH\""
+    if [ -f "$rc" ] && grep -Fq "$BIN_DIR" "$rc"; then
+      warn "$rc already mentions $BIN_DIR — open a new terminal for it to take effect"
+    elif [ "$ASSUME_YES" -eq 1 ]; then
+      warn "--yes skips rc edits; add it yourself:"
+      warn "  echo '$path_line' >> $rc"
+    else
+      printf "Add %s to PATH? (appends one line to %s) [Y/n] " "$BIN_DIR" "$rc"
+      # Same tty discipline as the confirmation prompt above: stdin is the
+      # pipe under `curl | sh`, so the answer must come from the terminal.
+      if read -r answer </dev/tty; then
+        case "$answer" in
+          ""|y|Y|yes|YES)
+            printf '\n# added by the x installer\n%s\n' "$path_line" >> "$rc"
+            info "added to $rc — open a new terminal for PATH to reload"
+            ;;
+          *)
+            warn "skipped; add it yourself:  echo '$path_line' >> $rc"
+            ;;
+        esac
+      else
+        warn "no terminal to ask; add it yourself:  echo '$path_line' >> $rc"
+      fi
+    fi
     ;;
 esac
 # An old copy earlier in PATH would shadow the fresh install and make the
