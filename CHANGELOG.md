@@ -6,8 +6,19 @@ produce is a claim nobody can trace back to a commit.
 
 ## v0.1.1 (2026-11-10)
 
+### Features
+
+- **release:** read the bump baseline from the newest GitHub release (33008d8)
+- **cli:** add x uninstall to remove the binary and its leftovers (8da025c)
+- **install:** offer to add the install dir to PATH (6f63689)
+- **install:** default to ~/.local/bin so no sudo is needed (a8fd481)
+- **release:** inject the tag version at compile time in CI (a64b19d)
+
 ### Fixes
 
+- **install:** survive a missing ~/.local and a missing HOME (ae2dd9c)
+- **release:** write the bumped version back into Cargo.toml (97669a7)
+- **upgrade:** gate the mode check so Windows CI compiles again (51e0717)
 - **upgrade:** keep the binary executable when replacing it (75c48b7)
 - **macos:** read proc_listallpids' return as a pid count, not bytes (348858b)
 - **tui:** bind k to move up, and stop advertising k as kill Three separate drifts, all of them showing up as "the disks page will not scroll back up": (10d0a7a)
@@ -23,6 +34,16 @@ produce is a claim nobody can trace back to a commit.
 ### Documentation
 
 - **readme:** show how to run x from a checkout The development section listed fmt/clippy/test but never said how to run the binary you just built. Add the cargo run invocations, note that the -- separates cargo's arguments from x's, and record that the TUI commands refuse a non-TTY on purpose. (820dac5)
+
+### Chores
+
+- 修改脚本权限 (86c1c39)
+
+### Other changes
+
+Subjects with no recognised `type:` prefix, kept verbatim.
+
+- Revert "fix(release): write the bumped version back into Cargo.toml" (4c28dc4)
 
 ## v0.2.0 (2026-10-27)
 
@@ -191,6 +212,7 @@ Subjects with no recognised `type:` prefix, kept verbatim.
 
 ### Fixes
 
+- **upgrade:** keep the binary executable when replacing it (75c48b7)
 - **macos:** read proc_listallpids' return as a pid count, not bytes (348858b)
 - **tui:** bind k to move up, and stop advertising k as kill Three separate drifts, all of them showing up as "the disks page will not scroll back up": (10d0a7a)
 - **tui:** count the header when reporting how many rows the table fits inner_rows reported height-2, but a bordered table with a header only has height-3 data lines. The selection could therefore land on the last row of the window while that row was drawn clipped by the bottom border, so scrolling to the end made the highlight disappear. Report height-3, and use the same figure for the scrollbar's "everything fits" test. (7277fb3)
